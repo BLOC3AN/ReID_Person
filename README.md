@@ -100,6 +100,15 @@ person_reid_system/
 2. **Threshold tuning:** 0.8 = strict, 0.7 = balanced, 0.6 = loose
 3. **Qdrant sync** - Database synced to local file + Qdrant cloud
 
+## Documentation
+
+- **[Installation Guide](docs/INSTALLATION.md)** - Detailed installation steps
+- **[API Documentation](docs/API.md)** - API reference and examples
+- **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+- **[Usage Examples](docs/USAGE.txt)** - Quick usage examples
+- **[Package Manifest](docs/MANIFEST.txt)** - Package structure
+- **[Package Info](docs/PACKAGE_INFO.txt)** - Package information
+
 ## License
 
 MIT
