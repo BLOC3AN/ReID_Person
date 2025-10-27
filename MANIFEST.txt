@@ -1,0 +1,89 @@
+================================================================================
+PERSON RE-IDENTIFICATION SYSTEM - PACKAGE MANIFEST
+================================================================================
+
+FOLDER STRUCTURE:
+-----------------
+
+person_reid_system/                    (1.7 GB total)
+│
+├── README.md                          (Quick start guide)
+├── USAGE.txt                          (Usage examples)
+├── MANIFEST.txt                       (This file)
+├── requirements.txt                   (Python dependencies)
+│
+├── configs/                           (16 KB)
+│   ├── config.yaml                    (Main configuration)
+│   ├── .env                           (Qdrant credentials - CONFIGURED)
+│   └── .env.example                   (Template)
+│
+├── core/                              (48 KB - Core modules)
+│   ├── __init__.py
+│   ├── detector.py                    (YOLOX detector wrapper)
+│   ├── tracker.py                     (ByteTrack wrapper)
+│   ├── feature_extractor.py           (OSNet extractor)
+│   ├── vector_db.py                   (Qdrant database)
+│   └── reid_matcher.py                (ReID matching logic)
+│
+├── scripts/                           (40 KB - Main scripts)
+│   ├── __init__.py
+│   ├── register_mot17.py              (Register person - USE THIS)
+│   ├── register_person.py             (Old script - DO NOT USE)
+│   └── detect_and_track.py            (Main detection pipeline)
+│
+├── models/                            (1.5 GB - Pretrained models)
+│   ├── bytetrack_x_mot17.pth.tar      (757 MB - MOT17 model)
+│   └── yolox_x.pth                    (757 MB - YOLOX model)
+│
+├── data/                              (59 MB)
+│   ├── videos/                        (59 MB - Input videos)
+│   │   ├── cam1.mkv
+│   │   ├── cam2.mkv
+│   │   └── cam3.mkv
+│   └── database/                      (108 KB)
+│       └── reid_database.pkl          (Registered person: Khiem)
+│
+└── outputs/                           (43 MB - Demo outputs)
+    ├── videos/                        (43 MB)
+    │   └── cam3_20251027_103408.mp4   (Demo annotated video)
+    ├── csv/                           (132 KB)
+    │   └── cam3_20251027_103408.csv   (Demo tracking data)
+    └── logs/                          (80 KB)
+        └── cam3_20251027_103408.log   (Demo detailed logs)
+
+
+REGISTERED PERSONS:
+-------------------
+- Khiem (Global ID: 1, 51 embeddings)
+
+
+QUICK START:
+------------
+
+1. Register new person:
+   python scripts/register_mot17.py --video data/videos/person.mp4 --name "Name"
+
+2. Run detection:
+   python scripts/detect_and_track.py --video data/videos/test.mp4 --model mot17 --known-person "Name" --threshold 0.8
+
+
+IMPORTANT NOTES:
+----------------
+- Always use register_mot17.py (NOT register_person.py)
+- Model consistency is critical for high similarity scores
+- Qdrant credentials are already configured in configs/.env
+- Database is synced to both local file and Qdrant cloud
+
+
+SYSTEM REQUIREMENTS:
+--------------------
+- Python 3.8+
+- CUDA-capable GPU (recommended)
+- 2 GB RAM minimum
+- 2 GB disk space for models
+
+
+================================================================================
+Generated: 2025-10-27
+Version: 1.0
+================================================================================

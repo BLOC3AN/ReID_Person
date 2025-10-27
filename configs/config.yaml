@@ -1,0 +1,59 @@
+detection:
+  model_type: mot17
+  model_path_mot17: models/bytetrack_x_mot17.pth.tar
+  model_path_yolox: models/yolox_x.pth
+  conf_threshold: 0.5
+  nms_threshold: 0.45
+  test_size:
+  - 640
+  - 640
+  device: cuda
+  fp16: true
+tracking:
+  track_thresh: 0.5
+  track_buffer: 30
+  match_thresh: 0.8
+  aspect_ratio_thresh: 1.6
+  min_box_area: 10
+  mot20: false
+reid:
+  model_name: osnet_x0_5
+  feature_dim: 512
+  input_size:
+  - 256
+  - 128
+  use_cuda: true
+database:
+  use_qdrant: true
+  qdrant_url: ''
+  qdrant_collection: cross_camera_matching_id
+  max_embeddings_per_person: 100
+  embedding_dim: 512
+matching:
+  similarity_threshold: 0.8
+  metric: cosine
+  top_k: 1
+registration:
+  sample_rate: 3
+  max_frames: 50
+output:
+  save_video: true
+  save_csv: true
+  save_logs: true
+  video_codec: mp4v
+  log_level: INFO
+visualization:
+  show_bbox: true
+  show_track_id: true
+  show_similarity: true
+  show_label: true
+  bbox_thickness: 2
+  font_scale: 0.8
+  color_known:
+  - 0
+  - 255
+  - 0
+  color_unknown:
+  - 128
+  - 128
+  - 128

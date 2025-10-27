@@ -1,0 +1,62 @@
+================================================================================
+PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
+================================================================================
+
+1. REGISTER PERSON (First Time)
+   
+   python scripts/register_mot17.py \
+     --video data/videos/person.mp4 \
+     --name "PersonName" \
+     --sample-rate 5
+
+   ⚠️  IMPORTANT: Always use register_mot17.py (NOT register_person.py)
+
+
+2. RUN DETECTION
+
+   python scripts/detect_and_track.py \
+     --video data/videos/test.mp4 \
+     --model mot17 \
+     --known-person "PersonName" \
+     --threshold 0.8
+
+
+3. OUTPUT LOCATIONS
+
+   outputs/videos/    - Annotated video with bounding boxes
+   outputs/csv/       - Tracking data (frame_id, track_id, bbox, similarity, label)
+   outputs/logs/      - Detailed per-frame logs
+
+
+4. PARAMETERS
+
+   --threshold 0.8    Strict (high precision)
+   --threshold 0.7    Balanced (recommended)
+   --threshold 0.6    Loose (high recall)
+
+   --max-frames 100   Process only first 100 frames (for testing)
+
+
+5. EXAMPLE WORKFLOW
+
+   # Register Khiem
+   python scripts/register_mot17.py --video data/videos/cam1.mkv --name Khiem
+
+   # Detect in cam2
+   python scripts/detect_and_track.py --video data/videos/cam2.mkv --model mot17 --known-person Khiem --threshold 0.8
+
+   # Detect in cam3
+   python scripts/detect_and_track.py --video data/videos/cam3.mkv --model mot17 --known-person Khiem --threshold 0.8
+
+
+6. TROUBLESHOOTING
+
+   Low similarity (< 0.8)?
+   → Re-register using register_mot17.py
+
+   Qdrant connection failed?
+   → Check configs/.env has correct credentials
+
+
+================================================================================
+
