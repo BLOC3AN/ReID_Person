@@ -26,7 +26,21 @@ QDRANT_URI=host=your_qdrant_host
 QDRANT_COLLECTION=cross_camera_matching_id
 ```
 
-### 3. Register Person (IMPORTANT: Use MOT17)
+### 3. Extract Objects from Video (Optional)
+
+If you have a video with multiple people and want to extract individual person videos:
+
+```bash
+python scripts/extract_objects.py \
+  --video data/videos/multi_person.mp4 \
+  --output-dir ./output_objects \
+  --model mot17 \
+  --min-frames 10
+```
+
+This will create separate video files for each tracked person in `output_objects/<video_name>/object_X.mp4`.
+
+### 4. Register Person (IMPORTANT: Use MOT17)
 
 ```bash
 python scripts/register_mot17.py \
@@ -37,7 +51,7 @@ python scripts/register_mot17.py \
 
 **⚠️ CRITICAL:** Always use `register_mot17.py` (NOT `register_person.py`) to ensure model consistency.
 
-### 4. Run Detection
+### 5. Run Detection
 
 ```bash
 python scripts/detect_and_track.py \
@@ -48,6 +62,13 @@ python scripts/detect_and_track.py \
 ```
 
 ## Parameters
+
+**extract_objects.py:**
+- `--video`: Input video with multiple people
+- `--output-dir`: Output directory (default: ./output_objects)
+- `--model`: `mot17` (recommended) or `yolox`
+- `--padding`: Padding pixels around bbox (default: 10)
+- `--min-frames`: Minimum frames to save object (default: 10)
 
 **register_mot17.py:**
 - `--video`: Video containing person to register
@@ -83,6 +104,7 @@ person_reid_system/
 │   ├── feature_extractor.py # OSNet extractor
 │   └── vector_db.py         # Qdrant database
 ├── scripts/
+│   ├── extract_objects.py   # Extract individual objects from video
 │   ├── register_mot17.py    # Register person (USE THIS)
 │   └── detect_and_track.py  # Detection pipeline
 ├── data/

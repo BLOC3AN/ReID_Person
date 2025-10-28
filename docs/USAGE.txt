@@ -2,8 +2,22 @@
 PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
 ================================================================================
 
-1. REGISTER PERSON (First Time)
-   
+1. EXTRACT OBJECTS FROM VIDEO (Optional - for multi-person videos)
+
+   python scripts/extract_objects.py \
+     --video data/videos/multi_person.mp4 \
+     --output-dir ./output_objects \
+     --model mot17 \
+     --min-frames 10
+
+   This creates separate videos for each tracked person:
+   output_objects/<video_name>/object_1.mp4
+   output_objects/<video_name>/object_2.mp4
+   ...
+
+
+2. REGISTER PERSON (First Time)
+
    python scripts/register_mot17.py \
      --video data/videos/person.mp4 \
      --name "PersonName" \
@@ -12,7 +26,7 @@ PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
    ⚠️  IMPORTANT: Always use register_mot17.py (NOT register_person.py)
 
 
-2. RUN DETECTION
+3. RUN DETECTION
 
    python scripts/detect_and_track.py \
      --video data/videos/test.mp4 \
@@ -21,14 +35,14 @@ PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
      --threshold 0.8
 
 
-3. OUTPUT LOCATIONS
+4. OUTPUT LOCATIONS
 
    outputs/videos/    - Annotated video with bounding boxes
    outputs/csv/       - Tracking data (frame_id, track_id, bbox, similarity, label)
    outputs/logs/      - Detailed per-frame logs
 
 
-4. PARAMETERS
+5. PARAMETERS
 
    --threshold 0.8    Strict (high precision)
    --threshold 0.7    Balanced (recommended)
@@ -37,10 +51,13 @@ PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
    --max-frames 100   Process only first 100 frames (for testing)
 
 
-5. EXAMPLE WORKFLOW
+6. EXAMPLE WORKFLOW
 
-   # Register Khiem
-   python scripts/register_mot17.py --video data/videos/cam1.mkv --name Khiem
+   # Extract objects from multi-person video
+   python scripts/extract_objects.py --video data/videos/multi_cam.mp4 --output-dir ./extracted
+
+   # Register Khiem from extracted object
+   python scripts/register_mot17.py --video ./extracted/multi_cam/object_1.mp4 --name Khiem
 
    # Detect in cam2
    python scripts/detect_and_track.py --video data/videos/cam2.mkv --model mot17 --known-person Khiem --threshold 0.8
@@ -49,7 +66,7 @@ PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
    python scripts/detect_and_track.py --video data/videos/cam3.mkv --model mot17 --known-person Khiem --threshold 0.8
 
 
-6. TROUBLESHOOTING
+7. TROUBLESHOOTING
 
    Low similarity (< 0.8)?
    → Re-register using register_mot17.py

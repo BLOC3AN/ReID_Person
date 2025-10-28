@@ -31,6 +31,7 @@ Complete installation instructions including:
 
 ### 2. Usage Examples (USAGE.txt)
 Quick reference for common tasks:
+- Extracting objects from multi-person videos
 - Registering new persons
 - Running detection on videos
 - Understanding output formats
@@ -82,9 +83,10 @@ System verification:
 ## Quick Start
 
 1. **Install:** Follow [INSTALLATION.md](INSTALLATION.md)
-2. **Register:** See [USAGE.txt](USAGE.txt) for registration examples
-3. **Detect:** See [USAGE.txt](USAGE.txt) for detection examples
-4. **Troubleshoot:** Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md) if issues occur
+2. **Extract Objects (Optional):** See [USAGE.txt](USAGE.txt) for extracting individual persons from multi-person videos
+3. **Register:** See [USAGE.txt](USAGE.txt) for registration examples
+4. **Detect:** See [USAGE.txt](USAGE.txt) for detection examples
+5. **Troubleshoot:** Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md) if issues occur
 
 ---
 
