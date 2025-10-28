@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import cv2
 import numpy as np
 from loguru import logger
-from core import YOLOXDetector, OSNetExtractor, QdrantVectorDB
+from core import YOLOXDetector, ArcFaceExtractor, QdrantVectorDB
 from qdrant_client.models import Distance, VectorParams
 
 
@@ -44,9 +44,9 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
         nms_thresh=0.45
     )
     
-    # Initialize OSNet extractor
-    logger.info("Initializing OSNet extractor...")
-    extractor = OSNetExtractor(use_cuda=True)
+    # Initialize ArcFace extractor
+    logger.info("Initializing ArcFace extractor...")
+    extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True)
     
     # Initialize database
     logger.info("Initializing database...")

@@ -2,25 +2,30 @@
 
 ## Common Issues and Solutions
 
-### 1. Low Similarity Scores (< 0.8)
+### 1. Low Similarity Scores (< 0.85 with ArcFace)
 
 **Symptom:**
 ```
 Track 1: similarity=0.57, global_id=1 → Unknown (should be Khiem)
 ```
 
-**Cause:** Model mismatch between registration and detection.
+**Cause:**
+- No face detected in bbox (ArcFace requires visible face)
+- Poor video quality or lighting
+- Face not visible in registration video
 
 **Solution:**
 ```bash
-# Re-register using MOT17 model
-python scripts/register_mot17.py --video data/videos/person.mp4 --name Khiem
+# Re-register using video with clear frontal face
+python scripts/register_mot17.py --video data/videos/person.mp4 --name Khiem --sample-rate 3
 
 # Then run detection with MOT17
-python scripts/detect_and_track.py --video data/videos/test.mp4 --model mot17 --known-person Khiem
+python scripts/detect_and_track.py --video data/videos/test.mp4 --model mot17 --threshold 0.6
 ```
 
-**Why:** Different models (YOLOX vs MOT17) produce different bounding boxes → different crops → different embeddings → low similarity.
+**Why:** ArcFace extracts face embeddings from person bbox. If face is not visible or unclear, similarity will be low.
+
+**Note:** With ArcFace, expected similarity is 0.85-0.95 for good matches (vs OSNet 0.6-0.8)
 
 ---
 
@@ -339,4 +344,53 @@ If issue persists:
 3. **Lighting:** Extreme lighting changes affect similarity
 4. **Angle:** Large viewpoint changes reduce similarity
 5. **Resolution:** Low resolution crops reduce accuracy
+6. **Face visibility (ArcFace):** Requires visible face in person bbox for accurate matching
+7. **Face angle (ArcFace):** Works best with frontal or near-frontal faces
+
+---
+
+## ArcFace-Specific Issues
+
+### No Face Detected in BBox
+
+**Symptom:**
+```
+DEBUG | core.feature_extractor:extract:231 - No face detected in bbox [473, 184, 254, 398]
+```
+
+**Cause:** ArcFace cannot find face within person bounding box.
+
+**Solution:**
+1. Ensure video shows clear face (not back view)
+2. Use videos with frontal or near-frontal face angles
+3. Check if person bbox includes head region
+4. If needed, switch to OSNet for full-body matching:
+```yaml
+# configs/config.yaml
+reid:
+  extractor_type: osnet  # Instead of arcface
+```
+
+### Switch Between ArcFace and OSNet
+
+**When to use ArcFace:**
+- Videos with clear face visibility
+- Camera angles showing faces
+- Higher accuracy needed (0.85-0.95)
+- Face-based identification preferred
+
+**When to use OSNet:**
+- Videos with back views or side views
+- Full-body tracking needed
+- Face not always visible
+- Lower accuracy acceptable (0.6-0.8)
+
+**How to switch:**
+```yaml
+# configs/config.yaml
+reid:
+  extractor_type: arcface  # or 'osnet'
+  arcface_model_name: buffalo_l  # For ArcFace
+  osnet_model_name: osnet_x0_5   # For OSNet
+```
 

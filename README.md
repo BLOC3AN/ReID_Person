@@ -1,9 +1,25 @@
 # Person Re-Identification System
 
-Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tracking, OSNet feature extraction, and Qdrant vector database.
+Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tracking, **ArcFace (InsightFace)** face recognition, and Qdrant vector database.
+
+## 🆕 ArcFace Face Recognition
+
+**NEW**: System now uses **ArcFace (InsightFace)** for face recognition instead of OSNet!
+- ✅ Higher accuracy (similarity 0.85-0.95 vs 0.6-0.8)
+- ✅ More robust to pose/lighting changes
+- ✅ Face-focused detection (512-dim embeddings)
+- ✅ Backward compatible with OSNet
+
+📖 **Documentation**: See [docs/](docs/) for detailed guides
+🔧 **Configuration**: Edit `configs/config.yaml` to switch between ArcFace and OSNet
 
 ## Pipeline
 
+```
+Video → YOLOX MOT17 Detection → ByteTrack Tracking → ArcFace Face Recognition → Qdrant Search → ReID Decision → Output
+```
+
+**Alternative Pipeline** (OSNet):
 ```
 Video → YOLOX MOT17 Detection → ByteTrack Tracking → OSNet Extraction → Qdrant Search → ReID Decision → Output
 ```

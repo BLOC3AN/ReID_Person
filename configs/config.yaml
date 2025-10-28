@@ -17,7 +17,12 @@ tracking:
   min_box_area: 10
   mot20: false
 reid:
-  model_name: osnet_x0_5
+  # Extractor type: 'osnet' or 'arcface'
+  extractor_type: arcface
+  # OSNet settings (legacy)
+  osnet_model_name: osnet_x0_5
+  # ArcFace settings
+  arcface_model_name: buffalo_l  # Options: buffalo_l, buffalo_s, antelopev2
   feature_dim: 512
   input_size:
   - 256

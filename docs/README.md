@@ -7,10 +7,12 @@ Welcome to the Person Re-Identification System documentation.
 ### Getting Started
 - **[Installation Guide](INSTALLATION.md)** - How to install and configure the system
 - **[Usage Examples](USAGE.txt)** - Quick usage examples and commands
+- **[ArcFace Migration](ARCFACE_MIGRATION.md)** - 🆕 ArcFace vs OSNet comparison and migration guide
 
 ### Reference
 - **[API Documentation](API.md)** - Complete API reference with examples
 - **[Troubleshooting](TROUBLESHOOTING.md)** - Common issues and solutions
+- **[ReID Strategy](REID_STRATEGY.md)** - First-3 + Re-verify strategy details
 
 ### Package Information
 - **[Package Manifest](MANIFEST.txt)** - Detailed package structure
@@ -24,7 +26,7 @@ Welcome to the Person Re-Identification System documentation.
 ### 1. Installation Guide (INSTALLATION.md)
 Complete installation instructions including:
 - System requirements
-- Dependency installation
+- Dependency installation (including InsightFace)
 - Qdrant configuration
 - Verification steps
 - Troubleshooting installation issues
@@ -32,30 +34,48 @@ Complete installation instructions including:
 ### 2. Usage Examples (USAGE.txt)
 Quick reference for common tasks:
 - Extracting objects from multi-person videos
-- Registering new persons
+- Registering new persons (with ArcFace)
 - Running detection on videos
 - Understanding output formats
 - Parameter tuning
 - Example workflows
 
-### 3. API Documentation (API.md)
+### 3. ArcFace Migration Guide (ARCFACE_MIGRATION.md) 🆕
+ArcFace vs OSNet comparison:
+- What changed and why
+- Pipeline comparison
+- Configuration options
+- When to use each extractor
+- Migration from OSNet
+- Performance comparison
+
+### 4. API Documentation (API.md)
 Comprehensive API reference:
-- Core modules (Detector, Tracker, Extractor, Database)
+- Core modules (Detector, Tracker, ArcFace/OSNet Extractor, Database)
 - Script interfaces
 - Configuration options
 - Data formats
 - Code examples
 
-### 4. Troubleshooting Guide (TROUBLESHOOTING.md)
+### 5. Troubleshooting Guide (TROUBLESHOOTING.md)
 Solutions for common issues:
-- Low similarity scores
+- Low similarity scores (ArcFace-specific)
+- No face detected in bbox
 - Qdrant connection problems
 - CUDA/GPU issues
 - Detection problems
 - Performance optimization
+- Switching between ArcFace and OSNet
 - Debug mode
 
-### 5. Package Manifest (MANIFEST.txt)
+### 6. ReID Strategy (REID_STRATEGY.md)
+First-3 + Re-verify strategy:
+- Voting mechanism
+- Re-verification logic
+- Performance optimization
+- Accuracy vs speed tradeoff
+
+### 7. Package Manifest (MANIFEST.txt)
 Detailed package structure:
 - Folder hierarchy
 - File descriptions
@@ -63,14 +83,14 @@ Detailed package structure:
 - Registered persons
 - System requirements
 
-### 6. Package Info (PACKAGE_INFO.txt)
+### 8. Package Info (PACKAGE_INFO.txt)
 Package metadata:
 - Version information
 - Contents checklist
 - Quick start guide
 - Important notes
 
-### 7. Final Summary (FINAL_SUMMARY.txt)
+### 9. Final Summary (FINAL_SUMMARY.txt)
 System verification:
 - Package status
 - Configuration verification
@@ -104,7 +124,8 @@ For detailed information on specific topics:
 
 ## Version
 
-- **Version:** 1.0
-- **Date:** 2025-10-27
+- **Version:** 1.1 (ArcFace Migration)
+- **Date:** 2025-10-28
 - **Status:** Production Ready
+- **Feature Extractor:** ArcFace (InsightFace) - Face Recognition
 

@@ -2,6 +2,15 @@
 PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
 ================================================================================
 
+🆕 ARCFACE FACE RECOGNITION
+   System now uses ArcFace (InsightFace) for face recognition instead of OSNet
+   - Higher accuracy: similarity 0.85-0.95 (vs OSNet 0.6-0.8)
+   - Face-focused: Detects face within person bbox
+   - 512-dim embeddings stored in Qdrant
+   - Robust to pose/lighting changes
+
+================================================================================
+
 1. EXTRACT OBJECTS FROM VIDEO (Optional - for multi-person videos)
 
    python scripts/extract_objects.py \
@@ -43,6 +52,8 @@ PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
    - Always use register_mot17.py (NOT register_person.py)
    - Each person must have a unique global-id (1, 2, 3, ...)
    - Use --delete-existing to recreate collection from scratch
+   - System extracts FACE embeddings from person bbox using ArcFace
+   - Video should show clear face for best results
 
 
 3. RUN DETECTION
@@ -108,10 +119,17 @@ PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
 7. TROUBLESHOOTING
 
    Low similarity (< 0.8)?
-   → Re-register using register_mot17.py
+   → Re-register using register_mot17.py with clear face video
+
+   No face detected in bbox?
+   → Ensure video shows clear frontal face
+   → ArcFace needs visible face within person bbox
 
    Qdrant connection failed?
    → Check configs/.env has correct credentials
+
+   Switch to OSNet (if needed)?
+   → Edit configs/config.yaml: extractor_type: osnet
 
 
 ================================================================================

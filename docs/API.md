@@ -111,25 +111,56 @@ tracks = tracker.update(detections, frame_shape)
 
 ### 3. Feature Extractor (`core/feature_extractor.py`)
 
-**Class:** `OSNetExtractor`
+**Class:** `ArcFaceExtractor` (Default - Face Recognition)
+
+```python
+from core.feature_extractor import ArcFaceExtractor
+
+extractor = ArcFaceExtractor(
+    model_name="buffalo_l",  # Options: buffalo_l, buffalo_s, antelopev2
+    use_cuda=True,
+    feature_dim=512
+)
+
+# Extract face embedding from person bbox
+embedding = extractor.extract(frame, bbox=[x, y, w, h])
+# Returns: numpy array (512,) L2-normalized face embedding
+# Process: Crop bbox → Detect face → Extract embedding
+```
+
+**Methods:**
+- `extract(frame, bbox)` - Extract face embedding from bbox [x, y, w, h]
+- `extract_batch(frame, bboxes)` - Extract embeddings from multiple bboxes
+- Returns zero vector if no face detected in bbox
+
+**Class:** `OSNetExtractor` (Legacy - Full Body)
 
 ```python
 from core.feature_extractor import OSNetExtractor
 
 extractor = OSNetExtractor(
     model_name="osnet_x0_5",
-    device="cuda"
+    use_cuda=True,
+    feature_dim=512
 )
 
 # Extract feature from person crop
-feature = extractor.extract(person_crop)
+feature = extractor.extract(frame, bbox=[x, y, w, h])
 # Returns: numpy array (512,) L2-normalized
 ```
 
 **Methods:**
-- `extract(image)` - Extract feature from single image
-- `extract_batch(images)` - Extract features from batch of images
-- `preprocess(image)` - Preprocess image for extraction
+- `extract(frame, bbox)` - Extract feature from bbox [x, y, w, h]
+- `extract_batch(frame, bboxes)` - Extract features from batch of bboxes
+
+**Switching Extractors:**
+Edit `configs/config.yaml`:
+```yaml
+reid:
+  extractor_type: arcface  # or 'osnet'
+  arcface_model_name: buffalo_l
+  feature_dim: 512
+```
 
 ---
 

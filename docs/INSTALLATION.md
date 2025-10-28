@@ -32,6 +32,8 @@ pip install -r requirements.txt
 - loguru >= 0.5.0
 - qdrant-client >= 1.0.0
 - python-dotenv >= 0.19.0
+- insightface >= 0.7.3 (ArcFace face recognition)
+- onnxruntime-gpu >= 1.12.0 (for GPU acceleration)
 
 ### 3. Configure Qdrant
 
@@ -56,7 +58,10 @@ QDRANT_PORT=6333
 python -c "import torch; print(f'PyTorch: {torch.__version__}')"
 python -c "import cv2; print(f'OpenCV: {cv2.__version__}')"
 python -c "from qdrant_client import QdrantClient; print('Qdrant: OK')"
+python -c "from core import ArcFaceExtractor; print('ArcFace: OK')"
 ```
+
+**Note:** First run will download ArcFace model (~282MB) to `~/.insightface/models/buffalo_l/`
 
 ### 5. Check Models
 
