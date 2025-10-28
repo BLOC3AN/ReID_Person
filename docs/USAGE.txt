@@ -18,12 +18,31 @@ PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
 
 2. REGISTER PERSON (First Time)
 
+   # Register first person
    python scripts/register_mot17.py \
      --video data/videos/person.mp4 \
      --name "PersonName" \
+     --global-id 1 \
      --sample-rate 5
 
-   ⚠️  IMPORTANT: Always use register_mot17.py (NOT register_person.py)
+   # Register additional person (add to existing collection)
+   python scripts/register_mot17.py \
+     --video data/videos/person2.mp4 \
+     --name "Person2" \
+     --global-id 2 \
+     --sample-rate 5
+
+   # Delete existing collection and start fresh
+   python scripts/register_mot17.py \
+     --video data/videos/person.mp4 \
+     --name "PersonName" \
+     --global-id 1 \
+     --delete-existing
+
+   ⚠️  IMPORTANT:
+   - Always use register_mot17.py (NOT register_person.py)
+   - Each person must have a unique global-id (1, 2, 3, ...)
+   - Use --delete-existing to recreate collection from scratch
 
 
 3. RUN DETECTION
@@ -57,7 +76,7 @@ PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
    python scripts/extract_objects.py --video data/videos/multi_cam.mp4 --output-dir ./extracted
 
    # Register Khiem from extracted object
-   python scripts/register_mot17.py --video ./extracted/multi_cam/object_1.mp4 --name Khiem
+   python scripts/register_mot17.py --video ./extracted/multi_cam/object_1.mp4 --name Khiem --global-id 1
 
    # Detect in cam2
    python scripts/detect_and_track.py --video data/videos/cam2.mkv --model mot17 --known-person Khiem --threshold 0.8

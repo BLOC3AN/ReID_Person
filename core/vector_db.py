@@ -4,6 +4,7 @@ Persistent storage and similarity search for person embeddings
 """
 
 import os
+import uuid
 import numpy as np
 from collections import deque
 from scipy.spatial.distance import cdist
@@ -41,7 +42,6 @@ class QdrantVectorDB:
         self.max_embeddings = max_embeddings_per_person
         self.embedding_dim = embedding_dim
         self.next_global_id = 1
-        self.next_point_id = 1  # Unique ID for each embedding in Qdrant
 
         # In-memory storage (always available as fallback)
         self.db = {}  # {global_id: deque of embeddings}
@@ -111,9 +111,8 @@ class QdrantVectorDB:
         # Store in Qdrant if available
         if self.client:
             try:
-                # Use unique point_id for each embedding, store global_id in payload
-                point_id = self.next_point_id
-                self.next_point_id += 1
+                # Use UUID for each embedding to avoid conflicts, store global_id in payload
+                point_id = str(uuid.uuid4())
 
                 payload = metadata or {}
                 payload['global_id'] = global_id
@@ -224,8 +223,7 @@ class QdrantVectorDB:
         data = {
             'db': {k: list(v) for k, v in self.db.items()},
             'person_metadata': self.person_metadata,
-            'next_global_id': self.next_global_id,
-            'next_point_id': self.next_point_id
+            'next_global_id': self.next_global_id
         }
         with open(filepath, 'wb') as f:
             pickle.dump(data, f)
@@ -247,9 +245,16 @@ class QdrantVectorDB:
             self.db[k] = deque(v, maxlen=self.max_embeddings)
 
         self.person_metadata = data['person_metadata']
-        self.next_global_id = data['next_global_id']
-        self.next_point_id = data.get('next_point_id', 1)  # Backward compatibility
+
+        # Calculate next_global_id from existing IDs (for auto-detection of new persons)
+        if self.db:
+            max_id = max(self.db.keys())
+            self.next_global_id = max_id + 1
+        else:
+            self.next_global_id = data.get('next_global_id', 1)
+
         logger.info(f"✅ Database loaded from {filepath}")
+        logger.info(f"   Next auto global_id: {self.next_global_id}")
         return True
 
     def clear(self):
@@ -257,7 +262,6 @@ class QdrantVectorDB:
         self.db.clear()
         self.person_metadata.clear()
         self.next_global_id = 1
-        self.next_point_id = 1
 
         if self.client:
             try:

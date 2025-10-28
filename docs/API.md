@@ -147,21 +147,43 @@ result = matcher.match_person(
 ### 1. Register Person (`scripts/register_mot17.py`)
 
 ```bash
+# Register first person
 python scripts/register_mot17.py \
   --video data/videos/person.mp4 \
   --name "PersonName" \
+  --global-id 1 \
   --sample-rate 5
+
+# Register additional person
+python scripts/register_mot17.py \
+  --video data/videos/person2.mp4 \
+  --name "Person2" \
+  --global-id 2
+
+# Delete existing collection and start fresh
+python scripts/register_mot17.py \
+  --video data/videos/person.mp4 \
+  --name "PersonName" \
+  --global-id 1 \
+  --delete-existing
 ```
 
 **Arguments:**
 - `--video` - Path to video containing person
 - `--name` - Person name to register
+- `--global-id` - Unique ID for person (required, e.g., 1, 2, 3)
 - `--sample-rate` - Extract 1 frame every N frames (default: 5)
+- `--delete-existing` - Delete existing collection before registering (optional)
 
 **Output:**
 - Updates `data/database/reid_database.pkl`
 - Syncs to Qdrant cloud
 - Prints person ID and number of embeddings
+
+**Important:**
+- Each person must have a unique `--global-id`
+- Use `--delete-existing` to recreate collection from scratch
+- Without `--delete-existing`, new person is added to existing collection
 
 ---
 

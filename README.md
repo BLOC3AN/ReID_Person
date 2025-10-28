@@ -43,13 +43,31 @@ This will create separate video files for each tracked person in `output_objects
 ### 4. Register Person (IMPORTANT: Use MOT17)
 
 ```bash
+# Register first person
 python scripts/register_mot17.py \
   --video data/videos/person.mp4 \
   --name "PersonName" \
+  --global-id 1 \
   --sample-rate 5
+
+# Register additional person (add to existing collection)
+python scripts/register_mot17.py \
+  --video data/videos/person2.mp4 \
+  --name "Person2" \
+  --global-id 2
+
+# Delete existing collection and start fresh
+python scripts/register_mot17.py \
+  --video data/videos/person.mp4 \
+  --name "PersonName" \
+  --global-id 1 \
+  --delete-existing
 ```
 
-**⚠️ CRITICAL:** Always use `register_mot17.py` (NOT `register_person.py`) to ensure model consistency.
+**⚠️ CRITICAL:**
+- Always use `register_mot17.py` (NOT `register_person.py`) to ensure model consistency
+- Each person must have a unique `--global-id` (1, 2, 3, ...)
+- Use `--delete-existing` to recreate collection from scratch
 
 ### 5. Run Detection
 
@@ -73,7 +91,9 @@ python scripts/detect_and_track.py \
 **register_mot17.py:**
 - `--video`: Video containing person to register
 - `--name`: Person name
+- `--global-id`: Unique ID for person (required, e.g., 1, 2, 3)
 - `--sample-rate`: Extract 1 frame every N frames (default: 5)
+- `--delete-existing`: Delete existing collection before registering
 
 **detect_and_track.py:**
 - `--video`: Input video

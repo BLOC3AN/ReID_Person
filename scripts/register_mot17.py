@@ -15,18 +15,21 @@ from core import YOLOXDetector, OSNetExtractor, QdrantVectorDB
 from qdrant_client.models import Distance, VectorParams
 
 
-def register_person_mot17(video_path: str, person_name: str, sample_rate: int = 5):
+def register_person_mot17(video_path: str, person_name: str, global_id: int, sample_rate: int = 5, delete_existing: bool = False):
     """
     Register a person using MOT17 model
-    
+
     Args:
         video_path: Path to video file containing the person
         person_name: Name of the person to register
+        global_id: Global ID for the person (unique identifier)
         sample_rate: Extract 1 frame every N frames (default: 5)
+        delete_existing: Delete existing collection before registering
     """
-    
+
     logger.info("=" * 80)
     logger.info(f"REGISTERING PERSON: {person_name}")
+    logger.info(f"Global ID: {global_id}")
     logger.info(f"Video: {video_path}")
     logger.info(f"Sample rate: {sample_rate}")
     logger.info("=" * 80)
@@ -107,32 +110,48 @@ def register_person_mot17(video_path: str, person_name: str, sample_rate: int = 
         logger.error("No valid embeddings extracted!")
         return
     
-    # Clear Qdrant collection
-    logger.info("\nClearing Qdrant collection...")
+    # Check if collection exists
+    logger.info("\nChecking Qdrant collection...")
+    collection_exists = False
     try:
-        db.client.delete_collection(db.collection_name)
-        logger.info(f"✅ Deleted old collection: {db.collection_name}")
-    except Exception as e:
-        logger.info(f"No old collection to delete (this is OK for first registration)")
-    
-    # Recreate collection
-    logger.info("Creating new Qdrant collection...")
-    db.client.create_collection(
-        collection_name=db.collection_name,
-        vectors_config=VectorParams(size=512, distance=Distance.COSINE)
-    )
-    logger.info(f"✅ Created collection: {db.collection_name}")
+        db.client.get_collection(db.collection_name)
+        collection_exists = True
+        logger.info(f"Collection '{db.collection_name}' already exists")
+    except Exception:
+        logger.info(f"Collection '{db.collection_name}' does not exist")
+
+    # Delete collection if requested or if it exists
+    if collection_exists:
+        if delete_existing:
+            logger.info(f"Deleting existing collection: {db.collection_name}")
+            db.client.delete_collection(db.collection_name)
+            logger.info(f"✅ Deleted old collection: {db.collection_name}")
+            collection_exists = False
+        else:
+            logger.info(f"⚠️  Collection already exists. Use --delete-existing to recreate it.")
+            logger.info(f"Adding embeddings to existing collection...")
+
+    # Create collection if it doesn't exist
+    if not collection_exists:
+        logger.info("Creating new Qdrant collection...")
+        db.client.create_collection(
+            collection_name=db.collection_name,
+            vectors_config=VectorParams(size=512, distance=Distance.COSINE)
+        )
+        logger.info(f"✅ Created collection: {db.collection_name}")
     
     # Register person
-    logger.info(f"\nRegistering {person_name} to database...")
+    logger.info(f"\nRegistering {person_name} (ID: {global_id}) to database...")
     metadata = {
         'name': person_name,
+        'global_id': global_id,
         'video_path': video_path,
         'num_frames': len(frames),
         'num_embeddings': len(embeddings)
     }
-    
-    global_id = db.create_new_person(embeddings[0], metadata=metadata)
+
+    # Add first embedding with global_id
+    db.add_embedding(global_id, embeddings[0], metadata=metadata)
     
     # Add embeddings (limit to 50 to avoid bloat)
     max_embeddings = min(len(embeddings), 50)
@@ -177,13 +196,25 @@ if __name__ == "__main__":
         help="Name of the person to register"
     )
     parser.add_argument(
+        "--global-id",
+        type=int,
+        required=True,
+        help="Global ID for the person (unique identifier)"
+    )
+    parser.add_argument(
         "--sample-rate",
         type=int,
         default=5,
         help="Extract 1 frame every N frames (default: 5)"
     )
     
-    args = parser.parse_args()
+    parser.add_argument(
+        "--delete-existing",
+        action='store_true',
+        help="Delete existing collection before registering (default: False)"
+    )
     
-    register_person_mot17(args.video, args.name, args.sample_rate)
+    args = parser.parse_args()
+
+    register_person_mot17(args.video, args.name, args.global_id, args.sample_rate, args.delete_existing)
 
