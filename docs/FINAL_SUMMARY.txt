@@ -35,7 +35,7 @@ KEY FEATURES:
 -------------
 ✅ YOLOX MOT17 Detection
 ✅ ByteTrack Multi-Object Tracking
-✅ OSNet Feature Extraction (512-dim)
+✅ ArcFace Face Recognition (512-dim)
 ✅ Qdrant Vector Database (configured)
 ✅ Cosine Similarity Matching
 ✅ Multi-camera Person Re-ID
@@ -75,10 +75,11 @@ This will create: person_reid_system_YYYYMMDD_HHMMSS.tar.gz
 
 IMPORTANT NOTES:
 ----------------
-⚠️  Always use register_mot17.py (NOT register_person.py)
+⚠️  Use register_mot17.py for registration with ArcFace face recognition
 ⚠️  Model consistency is critical (MOT17 for both register and detect)
 ⚠️  Threshold 0.8 = strict, 0.7 = balanced, 0.6 = loose
 ⚠️  Qdrant credentials are already configured
+⚠️  Requires clear face visibility for accurate recognition
 
 SYSTEM VERIFIED:
 ----------------

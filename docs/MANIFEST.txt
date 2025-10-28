@@ -21,14 +21,13 @@ person_reid_system/                    (1.7 GB total)
 │   ├── __init__.py
 │   ├── detector.py                    (YOLOX detector wrapper)
 │   ├── tracker.py                     (ByteTrack wrapper)
-│   ├── feature_extractor.py           (OSNet extractor)
+│   ├── feature_extractor.py           (ArcFace face recognition)
 │   ├── vector_db.py                   (Qdrant database)
 │   └── reid_matcher.py                (ReID matching logic)
 │
 ├── scripts/                           (40 KB - Main scripts)
 │   ├── __init__.py
-│   ├── register_mot17.py              (Register person - USE THIS)
-│   ├── register_person.py             (Old script - DO NOT USE)
+│   ├── register_mot17.py              (Register person with ArcFace)
 │   └── detect_and_track.py            (Main detection pipeline)
 │
 ├── models/                            (1.5 GB - Pretrained models)
@@ -69,10 +68,11 @@ QUICK START:
 
 IMPORTANT NOTES:
 ----------------
-- Always use register_mot17.py (NOT register_person.py)
+- Use register_mot17.py for registration with ArcFace face recognition
 - Model consistency is critical for high similarity scores
 - Qdrant credentials are already configured in configs/.env
 - Database is synced to both local file and Qdrant cloud
+- System requires clear face visibility for accurate recognition
 
 
 SYSTEM REQUIREMENTS:

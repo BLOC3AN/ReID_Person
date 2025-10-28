@@ -25,7 +25,7 @@ python scripts/detect_and_track.py --video data/videos/test.mp4 --model mot17 --
 
 **Why:** ArcFace extracts face embeddings from person bbox. If face is not visible or unclear, similarity will be low.
 
-**Note:** With ArcFace, expected similarity is 0.85-0.95 for good matches (vs OSNet 0.6-0.8)
+**Note:** With ArcFace, expected similarity is 0.85-0.95 for good matches
 
 ---
 

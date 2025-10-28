@@ -365,6 +365,6 @@ match = find_best_match(avg_embedding)
 ## References
 
 - **ByteTrack Paper:** [https://arxiv.org/abs/2110.06864](https://arxiv.org/abs/2110.06864)
-- **OSNet Paper:** [https://arxiv.org/abs/1905.00953](https://arxiv.org/abs/1905.00953)
+- **ArcFace Paper:** [https://arxiv.org/abs/1801.07698](https://arxiv.org/abs/1801.07698)
 - **Qdrant Documentation:** [https://qdrant.tech/documentation/](https://qdrant.tech/documentation/)
 

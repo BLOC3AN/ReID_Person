@@ -28,14 +28,13 @@
 ✅ Core Modules (core/)
    - detector.py          - YOLOX detector
    - tracker.py           - ByteTrack tracker
-   - feature_extractor.py - OSNet extractor
+   - feature_extractor.py - ArcFace face recognition
    - vector_db.py         - Qdrant database
    - reid_matcher.py      - ReID matcher
 
 ✅ Scripts (scripts/)
-   - register_mot17.py    - Register person (USE THIS)
+   - register_mot17.py    - Register person with ArcFace
    - detect_and_track.py  - Detection pipeline
-   - register_person.py   - Old script (deprecated)
 
 ✅ Configuration (configs/)
    - config.yaml          - Main configuration
@@ -88,10 +87,11 @@ This creates: person_reid_system_YYYYMMDD_HHMMSS.tar.gz
 ⚠️  IMPORTANT NOTES
 ================================================================================
 
-✅ Always use register_mot17.py (NOT register_person.py)
+✅ Use register_mot17.py for registration with ArcFace face recognition
 ✅ Model consistency is critical (MOT17 for both register and detect)
 ✅ Qdrant credentials already configured in configs/.env
 ✅ Database synced to local file + Qdrant cloud
+✅ Requires clear face visibility for accurate recognition
 ✅ Threshold: 0.8 = strict, 0.7 = balanced, 0.6 = loose
 
 ================================================================================

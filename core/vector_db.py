@@ -29,7 +29,7 @@ class QdrantVectorDB:
             qdrant_url: Qdrant server URL (auto-load from .env if None)
             collection_name: Collection name (auto-load from .env if None)
             max_embeddings_per_person: Max embeddings to store per person
-            embedding_dim: Embedding dimension (512 for OSNet)
+            embedding_dim: Embedding dimension (512 for ArcFace)
             api_key: Qdrant API key (auto-load from .env if None)
         """
         # Load from .env if not provided

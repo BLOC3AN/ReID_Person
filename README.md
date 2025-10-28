@@ -100,10 +100,10 @@ python scripts/register_mot17.py \
   --delete-existing
 ```
 
-**⚠️ CRITICAL:**
-- Always use `register_mot17.py` (NOT `register_person.py`) to ensure model consistency
+**⚠️ IMPORTANT:**
 - Each person must have a unique `--global-id` (1, 2, 3, ...)
 - Use `--delete-existing` to recreate collection from scratch
+- System uses ArcFace for face recognition (requires clear face visibility)
 
 ### 5. Run Detection
 
