@@ -50,15 +50,35 @@ PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
    python scripts/detect_and_track.py \
      --video data/videos/test.mp4 \
      --model mot17 \
-     --known-person "PersonName" \
      --threshold 0.8
+
+   ℹ️  NOTE:
+   - Person names are automatically retrieved from Qdrant database
+   - All registered persons will be detected and labeled with their names
+   - No need to specify --known-person anymore
+
+   🚀 REID STRATEGY (Optimized for Speed + Accuracy):
+   - First 3 frames: Majority voting from 3 embeddings
+   - Frame 30, 60, 90...: Re-verification (self-correction)
+   - Other frames: Use cached labels (very fast)
+   - Performance: ~19 FPS (5.3x faster than ReID every frame)
 
 
 4. OUTPUT LOCATIONS
 
-   outputs/videos/    - Annotated video with bounding boxes
+   outputs/videos/    - Annotated video with bounding boxes + FPS counter
    outputs/csv/       - Tracking data (frame_id, track_id, bbox, similarity, label)
-   outputs/logs/      - Detailed per-frame logs
+   outputs/logs/      - Detailed per-frame logs (voting, re-verification events)
+
+   📹 VIDEO FEATURES:
+   - Real-time FPS counter (top-left corner)
+   - Frame counter (below FPS)
+   - Person labels with similarity scores
+   - Color-coded boxes: Green=Known, Red=Unknown
+
+   📊 LOG EVENTS:
+   - [VOTING]: First-3 frames majority voting (e.g., "3/3 votes → Duong")
+   - [RE-VERIFY]: Re-verification results (e.g., "Duong → Duong (sim=0.97)")
 
 
 5. PARAMETERS

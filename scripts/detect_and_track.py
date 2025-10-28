@@ -119,14 +119,12 @@ class PersonReIDPipeline:
             self.database.load_from_file(str(db_file))
             logger.info(f"Database loaded: {self.database.get_person_count()} persons")
     
-    def process_video(self, video_path, known_person_name="Khiem",
-                     similarity_threshold=0.8, output_dir=None, max_frames=None):
+    def process_video(self, video_path, similarity_threshold=0.8, output_dir=None, max_frames=None):
         """
         Process video with detection, tracking, and ReID
 
         Args:
             video_path: Path to input video
-            known_person_name: Name of known person to match
             similarity_threshold: Cosine similarity threshold
             output_dir: Output directory for results
             max_frames: Maximum frames to process (None for all)
@@ -134,23 +132,25 @@ class PersonReIDPipeline:
         logger.info("="*80)
         logger.info(f"Processing Video: {video_path}")
         logger.info("="*80)
-        
+
         # Open video
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             logger.error(f"Failed to open video: {video_path}")
             return
-        
+
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
+
+        # Get registered persons from database
+        registered_persons = list(self.database.person_metadata.keys())
         logger.info(f"Video Info:")
         logger.info(f"  Resolution: {width}x{height}")
         logger.info(f"  FPS: {fps}")
         logger.info(f"  Total frames: {total_frames}")
-        logger.info(f"  Known person: {known_person_name}")
+        logger.info(f"  Registered persons: {len(registered_persons)} ({registered_persons})")
         logger.info(f"  Similarity threshold: {similarity_threshold}")
         
         # Setup output
@@ -191,7 +191,14 @@ class PersonReIDPipeline:
         # Processing loop
         frame_id = 0
         track_labels = {}  # Cache labels for each track
-        
+        track_frame_count = {}  # Count frames for each track
+        track_embeddings = {}  # Store first 3 embeddings for voting
+
+        # FPS tracking
+        import time
+        fps_history = []
+        frame_start_time = time.time()
+
         logger.info("="*80)
         logger.info("Starting Processing...")
         logger.info("="*80)
@@ -223,44 +230,104 @@ class PersonReIDPipeline:
             for track in tracks:
                 x1, y1, x2, y2, track_id, conf = track
                 track_id = int(track_id)
-                
+
                 # Convert to xywh
                 x, y, w, h = int(x1), int(y1), int(x2-x1), int(y2-y1)
-                
-                # Extract embedding and match (only once per track)
-                if track_id not in track_labels:
+
+                # Initialize track frame count
+                if track_id not in track_frame_count:
+                    track_frame_count[track_id] = 0
+                    track_embeddings[track_id] = []
+
+                track_frame_count[track_id] += 1
+                current_frame_count = track_frame_count[track_id]
+
+                # Strategy: First-3 frames + Re-verify every 30 frames
+                should_extract = False
+
+                if current_frame_count <= 3:
+                    # First 3 frames: collect embeddings for voting
+                    should_extract = True
+                    reason = f"first-{current_frame_count}"
+                elif current_frame_count % 30 == 0:
+                    # Re-verify every 30 frames (1 second at 30fps)
+                    should_extract = True
+                    reason = "re-verify"
+
+                if should_extract:
                     bbox = [x, y, w, h]
                     embedding = self.extractor.extract(frame, bbox)
-                    
-                    # Find best match
-                    matches = self.database.find_best_match(
-                        embedding, 
-                        threshold=0.0,  # Get best match regardless
-                        top_k=1
-                    )
-                    
-                    if matches:
-                        global_id, similarity = matches[0]
-                        
-                        # Determine label
-                        if similarity >= similarity_threshold and global_id == 1:
-                            label = known_person_name
-                        else:
-                            label = "Unknown"
-                        
-                        track_labels[track_id] = {
-                            'global_id': global_id,
-                            'similarity': similarity,
-                            'label': label
-                        }
-                        
-                        # Detailed log
-                        log_msg = f"  Track {track_id}: bbox=[{x},{y},{w},{h}], " \
-                                 f"similarity={similarity:.4f}, global_id={global_id} → {label}\n"
-                        log_file.write(log_msg)
-                        
-                        if frame_id < 10 or frame_id % 100 == 0:
-                            logger.info(f"  Track {track_id}: {label} (sim={similarity:.4f})")
+
+                    if current_frame_count <= 3:
+                        # Store embedding for voting
+                        track_embeddings[track_id].append(embedding)
+
+                        # After 3rd frame, perform majority voting
+                        if current_frame_count == 3:
+                            # Match all 3 embeddings
+                            votes = {}  # {(global_id, name): count}
+                            similarities = {}  # {(global_id, name): max_similarity}
+
+                            for emb in track_embeddings[track_id]:
+                                matches = self.database.find_best_match(emb, threshold=0.0, top_k=1)
+                                if matches:
+                                    gid, sim, name = matches[0]
+                                    key = (gid, name)
+                                    votes[key] = votes.get(key, 0) + 1
+                                    similarities[key] = max(similarities.get(key, 0), sim)
+
+                            # Get majority vote
+                            if votes:
+                                best_key = max(votes.items(), key=lambda x: (x[1], similarities[x[0]]))[0]
+                                global_id, person_name = best_key
+                                similarity = similarities[best_key]
+
+                                # Determine label
+                                if similarity >= similarity_threshold:
+                                    label = person_name
+                                else:
+                                    label = "Unknown"
+
+                                track_labels[track_id] = {
+                                    'global_id': global_id,
+                                    'similarity': similarity,
+                                    'label': label,
+                                    'person_name': person_name,
+                                    'votes': votes[best_key]
+                                }
+
+                                log_msg = f"  Track {track_id} [VOTING]: {votes[best_key]}/3 votes → " \
+                                         f"{label} (sim={similarity:.4f}, gid={global_id})\n"
+                                log_file.write(log_msg)
+                                logger.info(f"  Track {track_id}: {label} (votes={votes[best_key]}/3, sim={similarity:.4f})")
+
+                    else:
+                        # Re-verification
+                        matches = self.database.find_best_match(embedding, threshold=0.0, top_k=1)
+                        if matches:
+                            global_id, similarity, person_name = matches[0]
+
+                            # Update only if confidence is high or current label is Unknown
+                            old_label = track_labels.get(track_id, {}).get('label', 'Unknown')
+
+                            if similarity >= similarity_threshold:
+                                new_label = person_name
+                            else:
+                                new_label = "Unknown"
+
+                            # Update if changed
+                            if new_label != old_label or similarity >= similarity_threshold:
+                                track_labels[track_id] = {
+                                    'global_id': global_id,
+                                    'similarity': similarity,
+                                    'label': new_label,
+                                    'person_name': person_name
+                                }
+
+                                log_msg = f"  Track {track_id} [RE-VERIFY]: {old_label} → {new_label} " \
+                                         f"(sim={similarity:.4f}, frame={current_frame_count})\n"
+                                log_file.write(log_msg)
+                                logger.info(f"  Track {track_id}: Re-verified {old_label} → {new_label} (sim={similarity:.4f})")
                 
                 # Get cached label
                 info = track_labels.get(track_id, {
@@ -277,23 +344,48 @@ class PersonReIDPipeline:
                 
                 # Draw on frame
                 if self.config['output']['save_video']:
+                    # Use green for known persons, red for unknown
                     color = tuple(self.config['visualization']['color_known']) \
-                           if info['label'] == known_person_name \
+                           if info['label'] != 'Unknown' \
                            else tuple(self.config['visualization']['color_unknown'])
-                    
+
                     thickness = self.config['visualization']['bbox_thickness']
                     cv2.rectangle(frame, (x, y), (x+w, y+h), color, thickness)
-                    
+
                     # Label text
                     label_text = f"{info['label']} (ID:{track_id}, sim:{info['similarity']:.2f})"
                     font_scale = self.config['visualization']['font_scale']
                     cv2.putText(frame, label_text, (x, y-10),
                               cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, 2)
-            
-            # Write frame
+
+            # Calculate FPS
+            frame_end_time = time.time()
+            frame_time = frame_end_time - frame_start_time
+            current_fps = 1.0 / frame_time if frame_time > 0 else 0
+            fps_history.append(current_fps)
+
+            # Keep only last 30 frames for moving average
+            if len(fps_history) > 30:
+                fps_history.pop(0)
+
+            avg_fps = sum(fps_history) / len(fps_history) if fps_history else 0
+
+            # Draw FPS on frame
             if self.config['output']['save_video']:
+                # FPS text (top-left corner)
+                fps_text = f"FPS: {avg_fps:.2f}"
+                cv2.putText(frame, fps_text, (10, 30),
+                          cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+
+                # Frame counter (top-left, below FPS)
+                frame_text = f"Frame: {frame_id}/{total_frames}"
+                cv2.putText(frame, frame_text, (10, 70),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
                 vid_writer.write(frame)
-            
+
+            # Reset timer for next frame
+            frame_start_time = time.time()
             frame_id += 1
         
         # Cleanup
@@ -311,19 +403,23 @@ class PersonReIDPipeline:
         logger.info(f"Detailed log: {output_log}")
         logger.info(f"Total frames processed: {frame_id}")
         logger.info(f"Total tracks: {len(track_labels)}")
+        logger.info(f"Average FPS: {avg_fps:.2f}")
+        logger.info("")
+        logger.info("Track Summary:")
+        for tid, info in sorted(track_labels.items()):
+            votes_info = f" (votes={info['votes']}/3)" if 'votes' in info else ""
+            logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){votes_info}")
         logger.info("="*80)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Person ReID Detection and Tracking")
     parser.add_argument("--video", type=str, required=True, help="Input video path")
-    parser.add_argument("--model", type=str, default="mot17", 
+    parser.add_argument("--model", type=str, default="mot17",
                        choices=['mot17', 'yolox'], help="Detection model")
-    parser.add_argument("--known-person", type=str, default="Khiem", 
-                       help="Known person name")
-    parser.add_argument("--threshold", type=float, default=0.8, 
-                       help="Similarity threshold")
-    parser.add_argument("--output", type=str, default=None, 
+    parser.add_argument("--threshold", type=float, default=0.8,
+                       help="Similarity threshold (0.0-1.0)")
+    parser.add_argument("--output", type=str, default=None,
                        help="Output directory")
     parser.add_argument("--config", type=str, default=None,
                        help="Config file path")
@@ -331,20 +427,19 @@ def main():
                        help="Maximum frames to process (for testing)")
 
     args = parser.parse_args()
-    
+
     # Initialize pipeline
     pipeline = PersonReIDPipeline(config_path=args.config)
-    
+
     # Initialize components
     pipeline.initialize_detector(model_type=args.model)
     pipeline.initialize_tracker()
     pipeline.initialize_extractor()
     pipeline.initialize_database()
-    
+
     # Process video
     pipeline.process_video(
         video_path=args.video,
-        known_person_name=args.known_person,
         similarity_threshold=args.threshold,
         output_dir=args.output,
         max_frames=args.max_frames

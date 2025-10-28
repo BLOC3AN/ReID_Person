@@ -138,7 +138,7 @@ class QdrantVectorDB:
         return avg / (np.linalg.norm(avg) + 1e-8)
     
     def find_best_match(self, embedding: np.ndarray, threshold: float = 0.8,
-                       top_k: int = 1) -> List[Tuple[int, float]]:
+                       top_k: int = 1) -> List[Tuple[int, float, str]]:
         """
         Find best matching persons using cosine similarity
         Args:
@@ -146,7 +146,7 @@ class QdrantVectorDB:
             threshold: Cosine similarity threshold (0-1, default 0.8)
             top_k: Return top K matches
         Returns:
-            List of (global_id, similarity) tuples
+            List of (global_id, similarity, name) tuples
         """
         embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
 
@@ -163,12 +163,13 @@ class QdrantVectorDB:
                     score_threshold=threshold  # Qdrant uses similarity directly
                 )
 
-                # Group by global_id and get best score for each person
+                # Group by global_id and get best score + name for each person
                 best_per_person = {}
                 for r in results:
                     global_id = r.payload.get('global_id', r.id)
+                    name = r.payload.get('name', f'Person_{global_id}')
                     if global_id not in best_per_person or r.score > best_per_person[global_id][1]:
-                        best_per_person[global_id] = (global_id, r.score)
+                        best_per_person[global_id] = (global_id, r.score, name)
 
                 # Return top K persons
                 matches = sorted(best_per_person.values(), key=lambda x: x[1], reverse=True)[:top_k]
@@ -190,7 +191,9 @@ class QdrantVectorDB:
         for idx in top_indices:
             sim = similarities[idx]
             if sim >= threshold:
-                matches.append((global_ids[idx], sim))
+                gid = global_ids[idx]
+                name = self.person_metadata.get(gid, {}).get('name', f'Person_{gid}')
+                matches.append((gid, sim, name))
 
         return matches
     

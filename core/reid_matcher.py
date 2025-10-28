@@ -57,10 +57,10 @@ class ReIDMatcher:
         
         # Try to find match
         matches = self.db.find_best_match(embedding, self.distance_threshold, top_k=1)
-        
+
         if matches:
-            global_id, distance = matches[0]
-            logger.debug(f"Match found: {camera_id}_{track_id} → Global_{global_id} (dist={distance:.4f})")
+            global_id, distance, name = matches[0]
+            logger.debug(f"Match found: {camera_id}_{track_id} → Global_{global_id} ({name}, dist={distance:.4f})")
         else:
             # Create new person
             global_id = self.db.create_new_person(

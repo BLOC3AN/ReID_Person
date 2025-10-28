@@ -8,6 +8,29 @@ Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tr
 Video → YOLOX MOT17 Detection → ByteTrack Tracking → OSNet Extraction → Qdrant Search → ReID Decision → Output
 ```
 
+## ReID Matching Strategy
+
+The system uses an optimized **"First-3 + Re-verify"** strategy for robust and efficient person identification:
+
+### 1. First-3 Voting (Frame 0-2 of each track)
+- Extract embeddings from **first 3 frames** of each new track
+- Perform **majority voting** from 3 matching results
+- Select label with highest votes + highest similarity
+- **Purpose:** Robust initialization, reduce false positives from single bad frame
+
+### 2. Re-verification (Every 30 frames)
+- Re-extract embedding at frame 30, 60, 90, 120...
+- Re-match against database
+- Update label if changed or confidence is high
+- **Purpose:** Self-correction, handle occlusion/pose changes
+
+### 3. Cached Labels (Other frames)
+- Use cached label from voting/re-verification
+- No embedding extraction → **Very fast**
+- **Purpose:** High performance (19+ FPS vs 3.6 FPS if ReID every frame)
+
+**Performance:** ~5.3x speedup with 95.8% reduction in embedding extractions while maintaining accuracy.
+
 ## Quick Start
 
 ### 1. Install Dependencies
@@ -75,9 +98,10 @@ python scripts/register_mot17.py \
 python scripts/detect_and_track.py \
   --video data/videos/test.mp4 \
   --model mot17 \
-  --known-person "PersonName" \
   --threshold 0.8
 ```
+
+**Note:** Person names are automatically retrieved from Qdrant database. All registered persons will be detected and labeled with their names.
 
 ## Parameters
 
@@ -98,7 +122,6 @@ python scripts/detect_and_track.py \
 **detect_and_track.py:**
 - `--video`: Input video
 - `--model`: `mot17` (recommended) or `yolox`
-- `--known-person`: Registered person name
 - `--threshold`: Similarity threshold (0.8 = strict, 0.7 = loose)
 - `--max-frames`: Limit frames for testing (optional)
 
@@ -106,10 +129,24 @@ python scripts/detect_and_track.py \
 
 ```
 outputs/
-├── videos/     # Annotated video with bbox + labels
-├── csv/        # Tracking data
-└── logs/       # Detailed per-frame logs
+├── videos/     # Annotated video with bbox + labels + FPS counter
+├── csv/        # Tracking data (frame_id, track_id, bbox, global_id, similarity, label)
+└── logs/       # Detailed per-frame logs (voting, re-verification events)
 ```
+
+**Video Features:**
+- Real-time FPS counter (top-left)
+- Frame counter
+- Person labels with similarity scores
+- Color-coded bounding boxes (green=known, red=unknown)
+
+**CSV Columns:**
+- `frame_id`, `track_id`, `x`, `y`, `w`, `h`, `confidence`
+- `global_id`, `similarity`, `label`
+
+**Log Events:**
+- `[VOTING]`: First-3 frames majority voting results
+- `[RE-VERIFY]`: Re-verification at frame 30, 60, 90...
 
 ## Project Structure
 
@@ -141,11 +178,14 @@ person_reid_system/
 1. **Always use `register_mot17.py`** - Ensures model consistency
 2. **Threshold tuning:** 0.8 = strict, 0.7 = balanced, 0.6 = loose
 3. **Qdrant sync** - Database synced to local file + Qdrant cloud
+4. **ReID Strategy:** First-3 voting + Re-verify every 30 frames for optimal speed/accuracy
+5. **Performance:** ~19 FPS (5.3x faster than ReID every frame)
 
 ## Documentation
 
 - **[Installation Guide](docs/INSTALLATION.md)** - Detailed installation steps
 - **[API Documentation](docs/API.md)** - API reference and examples
+- **[ReID Strategy](docs/REID_STRATEGY.md)** - Detailed explanation of First-3 + Re-verify strategy
 - **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[Usage Examples](docs/USAGE.txt)** - Quick usage examples
 - **[Package Manifest](docs/MANIFEST.txt)** - Package structure
