@@ -128,8 +128,7 @@ PERSON RE-IDENTIFICATION SYSTEM - QUICK USAGE GUIDE
    Qdrant connection failed?
    → Check configs/.env has correct credentials
 
-   Switch to OSNet (if needed)?
-   → Edit configs/config.yaml: extractor_type: osnet
+
 
 
 ================================================================================

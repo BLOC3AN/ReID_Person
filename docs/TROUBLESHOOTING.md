@@ -364,33 +364,22 @@ DEBUG | core.feature_extractor:extract:231 - No face detected in bbox [473, 184,
 1. Ensure video shows clear face (not back view)
 2. Use videos with frontal or near-frontal face angles
 3. Check if person bbox includes head region
-4. If needed, switch to OSNet for full-body matching:
+4. Re-register with better quality video showing clear faces
+
+### ArcFace Requirements
+
+**System uses ArcFace for face recognition:**
+- Videos must show clear face visibility
+- Camera angles should show frontal or near-frontal faces
+- Higher accuracy (0.85-0.95 similarity)
+- Face-based identification only
+
+**Configuration:**
 ```yaml
 # configs/config.yaml
 reid:
-  extractor_type: osnet  # Instead of arcface
-```
-
-### Switch Between ArcFace and OSNet
-
-**When to use ArcFace:**
-- Videos with clear face visibility
-- Camera angles showing faces
-- Higher accuracy needed (0.85-0.95)
-- Face-based identification preferred
-
-**When to use OSNet:**
-- Videos with back views or side views
-- Full-body tracking needed
-- Face not always visible
-- Lower accuracy acceptable (0.6-0.8)
-
-**How to switch:**
-```yaml
-# configs/config.yaml
-reid:
-  extractor_type: arcface  # or 'osnet'
-  arcface_model_name: buffalo_l  # For ArcFace
-  osnet_model_name: osnet_x0_5   # For OSNet
+  arcface_model_name: buffalo_l  # Options: buffalo_l, buffalo_s, antelopev2
+  feature_dim: 512
+  use_cuda: true
 ```
 

@@ -2,16 +2,16 @@
 
 Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tracking, **ArcFace (InsightFace)** face recognition, and Qdrant vector database.
 
-## 🆕 ArcFace Face Recognition
+## 🎯 ArcFace Face Recognition
 
-**NEW**: System now uses **ArcFace (InsightFace)** for face recognition instead of OSNet!
-- ✅ Higher accuracy (similarity 0.85-0.95 vs 0.6-0.8)
-- ✅ More robust to pose/lighting changes
+System uses **ArcFace (InsightFace)** for high-accuracy face recognition:
+- ✅ High accuracy (similarity 0.85-0.95)
+- ✅ Robust to pose/lighting changes
 - ✅ Face-focused detection (512-dim embeddings)
-- ✅ Backward compatible with OSNet
+- ✅ GPU-accelerated inference
 
 📖 **Documentation**: See [docs/](docs/) for detailed guides
-🔧 **Configuration**: Edit `configs/config.yaml` to switch between ArcFace and OSNet
+🔧 **Configuration**: Edit `configs/config.yaml` for model settings
 
 ## Pipeline
 
@@ -19,10 +19,7 @@ Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tr
 Video → YOLOX MOT17 Detection → ByteTrack Tracking → ArcFace Face Recognition → Qdrant Search → ReID Decision → Output
 ```
 
-**Alternative Pipeline** (OSNet):
-```
-Video → YOLOX MOT17 Detection → ByteTrack Tracking → OSNet Extraction → Qdrant Search → ReID Decision → Output
-```
+
 
 ## ReID Matching Strategy
 
@@ -174,7 +171,7 @@ person_reid_system/
 ├── core/
 │   ├── detector.py          # YOLOX detector
 │   ├── tracker.py           # ByteTrack tracker
-│   ├── feature_extractor.py # OSNet extractor
+│   ├── feature_extractor.py # ArcFace face recognition
 │   └── vector_db.py         # Qdrant database
 ├── scripts/
 │   ├── extract_objects.py   # Extract individual objects from video

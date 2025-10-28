@@ -111,7 +111,7 @@ tracks = tracker.update(detections, frame_shape)
 
 ### 3. Feature Extractor (`core/feature_extractor.py`)
 
-**Class:** `ArcFaceExtractor` (Default - Face Recognition)
+**Class:** `ArcFaceExtractor` (Face Recognition)
 
 ```python
 from core.feature_extractor import ArcFaceExtractor
@@ -133,33 +133,13 @@ embedding = extractor.extract(frame, bbox=[x, y, w, h])
 - `extract_batch(frame, bboxes)` - Extract embeddings from multiple bboxes
 - Returns zero vector if no face detected in bbox
 
-**Class:** `OSNetExtractor` (Legacy - Full Body)
-
-```python
-from core.feature_extractor import OSNetExtractor
-
-extractor = OSNetExtractor(
-    model_name="osnet_x0_5",
-    use_cuda=True,
-    feature_dim=512
-)
-
-# Extract feature from person crop
-feature = extractor.extract(frame, bbox=[x, y, w, h])
-# Returns: numpy array (512,) L2-normalized
-```
-
-**Methods:**
-- `extract(frame, bbox)` - Extract feature from bbox [x, y, w, h]
-- `extract_batch(frame, bboxes)` - Extract features from batch of bboxes
-
-**Switching Extractors:**
+**Configuration:**
 Edit `configs/config.yaml`:
 ```yaml
 reid:
-  extractor_type: arcface  # or 'osnet'
-  arcface_model_name: buffalo_l
+  arcface_model_name: buffalo_l  # Options: buffalo_l, buffalo_s, antelopev2
   feature_dim: 512
+  use_cuda: true
 ```
 
 ---
@@ -336,7 +316,7 @@ tracking:
   match_thresh: 0.8
 
 feature_extraction:
-  model_name: "osnet_x0_5"
+  arcface_model_name: "buffalo_l"
   device: "cuda"
 
 database:
@@ -387,14 +367,14 @@ frame_id,track_id,x,y,w,h,confidence,global_id,similarity,label
 ```python
 from core.detector import YOLOXDetector
 from core.tracker import ByteTracker
-from core.feature_extractor import OSNetExtractor
+from core.feature_extractor import ArcFaceExtractor
 from core.vector_db import VectorDatabase
 from core.reid_matcher import ReIDMatcher
 
 # Initialize components
 detector = YOLOXDetector("models/bytetrack_x_mot17.pth.tar")
 tracker = ByteTracker()
-extractor = OSNetExtractor()
+extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True)
 db = VectorDatabase("data/database/reid_database.pkl")
 matcher = ReIDMatcher(db, extractor, threshold=0.8)
 

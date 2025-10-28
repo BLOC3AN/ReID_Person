@@ -18,7 +18,7 @@ from loguru import logger
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import YOLOXDetector, ByteTrackWrapper, OSNetExtractor, ArcFaceExtractor, QdrantVectorDB
+from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB
 
 
 class PersonReIDPipeline:
@@ -93,24 +93,15 @@ class PersonReIDPipeline:
         )
     
     def initialize_extractor(self):
-        """Initialize feature extractor (ArcFace or OSNet)"""
+        """Initialize ArcFace feature extractor for face recognition"""
         cfg = self.config['reid']
 
-        extractor_type = cfg.get('extractor_type', 'arcface')
-
-        if extractor_type == 'arcface':
-            logger.info("Using ArcFace extractor for face recognition")
-            self.extractor = ArcFaceExtractor(
-                model_name=cfg.get('arcface_model_name', 'buffalo_l'),
-                use_cuda=cfg['use_cuda'],
-                feature_dim=cfg['feature_dim']
-            )
-        else:
-            logger.info("Using OSNet extractor for person ReID")
-            self.extractor = OSNetExtractor(
-                use_cuda=cfg['use_cuda'],
-                feature_dim=cfg['feature_dim']
-            )
+        logger.info("Initializing ArcFace extractor for face recognition")
+        self.extractor = ArcFaceExtractor(
+            model_name=cfg.get('arcface_model_name', 'buffalo_l'),
+            use_cuda=cfg['use_cuda'],
+            feature_dim=cfg['feature_dim']
+        )
     
     def initialize_database(self):
         """Initialize Qdrant vector database"""
