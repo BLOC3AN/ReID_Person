@@ -101,22 +101,21 @@ def extract_objects_from_video(
     # Track objects
     logger.info("\nTracking objects...")
     tracks = defaultdict(list)  # {track_id: [(frame_id, x, y, w, h), ...]}
-    
+
     for frame_id, frame in enumerate(frames):
         # Detect
         detections = detector.detect(frame)
-        
-        # Track
+
+        # Track - returns (M, 6) array: [x1, y1, x2, y2, track_id, conf]
         online_targets = tracker.update(detections, frame.shape[:2])
-        
+
         # Store tracking results
         for track in online_targets:
-            track_id = track.track_id
-            bbox = track.tlbr  # [x1, y1, x2, y2]
-            x1, y1, x2, y2 = bbox
-            x, y, w, h = x1, y1, x2 - x1, y2 - y1
-            tracks[track_id].append((frame_id, int(x), int(y), int(w), int(h)))
-        
+            x1, y1, x2, y2, track_id, conf = track
+            track_id = int(track_id)
+            x, y, w, h = int(x1), int(y1), int(x2 - x1), int(y2 - y1)
+            tracks[track_id].append((frame_id, x, y, w, h))
+
         if (frame_id + 1) % 100 == 0:
             logger.info(f"  Processed {frame_id + 1}/{len(frames)} frames")
     
