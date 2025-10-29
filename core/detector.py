@@ -3,16 +3,10 @@ YOLOX Detector for Person Detection
 Supports both YOLOX-X and ByteTrack MOT17 models
 """
 
-import sys
-import os
 import torch
 import numpy as np
 from pathlib import Path
 from loguru import logger
-
-# Add ByteTrack to path
-BYTETRACK_PATH = Path(__file__).parent.parent.parent / "ByteTrack_Predict"
-sys.path.insert(0, str(BYTETRACK_PATH))
 
 from yolox.data.data_augment import preproc
 from yolox.exp import get_exp
@@ -50,9 +44,9 @@ class YOLOXDetector:
         logger.info(f"  FP16: {self.fp16}")
         logger.info(f"  Conf threshold: {conf_thresh}")
         logger.info(f"  NMS threshold: {nms_thresh}")
-        
+
         # Load experiment config
-        exp_file = BYTETRACK_PATH / "exps/example/mot/yolox_x_mix_det.py"
+        exp_file = Path(__file__).parent.parent / "exps/example/mot/yolox_x_mix_det.py"
         self.exp = get_exp(str(exp_file), None)
         self.exp.test_conf = conf_thresh
         self.exp.nmsthre = nms_thresh

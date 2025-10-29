@@ -223,7 +223,7 @@ data/
 
 .mp4
 
-.mkv
+*.mkv
 
 .avi
 
@@ -231,6 +231,6 @@ data/
 
 .log
 
-.csv
+*.csv
 
-/outputs
+*.mp4

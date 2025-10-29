@@ -173,6 +173,8 @@ person_reid_system/
 │   ├── tracker.py           # ByteTrack tracker
 │   ├── feature_extractor.py # ArcFace face recognition
 │   └── vector_db.py         # Qdrant database
+├── yolox/                   # ByteTrack YOLOX modules (integrated)
+├── exps/                    # YOLOX experiment configs
 ├── scripts/
 │   ├── extract_objects.py   # Extract individual objects from video
 │   ├── register_mot17.py    # Register person (USE THIS)

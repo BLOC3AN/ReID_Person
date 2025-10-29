@@ -3,15 +3,9 @@ ByteTrack Tracker Wrapper
 Multi-object tracking using ByteTrack algorithm
 """
 
-import sys
 import torch
 import numpy as np
-from pathlib import Path
 from loguru import logger
-
-# Add ByteTrack to path
-BYTETRACK_PATH = Path(__file__).parent.parent.parent / "ByteTrack_Predict"
-sys.path.insert(0, str(BYTETRACK_PATH))
 
 from yolox.tracker.byte_tracker import BYTETracker
 
