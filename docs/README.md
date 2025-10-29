@@ -25,10 +25,11 @@ Welcome to the Person Re-Identification System documentation.
 ### 1. Installation Guide (INSTALLATION.md)
 Complete installation instructions including:
 - System requirements
-- Dependency installation (including InsightFace)
+- Dependency installation (including InsightFace and ByteTrack dependencies)
 - Qdrant configuration
 - Verification steps
 - Troubleshooting installation issues
+- Note: ByteTrack is now fully integrated (yolox/ and exps/ directories)
 
 ### 2. Usage Examples (USAGE.txt)
 Quick reference for common tasks:

@@ -25,6 +25,15 @@ person_reid_system/                    (1.7 GB total)
 │   ├── vector_db.py                   (Qdrant database)
 │   └── reid_matcher.py                (ReID matching logic)
 │
+├── yolox/                             (ByteTrack YOLOX modules - INTEGRATED)
+│   ├── data/                          (Data preprocessing)
+│   ├── models/                        (YOLOX model architectures)
+│   ├── tracker/                       (ByteTrack tracker implementation)
+│   └── utils/                         (Utilities)
+│
+├── exps/                              (YOLOX experiment configs)
+│   └── example/mot/                   (MOT17 experiment config)
+│
 ├── scripts/                           (40 KB - Main scripts)
 │   ├── __init__.py
 │   ├── register_mot17.py              (Register person with ArcFace)
@@ -73,6 +82,7 @@ IMPORTANT NOTES:
 - Qdrant credentials are already configured in configs/.env
 - Database is synced to both local file and Qdrant cloud
 - System requires clear face visibility for accurate recognition
+- ByteTrack and YOLOX are now fully integrated (no external dependencies)
 
 
 SYSTEM REQUIREMENTS:

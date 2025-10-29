@@ -34,6 +34,9 @@ pip install -r requirements.txt
 - python-dotenv >= 0.19.0
 - insightface >= 0.7.3 (ArcFace face recognition)
 - onnxruntime-gpu >= 1.12.0 (for GPU acceleration)
+- scikit-image, Pillow, lap, motmetrics, filterpy, cython (ByteTrack dependencies)
+
+**Note:** ByteTrack and YOLOX modules are now integrated into the project (in `yolox/` and `exps/` directories). No external ByteTrack installation required.
 
 ### 3. Configure Qdrant
 

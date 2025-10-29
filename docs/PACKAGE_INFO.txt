@@ -14,6 +14,7 @@ Python Modules: 10 files
 CONTENTS:
 ---------
 ✅ Core modules (detector, tracker, feature extractor, vector database)
+✅ ByteTrack & YOLOX modules (fully integrated - yolox/ and exps/ directories)
 ✅ Scripts (register_mot17.py, detect_and_track.py)
 ✅ Pretrained models (MOT17: 757 MB, YOLOX: 757 MB)
 ✅ Sample data (3 videos: cam1, cam2, cam3)
@@ -53,6 +54,7 @@ IMPORTANT:
 ⚠️  Model consistency is critical for high similarity scores
 ⚠️  Qdrant credentials are already configured
 ⚠️  Requires clear face visibility for accurate recognition
+⚠️  ByteTrack is now integrated - no external ByteTrack installation needed
 
 SUPPORT:
 --------
