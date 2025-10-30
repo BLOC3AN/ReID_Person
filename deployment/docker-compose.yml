@@ -28,8 +28,6 @@ services:
         condition: service_healthy
       detection:
         condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - person_reid_network
     restart: unless-stopped
@@ -62,8 +60,6 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
     env_file:
       - ../configs/.env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - person_reid_network
     restart: unless-stopped
@@ -96,8 +92,6 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
     env_file:
       - ../configs/.env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - person_reid_network
     restart: unless-stopped
@@ -130,8 +124,6 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
     env_file:
       - ../configs/.env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     networks:
       - person_reid_network
     restart: unless-stopped
