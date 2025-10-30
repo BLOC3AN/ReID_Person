@@ -1,5 +1,18 @@
 # API Documentation
 
+## Table of Contents
+
+1. [ReID Matching Strategy](#reid-matching-strategy)
+2. [Core Modules](#core-modules)
+3. [Scripts](#scripts)
+4. [Services API](#services-api)
+5. [Configuration](#configuration)
+6. [Data Formats](#data-formats)
+7. [Examples](#examples)
+8. [Performance Tips](#performance-tips)
+
+---
+
 ## ReID Matching Strategy
 
 The system uses an optimized **"First-3 + Re-verify"** strategy for person re-identification:
@@ -208,6 +221,240 @@ result = matcher.match_person(
 - `match_person(frame, bbox, known_person_id)` - Match person against known ID
 - `identify_person(frame, bbox)` - Identify person from all registered persons
 - `register_person(name, frames, bboxes)` - Register new person
+
+---
+
+## Services API
+
+### Overview
+
+Hệ thống cung cấp 3 RESTful API services cho các operations chính:
+
+1. **Extract Service** (Port 8001) - Extract individual objects from video
+2. **Register Service** (Port 8002) - Register persons to database
+3. **Detection Service** (Port 8003) - Detect and track persons
+
+Tất cả services đều cung cấp OpenAPI documentation tại `/docs` endpoint.
+
+### Extract Service API (Port 8001)
+
+**Base URL:** `http://localhost:8001`
+
+#### POST /extract
+
+Extract individual object videos from multi-person video.
+
+**Request:**
+```bash
+curl -X POST "http://localhost:8001/extract" \
+  -F "video=@input.mp4" \
+  -F "model_type=mot17" \
+  -F "padding=10" \
+  -F "conf_thresh=0.6" \
+  -F "track_thresh=0.5" \
+  -F "min_frames=10"
+```
+
+**Parameters:**
+- `video` (file, required): Video file
+- `model_type` (string): "mot17" or "yolox" (default: "mot17")
+- `padding` (int): Padding pixels (default: 10)
+- `conf_thresh` (float): Detection threshold (default: 0.6)
+- `track_thresh` (float): Tracking threshold (default: 0.5)
+- `min_frames` (int): Minimum frames to save (default: 10)
+
+**Response:**
+```json
+{
+  "job_id": "abc123",
+  "status": "pending",
+  "message": "Extraction job started"
+}
+```
+
+#### GET /status/{job_id}
+
+Check extraction job status.
+
+**Response:**
+```json
+{
+  "job_id": "abc123",
+  "status": "completed",
+  "total_objects": 5,
+  "error": null
+}
+```
+
+#### GET /download/{job_id}/{filename}
+
+Download specific object video.
+
+**Response:** Video file (MP4)
+
+#### GET /download/zip/{job_id}
+
+Download all object videos as ZIP.
+
+**Response:** ZIP file
+
+### Register Service API (Port 8002)
+
+**Base URL:** `http://localhost:8002`
+
+#### POST /register
+
+Register person to vector database.
+
+**Request:**
+```bash
+curl -X POST "http://localhost:8002/register" \
+  -F "video=@person.mp4" \
+  -F "person_name=John" \
+  -F "global_id=1" \
+  -F "sample_rate=5" \
+  -F "delete_existing=false"
+```
+
+**Parameters:**
+- `video` (file, required): Video containing person
+- `person_name` (string, required): Person name
+- `global_id` (int, required): Unique ID (1, 2, 3...)
+- `sample_rate` (int): Extract 1 frame every N frames (default: 5)
+- `delete_existing` (bool): Delete existing collection (default: false)
+
+**Response:**
+```json
+{
+  "job_id": "def456",
+  "status": "pending",
+  "message": "Registration job started for John"
+}
+```
+
+#### GET /status/{job_id}
+
+Check registration job status.
+
+**Response:**
+```json
+{
+  "job_id": "def456",
+  "status": "completed",
+  "person_name": "John",
+  "global_id": 1,
+  "total_embeddings": 45,
+  "error": null
+}
+```
+
+### Detection Service API (Port 8003)
+
+**Base URL:** `http://localhost:8003`
+
+#### POST /detect
+
+Detect and track persons in video.
+
+**Request:**
+```bash
+curl -X POST "http://localhost:8003/detect" \
+  -F "video=@test.mp4"
+```
+
+**Parameters:**
+- `video` (file, required): Video file to process
+
+**Response:**
+```json
+{
+  "job_id": "ghi789",
+  "status": "pending",
+  "message": "Detection job started"
+}
+```
+
+#### GET /status/{job_id}
+
+Check detection job status.
+
+**Response:**
+```json
+{
+  "job_id": "ghi789",
+  "status": "completed",
+  "total_frames": 450,
+  "total_persons": 3,
+  "error": null
+}
+```
+
+#### GET /download/video/{job_id}
+
+Download annotated video with bounding boxes and labels.
+
+**Response:** Annotated MP4 video
+
+#### GET /download/csv/{job_id}
+
+Download tracking data CSV.
+
+**Response:** CSV file with columns:
+- `frame_id`, `track_id`, `x`, `y`, `w`, `h`, `confidence`
+- `global_id`, `similarity`, `label`
+
+#### GET /download/log/{job_id}
+
+Download detailed processing log.
+
+**Response:** Text log file with [VOTING] and [RE-VERIFY] events
+
+### Common Endpoints (All Services)
+
+#### GET /health
+
+Health check endpoint.
+
+**Response:**
+```json
+{
+  "status": "healthy"
+}
+```
+
+#### DELETE /jobs/{job_id}
+
+Delete job and associated files.
+
+**Response:**
+```json
+{
+  "message": "Job deleted successfully"
+}
+```
+
+### Error Responses
+
+**400 Bad Request:**
+```json
+{
+  "detail": "Invalid file format"
+}
+```
+
+**404 Not Found:**
+```json
+{
+  "detail": "Job not found"
+}
+```
+
+**500 Internal Server Error:**
+```json
+{
+  "detail": "Processing failed: CUDA out of memory"
+}
+```
 
 ---
 
