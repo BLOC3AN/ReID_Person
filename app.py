@@ -19,25 +19,25 @@ DETECTION_API_URL = os.getenv("DETECTION_API_URL", "http://localhost:8003")
 # Page config
 st.set_page_config(
     page_title="Person ReID System",
-    page_icon="🎥",
+    page_icon="",
     layout="wide"
 )
 
 # Title
-st.title("🎥 Person Re-Identification System")
+st.title("Person Re-Identification System")
 st.markdown("---")
 
 # Sidebar for navigation
 page = st.sidebar.selectbox(
     "Select Operation",
-    ["📹 Extract Objects", "👤 Register Person", "🔍 Detect & Track", "ℹ️ About"]
+    ["Extract Objects", "Register Person", "Detect & Track", "ℹ️ About"]
 )
 
 # ============================================================================
 # PAGE 1: EXTRACT OBJECTS
 # ============================================================================
-if page == "📹 Extract Objects":
-    st.header("📹 Extract Individual Objects from Video")
+if page == "Extract Objects":
+    st.header("Extract Individual Objects from Video")
     st.markdown("Extract separate videos for each tracked person from multi-person footage")
     
     col1, col2 = st.columns([2, 1])
@@ -168,37 +168,6 @@ if page == "📹 Extract Objects":
             for filename in results['files']:
                 st.text(f"  • {filename}")
 
-            # Preview first object video (if available)
-            if results['files']:
-                st.markdown("---")
-                st.markdown("### 🎬 Preview (First Object)")
-                first_file = results['files'][0]
-
-                try:
-                    # Fetch first object video for preview ONCE and cache
-                    cache_key = f"extract_preview_{job_id}"
-                    if cache_key not in st.session_state:
-                        preview_url = f"{EXTRACT_API_URL}/download/{job_id}/{first_file}"
-                        preview_response = requests.get(preview_url)
-                        if preview_response.status_code == 200:
-                            st.session_state[cache_key] = preview_response.content
-
-                    if cache_key in st.session_state:
-                        # Encode to base64 for inline display
-                        import base64
-                        video_base64 = base64.b64encode(st.session_state[cache_key]).decode()
-
-                        video_html = f"""
-                        <video width="100%" controls>
-                            <source src="data:video/mp4;base64,{video_base64}" type="video/mp4">
-                            Your browser does not support the video tag.
-                        </video>
-                        """
-                        st.markdown(video_html, unsafe_allow_html=True)
-                        st.caption(f"Preview: {first_file}")
-                except Exception as e:
-                    st.warning(f"Could not load preview: {e}")
-
             # Download all as ZIP - CACHE DATA
             st.markdown("---")
             st.markdown("### 📦 Download All Objects as ZIP")
@@ -252,8 +221,8 @@ if page == "📹 Extract Objects":
 # ============================================================================
 # PAGE 2: REGISTER PERSON
 # ============================================================================
-elif page == "👤 Register Person":
-    st.header("👤 Register Person to Database")
+elif page == "Register Person":
+    st.header("Register Person to Database")
     st.markdown("Register a person using face recognition (ArcFace)")
     
     col1, col2 = st.columns([2, 1])
@@ -330,8 +299,8 @@ elif page == "👤 Register Person":
 # ============================================================================
 # PAGE 3: DETECT & TRACK
 # ============================================================================
-elif page == "🔍 Detect & Track":
-    st.header("🔍 Detect & Track Persons")
+elif page == "Detect & Track":
+    st.header("Detect & Track Persons")
     st.markdown("Detect and identify registered persons in video")
     
     col1, col2 = st.columns([2, 1])
