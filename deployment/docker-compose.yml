@@ -14,7 +14,7 @@ services:
       - ../configs:/app/configs
       - ../models:/app/models
     environment:
-      - QDRANT_HOST=host.docker.internal
+      - QDRANT_HOST=qdrant_container
       - QDRANT_PORT=6333
       - EXTRACT_API_URL=http://extract:8001
       - REGISTER_API_URL=http://register:8002
@@ -55,7 +55,7 @@ services:
       - ../configs:/app/configs
       - ../models:/app/models
     environment:
-      - QDRANT_HOST=host.docker.internal
+      - QDRANT_HOST=qdrant_container
       - QDRANT_PORT=6333
       - NVIDIA_VISIBLE_DEVICES=all
     env_file:
@@ -87,7 +87,7 @@ services:
       - ../configs:/app/configs
       - ../models:/app/models
     environment:
-      - QDRANT_HOST=host.docker.internal
+      - QDRANT_HOST=qdrant_container
       - QDRANT_PORT=6333
       - NVIDIA_VISIBLE_DEVICES=all
     env_file:
@@ -119,7 +119,7 @@ services:
       - ../configs:/app/configs
       - ../models:/app/models
     environment:
-      - QDRANT_HOST=host.docker.internal
+      - QDRANT_HOST=qdrant_container
       - QDRANT_PORT=6333
       - NVIDIA_VISIBLE_DEVICES=all
     env_file:
@@ -137,4 +137,4 @@ services:
 
 networks:
   person_reid_network:
-    driver: bridge
+    external: true

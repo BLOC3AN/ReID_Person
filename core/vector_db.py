@@ -68,7 +68,7 @@ class QdrantVectorDB:
             if api_key:
                 self.client = QdrantClient(url=qdrant_url, api_key=api_key)
             else:
-                self.client = QdrantClient(qdrant_url)
+                self.client = QdrantClient(url=qdrant_url)
 
             # Create collection if not exists
             try:
