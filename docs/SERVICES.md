@@ -284,11 +284,19 @@ Upload video và detect registered persons.
 **Request:**
 ```bash
 curl -X POST "http://localhost:8003/detect" \
-  -F "video=@test.mp4"
+  -F "video=@test.mp4" \
+  -F "similarity_threshold=0.8" \
+  -F "model_type=mot17" \
+  -F "conf_thresh=0.5" \
+  -F "track_thresh=0.5"
 ```
 
 **Parameters:**
 - `video` (file, required): Video file để detect
+- `similarity_threshold` (float, optional): Cosine similarity threshold (default: 0.8)
+- `model_type` (string, optional): "mot17" or "yolox" (default: from config)
+- `conf_thresh` (float, optional): Detection confidence 0-1 (default: from config)
+- `track_thresh` (float, optional): Tracking threshold 0-1 (default: from config)
 
 **Response:**
 ```json
@@ -481,15 +489,23 @@ http://localhost:8501
 
 **Features:**
 - Upload test video
+- Configure detection parameters (model, thresholds)
 - Automatic person detection
 - Real-time processing status
 - Download annotated video, CSV, logs
 
+**Parameters:**
+- Model type (mot17/yolox)
+- Similarity threshold (0.5-1.0)
+- Detection confidence (0.1-1.0)
+- Tracking threshold (0.1-1.0)
+
 **Workflow:**
 1. Upload video
-2. Start detection
-3. Monitor progress
-4. Download results (video/CSV/log)
+2. Configure parameters (optional)
+3. Start detection
+4. Monitor progress
+5. Download results (video/CSV/log)
 
 #### 4. About
 
@@ -568,8 +584,10 @@ DETECTION_API_URL = "http://detection:8003"
 
 1. Register persons before detection
 2. Use same model (MOT17) as registration
-3. Check logs for [VOTING] and [RE-VERIFY] events
-4. Adjust threshold based on accuracy needs
+3. Adjust `similarity_threshold` (0.7-0.9) based on accuracy needs
+4. Lower `conf_thresh` (0.3-0.4) for more detections
+5. Lower `track_thresh` (0.3-0.4) for easier tracking
+6. Check logs for [VOTING] and [RE-VERIFY] events
 
 ### UI Service
 

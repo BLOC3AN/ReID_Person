@@ -17,6 +17,8 @@ from typing import Optional, List
 import uuid
 from loguru import logger
 from scripts.detect_and_track import PersonReIDPipeline
+import threading
+import time
 
 app = FastAPI(title="Detection Service", version="1.0.0")
 
@@ -28,6 +30,8 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Job storage
 jobs = {}
+# Progress tracking
+progress_data = {}  # {job_id: {"current_frame": int, "total_frames": int, "tracks": [...]}}
 
 
 class JobStatus(BaseModel):
@@ -40,16 +44,54 @@ class JobStatus(BaseModel):
     error: Optional[str] = None
 
 
+class ProgressStatus(BaseModel):
+    job_id: str
+    status: str
+    current_frame: int = 0
+    total_frames: int = 0
+    progress_percent: float = 0.0
+    tracks: List[dict] = []
+    message: Optional[str] = None
+
+
 def process_detection(job_id: str, video_path: str, output_video: str,
                       output_csv: str, output_log: str, config_path: Optional[str],
-                      similarity_threshold: float = 0.8):
+                      similarity_threshold: float = 0.8, model_type: Optional[str] = None,
+                      conf_thresh: Optional[float] = None, track_thresh: Optional[float] = None):
     """Background task to process detection and tracking"""
     try:
         jobs[job_id]["status"] = "processing"
         logger.info(f"Starting detection job {job_id}")
 
+        # Initialize progress tracking
+        progress_data[job_id] = {
+            "current_frame": 0,
+            "total_frames": 0,
+            "tracks": [],
+            "last_update": time.time()
+        }
+
         # Initialize pipeline
         pipeline = PersonReIDPipeline(config_path=config_path)
+
+        # Override config parameters if provided
+        if model_type is not None:
+            pipeline.config['detection']['model_type'] = model_type
+
+        if conf_thresh is not None:
+            pipeline.config['detection']['conf_threshold'] = conf_thresh
+
+        if track_thresh is not None:
+            pipeline.config['tracking']['track_thresh'] = track_thresh
+
+        # Components will be initialized automatically in process_video()
+
+        # Get total frames from video
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        progress_data[job_id]["total_frames"] = total_frames
 
         # Run detection and tracking with specific output paths
         pipeline.process_video(
@@ -57,7 +99,8 @@ def process_detection(job_id: str, video_path: str, output_video: str,
             similarity_threshold=similarity_threshold,
             output_video_path=output_video,
             output_csv_path=output_csv,
-            output_log_path=output_log
+            output_log_path=output_log,
+            progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks)
         )
 
         jobs[job_id]["status"] = "completed"
@@ -71,6 +114,18 @@ def process_detection(job_id: str, video_path: str, output_video: str,
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
         logger.error(f"Detection job {job_id} failed: {e}")
+    finally:
+        # Cleanup progress data after some time
+        if job_id in progress_data:
+            progress_data[job_id]["cleanup_time"] = time.time()
+
+
+def _update_progress(job_id: str, frame_id: int, tracks: List[dict]):
+    """Update progress data for a job"""
+    if job_id in progress_data:
+        progress_data[job_id]["current_frame"] = frame_id
+        progress_data[job_id]["tracks"] = tracks
+        progress_data[job_id]["last_update"] = time.time()
 
 
 @app.get("/")
@@ -88,7 +143,10 @@ async def detect_and_track(
     background_tasks: BackgroundTasks,
     video: UploadFile = File(...),
     config_path: Optional[str] = Form(None),
-    similarity_threshold: float = Form(0.8)
+    similarity_threshold: float = Form(0.8),
+    model_type: Optional[str] = Form(None),
+    conf_thresh: Optional[float] = Form(None),
+    track_thresh: Optional[float] = Form(None)
 ):
     """
     Detect, track, and re-identify persons in video
@@ -97,6 +155,9 @@ async def detect_and_track(
         video: Video file to process
         config_path: Optional path to custom config file
         similarity_threshold: Cosine similarity threshold for ReID (default: 0.8)
+        model_type: Detection model type - 'mot17' or 'yolox' (default: from config)
+        conf_thresh: Detection confidence threshold 0-1 (default: from config)
+        track_thresh: Tracking confidence threshold 0-1 (default: from config)
 
     Returns:
         Job ID for tracking the detection process
@@ -139,7 +200,10 @@ async def detect_and_track(
             output_csv=output_csv,
             output_log=output_log,
             config_path=config_path,
-            similarity_threshold=similarity_threshold
+            similarity_threshold=similarity_threshold,
+            model_type=model_type,
+            conf_thresh=conf_thresh,
+            track_thresh=track_thresh
         )
         
         return JSONResponse(content={
@@ -158,8 +222,40 @@ async def get_status(job_id: str):
     """Get status of a detection job"""
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     return JobStatus(**jobs[job_id])
+
+
+@app.get("/progress/{job_id}")
+async def get_progress(job_id: str):
+    """Get real-time progress of a detection job"""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job_id not in progress_data:
+        return ProgressStatus(
+            job_id=job_id,
+            status=jobs[job_id]["status"],
+            current_frame=0,
+            total_frames=0,
+            progress_percent=0.0,
+            tracks=[]
+        )
+
+    prog = progress_data[job_id]
+    current_frame = prog.get("current_frame", 0)
+    total_frames = prog.get("total_frames", 0)
+    progress_percent = (current_frame / total_frames * 100) if total_frames > 0 else 0
+
+    return ProgressStatus(
+        job_id=job_id,
+        status=jobs[job_id]["status"],
+        current_frame=current_frame,
+        total_frames=total_frames,
+        progress_percent=progress_percent,
+        tracks=prog.get("tracks", []),
+        message=f"Processing frame {current_frame}/{total_frames}"
+    )
 
 
 @app.get("/download/video/{job_id}")

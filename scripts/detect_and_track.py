@@ -61,15 +61,19 @@ class PersonReIDPipeline:
         
         logger.info(f"Logging to: {log_file}")
     
-    def initialize_detector(self, model_type='mot17'):
+    def initialize_detector(self, model_type=None):
         """Initialize YOLOX detector"""
         cfg = self.config['detection']
-        
+
+        # Use model_type from config if not provided
+        if model_type is None:
+            model_type = cfg.get('model_type', 'mot17')
+
         if model_type == 'mot17':
             model_path = Path(__file__).parent.parent / cfg['model_path_mot17']
         else:
             model_path = Path(__file__).parent.parent / cfg['model_path_yolox']
-        
+
         self.detector = YOLOXDetector(
             model_path=str(model_path),
             model_type=model_type,
@@ -123,7 +127,7 @@ class PersonReIDPipeline:
     
     def process_video(self, video_path, similarity_threshold=0.8, output_dir=None,
                       output_video_path=None, output_csv_path=None, output_log_path=None,
-                      max_frames=None):
+                      max_frames=None, progress_callback=None):
         """
         Process video with detection, tracking, and ReID
 
@@ -132,6 +136,7 @@ class PersonReIDPipeline:
             similarity_threshold: Cosine similarity threshold
             output_dir: Output directory for results (used if specific paths not provided)
             output_video_path: Specific path for output video (optional)
+            progress_callback: Optional callback function(frame_id, tracks) for progress updates
             output_csv_path: Specific path for output CSV (optional)
             output_log_path: Specific path for output log (optional)
             max_frames: Maximum frames to process (None for all)
@@ -414,6 +419,22 @@ class PersonReIDPipeline:
                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
                 vid_writer.write(frame)
+
+            # Call progress callback if provided
+            if progress_callback and frame_id % 5 == 0:  # Update every 5 frames to reduce overhead
+                try:
+                    # Prepare track info for callback
+                    track_info = []
+                    for track_id, info in track_labels.items():
+                        track_info.append({
+                            'track_id': track_id,
+                            'label': info['label'],
+                            'similarity': float(info['similarity']),
+                            'global_id': info['global_id']
+                        })
+                    progress_callback(frame_id, track_info)
+                except Exception as e:
+                    logger.warning(f"Progress callback error: {e}")
 
             # Reset timer for next frame
             frame_start_time = time.time()

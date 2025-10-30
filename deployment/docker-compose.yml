@@ -21,13 +21,6 @@ services:
       - DETECTION_API_URL=http://detection:8003
     env_file:
       - ../configs/.env
-    depends_on:
-      extract:
-        condition: service_healthy
-      register:
-        condition: service_healthy
-      detection:
-        condition: service_healthy
     networks:
       - person_reid_network
     restart: unless-stopped

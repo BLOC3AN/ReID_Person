@@ -359,11 +359,19 @@ Detect and track persons in video.
 **Request:**
 ```bash
 curl -X POST "http://localhost:8003/detect" \
-  -F "video=@test.mp4"
+  -F "video=@test.mp4" \
+  -F "similarity_threshold=0.8" \
+  -F "model_type=mot17" \
+  -F "conf_thresh=0.5" \
+  -F "track_thresh=0.5"
 ```
 
 **Parameters:**
 - `video` (file, required): Video file to process
+- `similarity_threshold` (float, optional): Cosine similarity threshold (default: 0.8)
+- `model_type` (string, optional): "mot17" or "yolox" (default: from config)
+- `conf_thresh` (float, optional): Detection confidence 0-1 (default: from config)
+- `track_thresh` (float, optional): Tracking threshold 0-1 (default: from config)
 
 **Response:**
 ```json

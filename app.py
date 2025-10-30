@@ -8,13 +8,24 @@ import streamlit as st
 import os
 import requests
 import time
+import logging
 from pathlib import Path
 from datetime import datetime
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)-8s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 # API endpoints from environment variables
 EXTRACT_API_URL = os.getenv("EXTRACT_API_URL", "http://localhost:8001")
 REGISTER_API_URL = os.getenv("REGISTER_API_URL", "http://localhost:8002")
 DETECTION_API_URL = os.getenv("DETECTION_API_URL", "http://localhost:8003")
+
+logger.info(f"🚀 Starting Person ReID UI - Extract: {EXTRACT_API_URL}, Register: {REGISTER_API_URL}, Detection: {DETECTION_API_URL}")
 
 # Page config
 st.set_page_config(
@@ -191,7 +202,8 @@ if page == "Extract Objects":
                     data=st.session_state[cache_key],
                     file_name=f"{job_id}_extracted_objects.zip",
                     mime="application/zip",
-                    key=f"download_zip_{job_id}"
+                    key=f"download_zip_{job_id}",
+                    use_container_width=True
                 )
 
             # Download log - CACHE DATA
@@ -215,8 +227,25 @@ if page == "Extract Objects":
                     data=st.session_state[cache_key],
                     file_name=f"{job_id}_extraction.log",
                     mime="text/plain",
-                    key=f"download_log_{job_id}"
+                    key=f"download_log_{job_id}",
+                    use_container_width=True
                 )
+
+            # Button to clear results and browse new video
+            st.markdown("---")
+            if st.button("🔄 Clear Results & Browse New Video", type="secondary", use_container_width=True, key=f"clear_extract_{job_id}"):
+                # Clear all extraction-related session state
+                if 'extract_current_job_id' in st.session_state:
+                    job_id_to_clear = st.session_state['extract_current_job_id']
+                    st.session_state.pop('extract_current_job_id', None)
+                    st.session_state.pop(f"extract_results_{job_id_to_clear}", None)
+                    st.session_state.pop(f"extract_zip_{job_id_to_clear}", None)
+                    st.session_state.pop(f"extract_log_{job_id_to_clear}", None)
+                    # Clear individual file caches
+                    for key in list(st.session_state.keys()):
+                        if key.startswith(f"extract_file_{job_id_to_clear}"):
+                            st.session_state.pop(key, None)
+                st.rerun()
 
 # ============================================================================
 # PAGE 2: REGISTER PERSON
@@ -302,46 +331,145 @@ elif page == "Register Person":
 elif page == "Detect & Track":
     st.header("Detect & Track Persons")
     st.markdown("Detect and identify registered persons in video")
-    
+
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
         video_file = st.file_uploader("Upload Video to Analyze", type=['mp4', 'avi', 'mkv', 'mov'])
-    
+
     with col2:
         st.markdown("### Info")
         st.info("This will detect and track all registered persons in the video")
 
+    # Advanced Parameters
+    with st.expander("⚙️ Advanced Parameters", expanded=False):
+        st.markdown("### Detection & Tracking Parameters")
+
+        col_param1, col_param2 = st.columns(2)
+
+        with col_param1:
+            model_type = st.selectbox(
+                "Model Type",
+                options=["mot17", "yolox"],
+                index=0,
+                help="Detection model: mot17 (recommended) or yolox"
+            )
+
+            similarity_threshold = st.slider(
+                "Similarity Threshold",
+                min_value=0.5,
+                max_value=1.0,
+                value=0.8,
+                step=0.05,
+                help="Cosine similarity threshold for ReID matching (higher = stricter)"
+            )
+
+            conf_thresh = st.slider(
+                "Detection Confidence",
+                min_value=0.1,
+                max_value=1.0,
+                value=0.5,
+                step=0.05,
+                help="Detection confidence threshold (higher = fewer detections)"
+            )
+
+        with col_param2:
+            track_thresh = st.slider(
+                "Tracking Threshold",
+                min_value=0.1,
+                max_value=1.0,
+                value=0.5,
+                step=0.05,
+                help="Tracking confidence threshold (higher = stricter tracking)"
+            )
+
+            st.markdown("**Current Settings:**")
+            st.code(f"""
+Model: {model_type}
+Similarity: {similarity_threshold}
+Detection: {conf_thresh}
+Tracking: {track_thresh}
+            """)
+
     if st.button("🚀 Start Detection", type="primary"):
+        logger.info(f"📌 [Detect & Track] Start Detection button clicked")
         if video_file is None:
+            logger.warning(f"⚠️ [Detect & Track] No video file uploaded")
             st.error("Please upload a video file")
         else:
+            logger.info(f"📹 [Detect & Track] Uploading video: {video_file.name} ({len(video_file.getvalue()) / (1024*1024):.2f} MB)")
+            logger.info(f"⚙️ [Detect & Track] Parameters: model={model_type}, similarity={similarity_threshold}, conf={conf_thresh}, track={track_thresh}")
             with st.spinner("Uploading video and starting detection..."):
                 try:
-                    # Prepare files for API call
+                    # Prepare files and data for API call
                     files = {"video": (video_file.name, video_file.getvalue(), "video/mp4")}
+                    data = {
+                        "similarity_threshold": similarity_threshold,
+                        "model_type": model_type,
+                        "conf_thresh": conf_thresh,
+                        "track_thresh": track_thresh
+                    }
 
                     # Call Detection API
-                    response = requests.post(f"{DETECTION_API_URL}/detect", files=files)
+                    logger.info(f"🔄 [Detect & Track] Calling detection API: {DETECTION_API_URL}/detect")
+                    response = requests.post(f"{DETECTION_API_URL}/detect", files=files, data=data)
 
                     if response.status_code == 200:
                         result = response.json()
                         job_id = result["job_id"]
+                        logger.info(f"✅ [Detect & Track] Detection job created: {job_id}")
+
+                        # Store job_id in session state for display after rerun
+                        st.session_state['detect_current_job_id'] = job_id
 
                         st.info(f"Job ID: {job_id}")
 
-                        # Poll for status
+                        # Create placeholders for real-time updates
                         progress_bar = st.progress(0)
                         status_text = st.empty()
+                        progress_text = st.empty()
+                        tracks_container = st.empty()
 
+                        poll_count = 0
                         while True:
+                            poll_count += 1
+                            # Get progress
+                            try:
+                                progress_response = requests.get(f"{DETECTION_API_URL}/progress/{job_id}")
+                                if progress_response.status_code == 200:
+                                    progress = progress_response.json()
+
+                                    # Update progress bar
+                                    progress_bar.progress(min(progress['progress_percent'] / 100, 0.99))
+
+                                    # Update status text
+                                    status_text.text(f"Status: {progress['status']}")
+
+                                    # Update progress text
+                                    progress_text.text(f"📊 Frame {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+
+                                    if poll_count % 10 == 0:  # Log every 10 polls
+                                        logger.info(f"📊 [Detect & Track] Progress: {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+
+                                    # Display current tracks
+                                    if progress['tracks']:
+                                        tracks_info = "### 🎯 Current Tracks:\n"
+                                        for track in progress['tracks']:
+                                            color = "🟢" if track['label'] != "Unknown" else "🔴"
+                                            tracks_info += f"{color} Track {track['track_id']}: **{track['label']}** (sim: {track['similarity']:.3f})\n"
+                                        tracks_container.markdown(tracks_info)
+                            except Exception as e:
+                                logger.warning(f"⚠️ [Detect & Track] Progress fetch error: {e}")
+                                pass
+
+                            # Get status
                             status_response = requests.get(f"{DETECTION_API_URL}/status/{job_id}")
                             if status_response.status_code == 200:
                                 status = status_response.json()
-                                status_text.text(f"Status: {status['status']}")
 
                                 if status["status"] == "completed":
-                                    progress_bar.progress(100)
+                                    progress_bar.progress(1.0)
+                                    logger.info(f"✅ [Detect & Track] Detection completed: {job_id}")
                                     st.success("✅ Detection complete!")
 
                                     # Fetch results ONCE and cache in session state
@@ -353,126 +481,147 @@ elif page == "Detect & Track":
                                     video_cache_key = f"detect_video_{job_id}"
                                     if video_cache_key not in st.session_state:
                                         try:
+                                            logger.info(f"📥 [Detect & Track] Fetching video: {video_url}")
                                             video_response = requests.get(video_url)
                                             if video_response.status_code == 200:
                                                 st.session_state[video_cache_key] = video_response.content
+                                                logger.info(f"✅ [Detect & Track] Video cached: {len(video_response.content) / (1024*1024):.2f} MB")
                                         except Exception as e:
+                                            logger.error(f"❌ [Detect & Track] Failed to fetch video: {e}")
                                             st.error(f"Failed to fetch video: {e}")
 
                                     # Cache CSV data
                                     csv_cache_key = f"detect_csv_{job_id}"
                                     if csv_cache_key not in st.session_state:
                                         try:
+                                            logger.info(f"📥 [Detect & Track] Fetching CSV: {csv_url}")
                                             csv_response = requests.get(csv_url)
                                             if csv_response.status_code == 200:
                                                 st.session_state[csv_cache_key] = csv_response.content
+                                                logger.info(f"✅ [Detect & Track] CSV cached: {len(csv_response.content) / 1024:.2f} KB")
                                         except Exception as e:
+                                            logger.error(f"❌ [Detect & Track] Failed to fetch CSV: {e}")
                                             st.error(f"Failed to fetch CSV: {e}")
 
                                     # Cache log data
                                     log_cache_key = f"detect_log_{job_id}"
                                     if log_cache_key not in st.session_state:
                                         try:
+                                            logger.info(f"📥 [Detect & Track] Fetching log: {log_url}")
                                             log_response = requests.get(log_url)
                                             if log_response.status_code == 200:
                                                 st.session_state[log_cache_key] = log_response.content
+                                                logger.info(f"✅ [Detect & Track] Log cached: {len(log_response.content) / 1024:.2f} KB")
                                         except Exception as e:
+                                            logger.error(f"❌ [Detect & Track] Failed to fetch log: {e}")
                                             st.error(f"Failed to fetch log: {e}")
-
-                                    # Get cached data
-                                    video_data = st.session_state.get(video_cache_key)
-                                    csv_data = st.session_state.get(csv_cache_key)
-                                    log_data = st.session_state.get(log_cache_key)
-
-                                    # Video Preview
-                                    if video_data:
-                                        st.markdown("### 🎬 Video Preview")
-                                        try:
-                                            # Encode video to base64 for inline display (works with proxy)
-                                            import base64
-
-                                            video_base64 = base64.b64encode(video_data).decode()
-
-                                            # Embed video using HTML5 video tag with base64 data URI
-                                            video_html = f"""
-                                            <video width="100%" controls>
-                                                <source src="data:video/mp4;base64,{video_base64}" type="video/mp4">
-                                                Your browser does not support the video tag.
-                                            </video>
-                                            """
-                                            st.markdown(video_html, unsafe_allow_html=True)
-                                            st.info(f"📹 Video size: {len(video_data) / (1024*1024):.2f} MB")
-                                        except Exception as e:
-                                            st.error(f"Failed to display video: {e}")
-                                            st.info(f"Video size: {len(video_data)} bytes")
-
-                                    # CSV Preview
-                                    if csv_data:
-                                        st.markdown("### 📊 Tracking Data Preview")
-                                        import pandas as pd
-                                        import io
-                                        try:
-                                            df = pd.read_csv(io.BytesIO(csv_data))
-                                            st.dataframe(df.head(100), width="stretch")
-                                            st.info(f"Showing first 100 rows of {len(df)} total detections")
-                                        except Exception as e:
-                                            st.error(f"Failed to parse CSV: {e}")
-
-                                    # Download buttons - USE CACHED DATA
-                                    st.markdown("### 📁 Download Results")
-                                    col1, col2, col3 = st.columns(3)
-
-                                    with col1:
-                                        if video_data:
-                                            st.download_button(
-                                                label="📹 Download Video",
-                                                data=video_data,
-                                                file_name=f"{job_id}_output.mp4",
-                                                mime="video/mp4",
-                                                key=f"download_detect_video_{job_id}"
-                                            )
-                                        else:
-                                            st.warning("Video not available")
-
-                                    with col2:
-                                        if csv_data:
-                                            st.download_button(
-                                                label="📊 Download CSV",
-                                                data=csv_data,
-                                                file_name=f"{job_id}_tracking.csv",
-                                                mime="text/csv",
-                                                key=f"download_detect_csv_{job_id}"
-                                            )
-                                        else:
-                                            st.warning("CSV not available")
-
-                                    with col3:
-                                        if log_data:
-                                            st.download_button(
-                                                label="📄 Download Log",
-                                                data=log_data,
-                                                file_name=f"{job_id}_detection.log",
-                                                mime="text/plain",
-                                                key=f"download_detect_log_{job_id}"
-                                            )
-                                        else:
-                                            st.warning("Log not available")
 
                                     break
 
                                 elif status["status"] == "failed":
+                                    logger.error(f"❌ [Detect & Track] Detection failed: {status.get('error', 'Unknown error')}")
                                     st.error(f"❌ Detection failed: {status.get('error', 'Unknown error')}")
                                     break
 
-                                elif status["status"] == "processing":
-                                    progress_bar.progress(50)
-
-                            time.sleep(2)
+                            time.sleep(1)
                     else:
+                        logger.error(f"❌ [Detect & Track] Failed to start detection: {response.text}")
                         st.error(f"Failed to start detection: {response.text}")
 
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
+
+    # Display results if available (after rerun from download button click)
+    if 'detect_current_job_id' in st.session_state:
+        job_id = st.session_state['detect_current_job_id']
+        logger.info(f"📋 [Detect & Track] Displaying results for job: {job_id}")
+
+        # Get cached data
+        video_cache_key = f"detect_video_{job_id}"
+        csv_cache_key = f"detect_csv_{job_id}"
+        log_cache_key = f"detect_log_{job_id}"
+
+        video_data = st.session_state.get(video_cache_key)
+        csv_data = st.session_state.get(csv_cache_key)
+        log_data = st.session_state.get(log_cache_key)
+
+        logger.info(f"📊 [Detect & Track] Cache status - Video: {bool(video_data)}, CSV: {bool(csv_data)}, Log: {bool(log_data)}")
+
+        # CSV Preview
+        if csv_data:
+            st.markdown("### 📊 Tracking Data Preview")
+            import pandas as pd
+            import io
+            try:
+                logger.info(f"📊 [Detect & Track] Parsing CSV...")
+                df = pd.read_csv(io.BytesIO(csv_data))
+                st.dataframe(df.head(100), width="stretch")
+                st.info(f"Showing first 100 rows of {len(df)} total detections")
+                logger.info(f"✅ [Detect & Track] CSV displayed: {len(df)} rows")
+            except Exception as e:
+                logger.error(f"❌ [Detect & Track] Failed to parse CSV: {e}")
+                st.error(f"Failed to parse CSV: {e}")
+
+        # Download buttons - USE CACHED DATA
+        st.markdown("### 📁 Download Results")
+        
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            if video_data:
+                if st.download_button(
+                    label="📹 Download Video",
+                    data=video_data,
+                    file_name=f"{job_id}_output.mp4",
+                    mime="video/mp4",
+                    key=f"download_detect_video_{job_id}",
+                    use_container_width=True
+                ):
+                    logger.info(f"📥 [Detect & Track] User downloading video: {job_id}_output.mp4 ({len(video_data) / (1024*1024):.2f} MB)")
+            else:
+                st.warning("Video not available")
+
+        with col2:
+            if csv_data:
+                if st.download_button(
+                    label="📊 Download CSV",
+                    data=csv_data,
+                    file_name=f"{job_id}_tracking.csv",
+                    mime="text/csv",
+                    key=f"download_detect_csv_{job_id}",
+                    use_container_width=True
+                ):
+                    logger.info(f"📥 [Detect & Track] User downloading CSV: {job_id}_tracking.csv ({len(csv_data) / 1024:.2f} KB)")
+            else:
+                st.warning("CSV not available")
+
+        with col3:
+            if log_data:
+                if st.download_button(
+                    label="📄 Download Log",
+                    data=log_data,
+                    file_name=f"{job_id}_detection.log",
+                    mime="text/plain",
+                    key=f"download_detect_log_{job_id}",
+                    use_container_width=True
+                ):
+                    logger.info(f"📥 [Detect & Track] User downloading log: {job_id}_detection.log ({len(log_data) / 1024:.2f} KB)")
+            else:
+                st.warning("Log not available")
+
+        # Button to clear results and browse new video
+        st.markdown("---")
+        if st.button("🔄 Clear Results & Browse New Video", type="secondary", use_container_width=True):
+            logger.info(f"🔄 [Detect & Track] User clearing results for job: {job_id}")
+            # Clear all detection-related session state
+            if 'detect_current_job_id' in st.session_state:
+                job_id_to_clear = st.session_state['detect_current_job_id']
+                st.session_state.pop('detect_current_job_id', None)
+                st.session_state.pop(f"detect_video_{job_id_to_clear}", None)
+                st.session_state.pop(f"detect_csv_{job_id_to_clear}", None)
+                st.session_state.pop(f"detect_log_{job_id_to_clear}", None)
+                logger.info(f"✅ [Detect & Track] Results cleared, ready for new video")
+            st.rerun()
 
 # ============================================================================
 # PAGE 4: ABOUT
