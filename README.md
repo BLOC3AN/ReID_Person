@@ -44,9 +44,31 @@ The system uses an optimized **"First-3 + Re-verify"** strategy for robust and e
 
 **Performance:** ~5.3x speedup with 95.8% reduction in embedding extractions while maintaining accuracy.
 
-## Quick Start
+## 🚀 Quick Start
 
-### 1. Install Dependencies
+### Option 1: Web UI (Recommended)
+
+```bash
+# Activate virtual environment
+source ../hai_venv/bin/activate
+
+# Install Streamlit (if not installed)
+pip install streamlit
+
+# Launch UI
+./run_ui.sh
+
+# Or manually
+streamlit run app.py
+```
+
+Then open browser at `http://localhost:8501`
+
+📖 **See [UI_GUIDE.md](UI_GUIDE.md) for detailed UI usage**
+
+### Option 2: Command Line
+
+#### 1. Install Dependencies
 
 ```bash
 pip install -r requirements.txt

@@ -3,16 +3,16 @@
 # Deep Learning
 torch>=1.10.0
 torchvision>=0.11.0
-torchreid>=1.4.0
+torchreid==0.2.5
 
 # Computer Vision
 opencv-python>=4.5.0
-numpy>=1.21.0
+numpy>=1.21.0,<2.0.0  # NumPy 1.x required for ONNX Runtime 1.15.1 compatibility
 scipy>=1.7.0
 
 # Face Recognition (ArcFace)
 insightface>=0.7.3
-onnxruntime-gpu>=1.12.0
+onnxruntime-gpu==1.15.1  # Compatible with CUDA 11.8
 
 # Vector Database
 qdrant-client>=1.0.0
@@ -30,6 +30,19 @@ lap
 motmetrics
 filterpy
 cython
+thop
+pycocotools
+tabulate
+cython_bbox
+
+# Web UI
+streamlit>=1.28.0
+requests>=2.28.0
+
+# API Services
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6
 
 # Optional
 matplotlib>=3.4.0

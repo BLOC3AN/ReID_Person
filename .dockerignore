@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+../hai_venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation (keep only essential)
+*.md
+!README.md
+!QUICKSTART_UI.md
+
+# Logs (will be mounted as volume)
+logs/
+*.log
+
+# Outputs (will be mounted as volume)
+outputs/
+stores/
+
+# Data (will be mounted as volume)
+data/videos/
+data/database/*.pkl
+
+# Models (will be mounted as volume for worker)
+# Keep models in image for faster startup
+# models/
+
+# Deployment files
+deployment/
+.dockerignore
+Dockerfile*
+docker-compose*.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Test files
+test_*.py
+*_test.py
+tests/
+

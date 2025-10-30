@@ -1,0 +1,79 @@
+================================================================================
+PERSON REID SYSTEM - WEB UI FILES
+================================================================================
+
+  ✅ app.py                    - Streamlit web application (main UI)
+  ✅ run_ui.sh                 - Launch script for UI
+  ✅ .streamlit/config.toml    - Streamlit configuration
+
+  ✅ UI_GUIDE.md               - Complete UI usage guide
+  ✅ QUICKSTART_UI.md          - Quick start guide
+
+  ✅ requirements.txt          - Updated with streamlit>=1.28.0
+
+================================================================================
+LAUNCH INSTRUCTIONS
+================================================================================
+
+1. Activate virtual environment:
+   source ../hai_venv/bin/activate
+
+2. Launch UI:
+   ./run_ui.sh
+
+3. Access UI:
+   http://localhost:8501
+
+================================================================================
+UI FEATURES
+================================================================================
+
+ Extract Objects       - Extract individual person videos from multi-person footage
+ Register Person       - Register persons to database using face recognition
+ Detect & Track        - Detect and identify registered persons in videos
+ About                 - System information and workflow guide
+
+================================================================================
+OUTPUT STRUCTURE
+================================================================================
+
+outputs/
+ videos/              # Annotated videos with bounding boxes
+ csv/                 # Tracking data (CSV format)
+ logs/                # Detailed frame-by-frame logs
+ extracted_objects/   # Extracted person videos
+
+================================================================================
+PARAMETERS
+================================================================================
+
+Extract Objects:
+  - Model: mot17 (recommended) or yolox
+  - Min Frames: 10 (minimum frames to save)
+  - Padding: 10px (around bounding box)
+  - Conf Threshold: 0.6 (detection confidence)
+  - Track Threshold: 0.5 (tracking confidence)
+
+Register Person:
+  - Person Name: Unique name for person
+  - Global ID: Unique number (1, 2, 3...)
+  - Sample Rate: 5 (extract 1 frame every N frames)
+  - Delete Existing: false (⚠️ deletes all registered persons)
+
+Detect & Track:
+  - Model: mot17 (recommended) or yolox
+  - Threshold: 0.8 (strict), 0.7 (balanced), 0.6 (loose)
+  - Max Frames: 0 (process all frames)
+
+================================================================================
+NOTES
+================================================================================
+
+ All UI files are self-contained in the project
+ No external dependencies outside requirements.txt
+ Clean and simple interface
+ All parameters configurable via UI
+ Real-time progress feedback
+ Output files automatically organized
+
+================================================================================

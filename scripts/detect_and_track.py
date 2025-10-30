@@ -121,19 +121,41 @@ class PersonReIDPipeline:
             self.database.load_from_file(str(db_file))
             logger.info(f"Database loaded: {self.database.get_person_count()} persons")
     
-    def process_video(self, video_path, similarity_threshold=0.8, output_dir=None, max_frames=None):
+    def process_video(self, video_path, similarity_threshold=0.8, output_dir=None,
+                      output_video_path=None, output_csv_path=None, output_log_path=None,
+                      max_frames=None):
         """
         Process video with detection, tracking, and ReID
 
         Args:
             video_path: Path to input video
             similarity_threshold: Cosine similarity threshold
-            output_dir: Output directory for results
+            output_dir: Output directory for results (used if specific paths not provided)
+            output_video_path: Specific path for output video (optional)
+            output_csv_path: Specific path for output CSV (optional)
+            output_log_path: Specific path for output log (optional)
             max_frames: Maximum frames to process (None for all)
         """
         logger.info("="*80)
         logger.info(f"Processing Video: {video_path}")
         logger.info("="*80)
+
+        # Initialize components if not already initialized
+        if self.detector is None:
+            logger.info("Initializing detector...")
+            self.initialize_detector()
+
+        if self.tracker is None:
+            logger.info("Initializing tracker...")
+            self.initialize_tracker()
+
+        if self.extractor is None:
+            logger.info("Initializing feature extractor...")
+            self.initialize_extractor()
+
+        if self.database is None:
+            logger.info("Initializing database...")
+            self.initialize_database()
 
         # Open video
         cap = cv2.VideoCapture(video_path)
@@ -155,21 +177,28 @@ class PersonReIDPipeline:
         logger.info(f"  Registered persons: {len(registered_persons)} ({registered_persons})")
         logger.info(f"  Similarity threshold: {similarity_threshold}")
         
-        # Setup output
-        if output_dir is None:
-            output_dir = Path(__file__).parent.parent / "outputs"
+        # Setup output paths
+        if output_video_path and output_csv_path and output_log_path:
+            # Use provided paths
+            output_video = Path(output_video_path)
+            output_csv = Path(output_csv_path)
+            output_log = Path(output_log_path)
         else:
-            output_dir = Path(output_dir)
-        
-        output_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Output paths
-        video_name = Path(video_path).stem
-        output_video = output_dir / "videos" / f"{video_name}_{timestamp}.mp4"
-        output_csv = output_dir / "csv" / f"{video_name}_{timestamp}.csv"
-        output_log = output_dir / "logs" / f"{video_name}_{timestamp}.log"
-        
+            # Generate paths from output_dir
+            if output_dir is None:
+                output_dir = Path(__file__).parent.parent / "outputs"
+            else:
+                output_dir = Path(output_dir)
+
+            output_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            video_name = Path(video_path).stem
+            output_video = output_dir / "videos" / f"{video_name}_{timestamp}.mp4"
+            output_csv = output_dir / "csv" / f"{video_name}_{timestamp}.csv"
+            output_log = output_dir / "logs" / f"{video_name}_{timestamp}.log"
+
+        # Create parent directories
         output_video.parent.mkdir(parents=True, exist_ok=True)
         output_csv.parent.mkdir(parents=True, exist_ok=True)
         output_log.parent.mkdir(parents=True, exist_ok=True)

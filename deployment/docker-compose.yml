@@ -1,2 +1,148 @@
-# networks:
-#       - imes_reid # Connects this service to the network below
+services:
+  # UI Service (Streamlit)
+  ui:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.ui
+    container_name: person_reid_ui
+    ports:
+      - "8501:8501"
+    volumes:
+      - ../outputs:/app/outputs
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../configs:/app/configs
+      - ../models:/app/models
+    environment:
+      - QDRANT_HOST=host.docker.internal
+      - QDRANT_PORT=6333
+      - EXTRACT_API_URL=http://extract:8001
+      - REGISTER_API_URL=http://register:8002
+      - DETECTION_API_URL=http://detection:8003
+    env_file:
+      - ../configs/.env
+    depends_on:
+      extract:
+        condition: service_healthy
+      register:
+        condition: service_healthy
+      detection:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - person_reid_network
+    restart: unless-stopped
+    shm_size: '2gb'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Extract Service (GPU Processing)
+  extract:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.extract
+    container_name: person_reid_extract
+    runtime: nvidia
+    ports:
+      - "8001:8001"
+    volumes:
+      - ../outputs:/app/outputs
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../configs:/app/configs
+      - ../models:/app/models
+    environment:
+      - QDRANT_HOST=host.docker.internal
+      - QDRANT_PORT=6333
+      - NVIDIA_VISIBLE_DEVICES=all
+    env_file:
+      - ../configs/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - person_reid_network
+    restart: unless-stopped
+    shm_size: '4gb'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 7s
+      retries: 3
+      start_period: 30s
+
+  # Register Service (GPU Processing)
+  register:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.register
+    container_name: person_reid_register
+    runtime: nvidia
+    ports:
+      - "8002:8002"
+    volumes:
+      - ../outputs:/app/outputs
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../configs:/app/configs
+      - ../models:/app/models
+    environment:
+      - QDRANT_HOST=host.docker.internal
+      - QDRANT_PORT=6333
+      - NVIDIA_VISIBLE_DEVICES=all
+    env_file:
+      - ../configs/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - person_reid_network
+    restart: unless-stopped
+    shm_size: '4gb'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 7s
+      retries: 3
+      start_period: 30s
+
+  # Detection Service (GPU Processing)
+  detection:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.detection
+    container_name: person_reid_detection
+    runtime: nvidia
+    ports:
+      - "8003:8003"
+    volumes:
+      - ../outputs:/app/outputs
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../configs:/app/configs
+      - ../models:/app/models
+    environment:
+      - QDRANT_HOST=host.docker.internal
+      - QDRANT_PORT=6333
+      - NVIDIA_VISIBLE_DEVICES=all
+    env_file:
+      - ../configs/.env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - person_reid_network
+    restart: unless-stopped
+    shm_size: '4gb'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 7s
+      retries: 3
+      start_period: 30s
+
+networks:
+  person_reid_network:
+    driver: bridge
