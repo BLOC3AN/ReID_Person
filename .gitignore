@@ -234,3 +234,6 @@ data/
 *.csv
 
 *.mp4
+
+
+*.json
