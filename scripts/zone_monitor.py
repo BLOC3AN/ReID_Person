@@ -25,81 +25,98 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB
 
 
-def calculate_iou(bbox1, bbox2):
+def calculate_iop(person_bbox, zone_bbox):
     """
-    Calculate Intersection over Union (IOU) between two bboxes
+    Calculate Intersection over Person (IoP)
+
+    IoP = Intersection / Area_Person
+
+    This measures what percentage of the person's bbox is inside the zone.
+    - IoP = 1.0 means person is completely inside zone
+    - IoP = 0.6 means 60% of person's body is inside zone
+    - IoP = 0.0 means person is completely outside zone
+
+    This is better than IOU for zone monitoring because:
+    - Works correctly when zone is much larger than person
+    - Intuitive: "60% of person in zone" = person is in zone
+    - Independent of zone size
+
     Args:
-        bbox1: [x1, y1, x2, y2] or [x, y, w, h] format
-        bbox2: [x1, y1, x2, y2] or [x, y, w, h] format
+        person_bbox: [x1, y1, x2, y2] or [x, y, w, h] format
+        zone_bbox: [x1, y1, x2, y2] or [x, y, w, h] format
     Returns:
-        IOU value (0-1)
+        IoP value (0-1): Percentage of person inside zone
     """
     # Auto-detect format: if x2 <= x1 or y2 <= y1, it's likely xywh
-    # Otherwise, check if w,h values are reasonable (> coordinates)
     def is_xywh_format(bbox):
         x1, y1, x2, y2 = bbox
         # If x2 <= x1 or y2 <= y1, definitely xywh
         if x2 <= x1 or y2 <= y1:
             return True
-        # If x2-x1 and y2-y1 are very large compared to x1,y1, likely xyxy
-        # Otherwise might be xywh with large coordinates
         return False
 
-    # Convert bbox1
-    if is_xywh_format(bbox1):
-        x1_1, y1_1, w1, h1 = bbox1
-        x2_1, y2_1 = x1_1 + w1, y1_1 + h1
+    # Convert person_bbox to xyxy
+    if is_xywh_format(person_bbox):
+        x1_p, y1_p, w_p, h_p = person_bbox
+        x2_p, y2_p = x1_p + w_p, y1_p + h_p
     else:
-        x1_1, y1_1, x2_1, y2_1 = bbox1
+        x1_p, y1_p, x2_p, y2_p = person_bbox
 
-    # Convert bbox2
-    if is_xywh_format(bbox2):
-        x1_2, y1_2, w2, h2 = bbox2
-        x2_2, y2_2 = x1_2 + w2, y1_2 + h2
+    # Convert zone_bbox to xyxy
+    if is_xywh_format(zone_bbox):
+        x1_z, y1_z, w_z, h_z = zone_bbox
+        x2_z, y2_z = x1_z + w_z, y1_z + h_z
     else:
-        x1_2, y1_2, x2_2, y2_2 = bbox2
-    
+        x1_z, y1_z, x2_z, y2_z = zone_bbox
+
     # Calculate intersection
-    x1_i = max(x1_1, x1_2)
-    y1_i = max(y1_1, y1_2)
-    x2_i = min(x2_1, x2_2)
-    y2_i = min(y2_1, y2_2)
-    
+    x1_i = max(x1_p, x1_z)
+    y1_i = max(y1_p, y1_z)
+    x2_i = min(x2_p, x2_z)
+    y2_i = min(y2_p, y2_z)
+
+    # No intersection
     if x2_i < x1_i or y2_i < y1_i:
         return 0.0
-    
+
     intersection = (x2_i - x1_i) * (y2_i - y1_i)
-    
-    # Calculate union
-    area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
-    area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
-    union = area1 + area2 - intersection
-    
-    if union == 0:
+
+    # Calculate person area
+    area_person = (x2_p - x1_p) * (y2_p - y1_p)
+
+    if area_person == 0:
         return 0.0
-    
-    return intersection / union
+
+    # IoP = Intersection / Person Area
+    iop = intersection / area_person
+
+    return iop
 
 
 class ZoneMonitor:
-    """Monitor person presence in working zones using IOU-based overlap"""
-    
-    def __init__(self, zone_config_path, iou_threshold=0.6):
+    """Monitor person presence in working zones using IoP-based overlap"""
+
+    def __init__(self, zone_config_path, iou_threshold=0.6, zone_opacity=0.15):
         """
         Args:
             zone_config_path: Path to zone configuration YAML
-            iou_threshold: IOU threshold for zone overlap (default: 0.6 = 60%)
+            iou_threshold: IoP threshold for zone overlap (default: 0.6 = 60% of person in zone)
+                          Note: Parameter name kept as 'iou_threshold' for backward compatibility,
+                          but it's actually used as IoP (Intersection over Person) threshold
+            zone_opacity: Zone fill opacity (default: 0.15, range: 0.0-1.0)
         """
         self.zones = self._load_zones(zone_config_path)
-        self.iou_threshold = iou_threshold
+        self.iop_threshold = iou_threshold  # Actually IoP threshold
+        self.zone_opacity = zone_opacity
         self.rtree_idx = self._build_rtree()
-        
+
         # State tracking
         self.zone_presence = {}  # {global_id: {...}}
         self.zone_history = []   # Log of all zone events
-        
+
         logger.info(f"✅ ZoneMonitor initialized with {len(self.zones)} zones")
-        logger.info(f"   IOU threshold: {iou_threshold*100:.0f}%")
+        logger.info(f"   IoP threshold: {iou_threshold*100:.0f}% (percentage of person in zone)")
+        logger.info(f"   Zone opacity: {zone_opacity*100:.0f}%")
     
     def _load_zones(self, config_path):
         """Load zone definitions from YAML"""
@@ -135,7 +152,12 @@ class ZoneMonitor:
     
     def find_zone(self, person_bbox):
         """
-        Find which zone contains the person using IOU >= threshold
+        Find which zone contains the person using IoP >= threshold
+
+        IoP (Intersection over Person) measures what percentage of the person
+        is inside the zone. This works correctly even when zone is much larger
+        than person bbox.
+
         Args:
             person_bbox: [x1, y1, x2, y2] or [x, y, w, h]
         Returns:
@@ -147,24 +169,25 @@ class ZoneMonitor:
             person_bbox_xyxy = [x, y, x+w, y+h]
         else:
             person_bbox_xyxy = person_bbox
-        
+
         # R-tree candidates (fast spatial query)
         candidates = list(self.rtree_idx.intersection(person_bbox_xyxy, objects=True))
-        
-        # Find best IOU match
+
+        # Find best IoP match
         best_zone = None
-        best_iou = 0.0
-        
+        best_iop = 0.0
+
         for candidate in candidates:
             zone_id = candidate.object
             zone_bbox = self.zones[zone_id]['bbox']
-            
-            iou = calculate_iou(person_bbox_xyxy, zone_bbox)
-            
-            if iou >= self.iou_threshold and iou > best_iou:
-                best_iou = iou
+
+            # Calculate IoP (Intersection over Person)
+            iop = calculate_iop(person_bbox_xyxy, zone_bbox)
+
+            if iop >= self.iop_threshold and iop > best_iop:
+                best_iop = iop
                 best_zone = zone_id
-        
+
         return best_zone
     
     def update_presence(self, global_id, zone_id, frame_time, person_name):
@@ -184,7 +207,9 @@ class ZoneMonitor:
                 'enter_time': None,
                 'total_duration': 0,
                 'authorized': False,
-                'violations': []
+                'violations': [],
+                'outside_zone_time': 0,  # Time spent outside any zone
+                'outside_zone_start': frame_time  # Start tracking outside time
             }
         
         person = self.zone_presence[global_id]
@@ -194,18 +219,23 @@ class ZoneMonitor:
             # Exit old zone
             if person['current_zone']:
                 duration = frame_time - person['enter_time']
-                self._log_zone_event('exit', global_id, person['current_zone'], 
+                self._log_zone_event('exit', global_id, person['current_zone'],
                                     frame_time, duration)
                 person['total_duration'] = 0  # Reset for new zone
-            
+
             # Enter new zone
             if zone_id:
+                # Update outside zone time before entering
+                if 'outside_zone_start' in person and person['outside_zone_start'] is not None:
+                    person['outside_zone_time'] += frame_time - person['outside_zone_start']
+                    person['outside_zone_start'] = None
+
                 person['current_zone'] = zone_id
                 person['enter_time'] = frame_time
                 person['authorized'] = global_id in self.zones[zone_id]['authorized_ids']
-                
+
                 self._log_zone_event('enter', global_id, zone_id, frame_time, 0)
-                
+
                 # Check authorization
                 if not person['authorized']:
                     violation = {
@@ -218,14 +248,20 @@ class ZoneMonitor:
                     logger.warning(f"⚠️  VIOLATION: {person_name} (ID:{global_id}) "
                                  f"entered unauthorized zone '{self.zones[zone_id]['name']}'")
             else:
-                # Left all zones
+                # Left all zones - start tracking outside time
                 person['current_zone'] = None
                 person['enter_time'] = None
                 person['authorized'] = False
-        
+                person['outside_zone_start'] = frame_time
+
         # Update duration if in zone
         if zone_id and person['enter_time']:
             person['total_duration'] = frame_time - person['enter_time']
+
+        # Update outside zone duration if outside
+        if not zone_id and 'outside_zone_start' in person and person['outside_zone_start'] is not None:
+            current_outside_duration = frame_time - person['outside_zone_start']
+            # Don't accumulate yet, just track current session
     
     def _log_zone_event(self, event_type, global_id, zone_id, time, duration):
         """Log zone entry/exit events"""
@@ -369,28 +405,64 @@ class ZoneMonitor:
         return frame
 
     def draw_zones(self, frame):
-        """Draw zone boundaries on frame"""
+        """Draw zone boundaries on frame with different colors and transparency for overlaps"""
         # Draw ruler first (background layer)
         frame = self.draw_ruler(frame)
 
-        # Draw zones on top
-        for zone_id, zone_data in self.zones.items():
+        # Define distinct colors for zones (BGR format)
+        zone_colors = [
+            (255, 0, 0),      # Blue
+            (0, 255, 0),      # Green
+            (0, 0, 255),      # Red
+            (255, 255, 0),    # Cyan
+            (255, 0, 255),    # Magenta
+            (0, 255, 255),    # Yellow
+            (128, 0, 255),    # Purple
+            (0, 128, 255),    # Orange
+            (255, 128, 0),    # Sky Blue
+            (128, 255, 0),    # Spring Green
+        ]
+
+        # Create overlay for transparent fill
+        overlay = frame.copy()
+
+        # Draw zones with different colors
+        for idx, (zone_id, zone_data) in enumerate(self.zones.items()):
             polygon = zone_data['polygon']
             pts = polygon.reshape((-1, 1, 2)).astype(np.int32)
 
-            # Draw polygon
-            cv2.polylines(frame, [pts], isClosed=True, color=(255, 255, 0), thickness=2)
+            # Get color for this zone (cycle through colors if more than 10 zones)
+            color = zone_colors[idx % len(zone_colors)]
 
-            # Draw zone name
+            # Fill polygon with transparency (for overlap visibility)
+            cv2.fillPoly(overlay, [pts], color)
+
+            # Draw polygon border (thicker, opaque)
+            cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=3)
+
+            # Draw zone name with background
             x, y = polygon[0]
-            cv2.putText(frame, zone_data['name'], (int(x), int(y)-10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            zone_name = zone_data['name']
+            text_size = cv2.getTextSize(zone_name, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+
+            # Background rectangle for text
+            cv2.rectangle(frame,
+                         (int(x), int(y)-text_size[1]-15),
+                         (int(x)+text_size[0]+10, int(y)-5),
+                         color, -1)
+
+            # Text in white
+            cv2.putText(frame, zone_name, (int(x)+5, int(y)-10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # Blend overlay with original frame (use configurable opacity)
+        cv2.addWeighted(overlay, self.zone_opacity, frame, 1.0 - self.zone_opacity, 0, frame)
 
         return frame
 
 
 def process_video_with_zones(video_path, zone_config_path, reid_config_path=None,
-                             similarity_threshold=0.8, iou_threshold=0.6,
+                             similarity_threshold=0.8, iou_threshold=0.6, zone_opacity=0.15,
                              output_dir=None, max_frames=None,
                              output_video_path=None, output_csv_path=None, output_json_path=None,
                              progress_callback=None):
@@ -402,7 +474,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
         zone_config_path: Path to zone configuration YAML
         reid_config_path: Path to ReID config (default: configs/config.yaml)
         similarity_threshold: ReID similarity threshold
-        iou_threshold: Zone IOU threshold (default: 0.6 = 60%)
+        iou_threshold: Zone IoP threshold (default: 0.6 = 60% of person in zone)
+                      Note: Parameter name is 'iou_threshold' for backward compatibility,
+                      but it's actually IoP (Intersection over Person) threshold.
+                      IoP = 0.6 means 60% of person's body is inside the zone.
+        zone_opacity: Zone fill opacity (default: 0.15 = 15%)
         output_dir: Output directory for results (used if specific paths not provided)
         max_frames: Maximum frames to process
         output_video_path: Specific path for output video (optional)
@@ -424,7 +500,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     pipeline.initialize_database()
 
     # Initialize zone monitor
-    zone_monitor = ZoneMonitor(zone_config_path, iou_threshold)
+    zone_monitor = ZoneMonitor(zone_config_path, iou_threshold, zone_opacity)
 
     # Setup output paths
     if output_video_path and output_csv_path and output_json_path:
@@ -606,10 +682,17 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             authorized = False
             duration = 0.0
 
+            # Get person data for time tracking
+            outside_time = 0.0
             if info['global_id'] > 0 and info['global_id'] in zone_monitor.zone_presence:
                 person_data = zone_monitor.zone_presence[info['global_id']]
                 authorized = person_data.get('authorized', False)
                 duration = person_data.get('total_duration', 0.0)
+                outside_time = person_data.get('outside_zone_time', 0.0)
+
+                # Add current outside session if currently outside
+                if not zone_id and person_data.get('outside_zone_start'):
+                    outside_time += frame_time - person_data['outside_zone_start']
 
             # Write to CSV
             csv_writer.writerow([
@@ -619,23 +702,28 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             ])
 
             # Draw on frame
-            # Color: Green=authorized, Red=unauthorized, Gray=unknown
-            if info['label'] == 'Unknown':
-                color = (128, 128, 128)  # Gray
-            elif authorized:
-                color = (0, 255, 0)  # Green
+            # Color: Green=in zone, Red=outside zone
+            if zone_id:
+                color = (0, 255, 0)  # Green - in zone
             else:
-                color = (0, 0, 255)  # Red
+                color = (0, 0, 255)  # Red - outside zone
 
             cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
 
-            # Label
+            # Build label with time information
             label_text = f"{info['label']} (ID:{track_id})"
-            if zone_id:
-                label_text += f" | {zone_name}"
 
-            cv2.putText(frame, label_text, (x, y-10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            # Add zone info and time
+            if zone_id:
+                label_text += f" | {zone_name} ({duration:.1f}s)"
+            else:
+                label_text += f" | Outside ({outside_time:.1f}s)"
+
+            # Draw label background for better visibility
+            text_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+            cv2.rectangle(frame, (x, y-text_size[1]-10), (x+text_size[0], y), color, -1)
+            cv2.putText(frame, label_text, (x, y-5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
         # Draw zones
         frame = zone_monitor.draw_zones(frame)

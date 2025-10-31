@@ -70,7 +70,8 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                       output_csv: str, output_log: str, config_path: Optional[str],
                       similarity_threshold: float = 0.8, model_type: Optional[str] = None,
                       conf_thresh: Optional[float] = None, track_thresh: Optional[float] = None,
-                      zone_config_path: Optional[str] = None, iou_threshold: float = 0.6):
+                      zone_config_path: Optional[str] = None, iou_threshold: float = 0.6,
+                      zone_opacity: float = 0.15):
     """Background task to process detection and tracking with optional zone monitoring"""
     try:
         jobs[job_id]["status"] = "processing"
@@ -109,6 +110,7 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                 reid_config_path=config_path,
                 similarity_threshold=similarity_threshold,
                 iou_threshold=iou_threshold,
+                zone_opacity=zone_opacity,
                 output_video_path=output_video,
                 output_csv_path=output_csv,
                 output_json_path=output_json,
@@ -116,6 +118,26 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                 progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks)
             )
 
+            # Create a simple log file for zone monitoring
+            # (zone_monitor uses loguru which outputs to console, not file)
+            with open(output_log, 'w') as f:
+                f.write(f"Zone Monitoring Detection Log\n")
+                f.write(f"Job ID: {job_id}\n")
+                f.write(f"Video: {video_path}\n")
+                f.write(f"Zone Config: {zone_config_path}\n")
+                f.write(f"IoP Threshold: {iou_threshold}\n")
+                f.write(f"Similarity Threshold: {similarity_threshold}\n")
+                f.write(f"\nOutputs:\n")
+                f.write(f"  Video: {output_video}\n")
+                f.write(f"  CSV: {output_csv}\n")
+                f.write(f"  JSON Report: {output_json}\n")
+                f.write(f"\nStatus: Completed\n")
+                f.write(f"\nNote: Detailed logs are in the JSON report.\n")
+
+            # Update job outputs
+            jobs[job_id]["output_video"] = output_video
+            jobs[job_id]["output_csv"] = output_csv
+            jobs[job_id]["output_log"] = output_log
             jobs[job_id]["output_json"] = output_json
 
         else:
@@ -199,7 +221,8 @@ async def detect_and_track(
     conf_thresh: Optional[float] = Form(None),
     track_thresh: Optional[float] = Form(None),
     zone_config: Optional[UploadFile] = File(None),
-    iou_threshold: float = Form(0.6)
+    iou_threshold: float = Form(0.6),
+    zone_opacity: float = Form(0.15)
 ):
     """
     Detect, track, and re-identify persons in video with optional zone monitoring
@@ -212,7 +235,8 @@ async def detect_and_track(
         conf_thresh: Detection confidence threshold 0-1 (default: from config)
         track_thresh: Tracking confidence threshold 0-1 (default: from config)
         zone_config: Optional zone configuration YAML file
-        iou_threshold: Zone IOU threshold 0-1 (default: 0.6 = 60%)
+        iou_threshold: Zone IoP threshold 0-1 (default: 0.6 = 60%)
+        zone_opacity: Zone fill opacity 0-1 (default: 0.15 = 15%)
 
     Returns:
         Job ID for tracking the detection process
@@ -272,7 +296,8 @@ async def detect_and_track(
             conf_thresh=conf_thresh,
             track_thresh=track_thresh,
             zone_config_path=str(zone_config_path) if zone_config_path else None,
-            iou_threshold=iou_threshold
+            iou_threshold=iou_threshold,
+            zone_opacity=zone_opacity
         )
         
         return JSONResponse(content={

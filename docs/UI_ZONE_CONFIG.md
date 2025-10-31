@@ -118,15 +118,22 @@ zones:
 
 Click **"💾 Download Zone Config"** để lưu file `zones.yaml` cho lần sau.
 
-### Bước 5: Điều chỉnh IOU Threshold
+### Bước 5: Điều chỉnh IoP Threshold
 
 ```
-Zone IOU Threshold: 0.6 (60%)
+Zone IoP Threshold: 0.6 (60% of person in zone)
 ```
 
-- **0.5 (50%)**: Loose - Dễ detect, có thể có false positive
-- **0.6 (60%)**: Recommended - Cân bằng ✅
-- **0.7 (70%)**: Strict - Chính xác cao, có thể miss người ở biên
+**IoP (Intersection over Person)** = % diện tích cơ thể người nằm trong zone
+
+- **0.5 (50%)**: Loose - Nửa cơ thể trong zone là được
+- **0.6 (60%)**: Recommended - 60% cơ thể trong zone ✅
+- **0.7 (70%)**: Strict - 70% cơ thể trong zone (chính xác cao)
+
+**Ưu điểm IoP:**
+- ✅ Hoạt động chính xác khi zone lớn hơn person
+- ✅ Dễ hiểu: "60% cơ thể trong zone" = trong zone
+- ✅ Không phụ thuộc kích thước zone
 
 ### Bước 6: Start Detection
 

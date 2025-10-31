@@ -4,6 +4,34 @@
 
 Zone Monitoring cho phép theo dõi người làm việc trong các khu vực được định nghĩa trước, kết hợp với Person ReID để xác định danh tính.
 
+### Tính năng chính
+
+- ✅ **IoP-based zone detection**: Tính % diện tích person nằm trong zone (Intersection over Person)
+- ✅ **R-tree spatial indexing**: O(log n) performance cho zone lookup
+- ✅ **Authorization checking**: Mỗi zone có danh sách authorized IDs
+- ✅ **Time tracking**: Tính thời gian presence trong mỗi zone
+- ✅ **Violation detection**: Phát hiện unauthorized entries
+
+### 📐 IoP vs IOU
+
+**IoP (Intersection over Person)** - Phương pháp hiện tại ⭐:
+```
+IoP = Intersection / Area_Person
+```
+- ✅ Đo % diện tích person nằm trong zone
+- ✅ Hoạt động chính xác khi zone lớn hơn person nhiều
+- ✅ Dễ hiểu: "60% cơ thể trong zone" = trong zone
+- ✅ Không phụ thuộc kích thước zone
+
+**Ví dụ:**
+```
+Zone: 1000x1000 pixels (1,000,000 px²)
+Person: 50x100 pixels (5,000 px²) - hoàn toàn trong zone
+
+IOU (cũ) = 5,000 / 1,000,000 = 0.5% ❌ (không detect!)
+IoP (mới) = 5,000 / 5,000 = 100% ✅ (detect chính xác!)
+```
+
 ## 📊 Pipeline hoàn chỉnh
 
 ```
@@ -15,7 +43,7 @@ Video Input
     ↓
 [ArcFace + Qdrant] → ReID matching → Global ID
     ↓
-[Zone Monitor] → IOU-based zone detection
+[Zone Monitor] → IoP-based zone detection (% person in zone)
     ↓
 Output: Video (zones drawn) + CSV + JSON report
 ```
@@ -35,7 +63,7 @@ Output: Video (zones drawn) + CSV + JSON report
    - **Authorized IDs**: `1,2` (comma-separated)
    - **Polygon Points**: `100,100; 400,100; 400,300; 100,300`
 8. Preview YAML và download nếu muốn lưu
-9. Điều chỉnh **IOU Threshold** (mặc định: 0.6 = 60%)
+9. Điều chỉnh **IoP Threshold** (mặc định: 0.6 = 60% cơ thể trong zone)
 10. Click **"🚀 Start Detection"**
 
 **Ví dụ cấu hình:**
@@ -82,7 +110,7 @@ zones:
    - Mở **"🗺️ Zone Monitoring (Optional)"**
    - Chọn **"Upload YAML File"**
    - Upload file `zones.yaml`
-   - Điều chỉnh **IOU Threshold**
+   - Điều chỉnh **IoP Threshold** (0.6 = 60% cơ thể trong zone)
    - Click **"🚀 Start Detection"**
 
 ### Kết quả
@@ -128,11 +156,18 @@ frame_id,track_id,global_id,person_name,similarity,x,y,w,h,zone_id,zone_name,aut
 
 ## ⚙️ Tham số
 
-### IOU Threshold
+### IoP Threshold (Intersection over Person)
 
-- **0.5 (50%)**: Loose - Dễ detect nhưng có thể false positive
-- **0.6 (60%)**: Recommended - Cân bằng
-- **0.7 (70%)**: Strict - Chính xác nhưng có thể miss người ở biên
+**Ý nghĩa:** % diện tích cơ thể người nằm trong zone
+
+- **0.5 (50%)**: Loose - Nửa cơ thể trong zone là được
+- **0.6 (60%)**: Recommended ⭐ - 60% cơ thể trong zone
+- **0.7 (70%)**: Strict - 70% cơ thể trong zone (chính xác cao)
+
+**Lưu ý:**
+- IoP = 1.0 (100%) = Người hoàn toàn nằm trong zone
+- IoP = 0.6 (60%) = 60% cơ thể trong zone, 40% ngoài zone
+- Không phụ thuộc kích thước zone (khác với IOU cũ)
 
 ### Similarity Threshold
 

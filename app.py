@@ -482,16 +482,30 @@ elif page == "Detect & Track":
                         mime="application/x-yaml"
                     )
 
-        # IOU Threshold (common for both methods)
+        # IoP Threshold (common for both methods)
         st.markdown("---")
-        iou_threshold = st.slider(
-            "Zone IOU Threshold",
-            min_value=0.3,
-            max_value=0.9,
-            value=0.6,
-            step=0.05,
-            help="Minimum overlap (IOU) to consider person in zone (60% recommended)"
-        )
+
+        col_zone1, col_zone2 = st.columns(2)
+
+        with col_zone1:
+            iou_threshold = st.slider(
+                "Zone IoP Threshold",
+                min_value=0.3,
+                max_value=0.9,
+                value=0.6,
+                step=0.05,
+                help="Percentage of person's body in zone (IoP) to detect. 60% recommended. Higher values (0.75-0.8) reduce false positives in overlapping zones."
+            )
+
+        with col_zone2:
+            zone_opacity = st.slider(
+                "Zone Opacity",
+                min_value=0.05,
+                max_value=0.5,
+                value=0.15,
+                step=0.05,
+                help="Transparency of zone fill (lower = more transparent). 15% recommended for better visibility."
+            )
 
     # Advanced Parameters
     with st.expander("⚙️ Advanced Parameters", expanded=False):
@@ -542,7 +556,8 @@ Similarity: {similarity_threshold}
 Detection: {conf_thresh}
 Tracking: {track_thresh}
 Zone Monitoring: {'Enabled' if zone_config_file else 'Disabled'}
-IOU Threshold: {iou_threshold}
+IoP Threshold: {iou_threshold} ({iou_threshold*100:.0f}% of person in zone)
+Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
             """)
 
     if st.button("🚀 Start Detection", type="primary"):
@@ -581,7 +596,8 @@ IOU Threshold: {iou_threshold}
                         "model_type": model_type,
                         "conf_thresh": conf_thresh,
                         "track_thresh": track_thresh,
-                        "iou_threshold": iou_threshold
+                        "iou_threshold": iou_threshold,
+                        "zone_opacity": zone_opacity
                     }
 
                     # Call Detection API
@@ -649,7 +665,6 @@ IOU Threshold: {iou_threshold}
                                     # Fetch results ONCE and cache in session state
                                     video_url = f"{DETECTION_API_URL}/download/video/{job_id}"
                                     csv_url = f"{DETECTION_API_URL}/download/csv/{job_id}"
-                                    log_url = f"{DETECTION_API_URL}/download/log/{job_id}"
 
                                     # Cache video data
                                     video_cache_key = f"detect_video_{job_id}"
@@ -676,19 +691,6 @@ IOU Threshold: {iou_threshold}
                                         except Exception as e:
                                             logger.error(f"❌ [Detect & Track] Failed to fetch CSV: {e}")
                                             st.error(f"Failed to fetch CSV: {e}")
-
-                                    # Cache log data
-                                    log_cache_key = f"detect_log_{job_id}"
-                                    if log_cache_key not in st.session_state:
-                                        try:
-                                            logger.info(f"📥 [Detect & Track] Fetching log: {log_url}")
-                                            log_response = requests.get(log_url)
-                                            if log_response.status_code == 200:
-                                                st.session_state[log_cache_key] = log_response.content
-                                                logger.info(f"✅ [Detect & Track] Log cached: {len(log_response.content) / 1024:.2f} KB")
-                                        except Exception as e:
-                                            logger.error(f"❌ [Detect & Track] Failed to fetch log: {e}")
-                                            st.error(f"Failed to fetch log: {e}")
 
                                     # Cache zone JSON if zone monitoring was enabled
                                     if status.get("zone_monitoring", False):
@@ -724,18 +726,16 @@ IOU Threshold: {iou_threshold}
         job_id = st.session_state['detect_current_job_id']
         logger.info(f"📋 [Detect & Track] Displaying results for job: {job_id}")
 
-        # Get cached data
+        # Get cached data (removed log)
         video_cache_key = f"detect_video_{job_id}"
         csv_cache_key = f"detect_csv_{job_id}"
-        log_cache_key = f"detect_log_{job_id}"
         json_cache_key = f"detect_json_{job_id}"
 
         video_data = st.session_state.get(video_cache_key)
         csv_data = st.session_state.get(csv_cache_key)
-        log_data = st.session_state.get(log_cache_key)
         json_data = st.session_state.get(json_cache_key)
 
-        logger.info(f"📊 [Detect & Track] Cache status - Video: {bool(video_data)}, CSV: {bool(csv_data)}, Log: {bool(log_data)}, JSON: {bool(json_data)}")
+        logger.info(f"📊 [Detect & Track] Cache status - Video: {bool(video_data)}, CSV: {bool(csv_data)}, JSON: {bool(json_data)}")
 
         # Zone Report Preview (if available)
         if json_data:
@@ -758,12 +758,6 @@ IOU Threshold: {iou_threshold}
                                 for person in zone_info['current_persons']:
                                     status_icon = "✅" if person['authorized'] else "⚠️"
                                     st.markdown(f"{status_icon} **{person['name']}** (ID: {person['id']}) - {person['duration']:.1f}s")
-
-                # Display violations
-                if "violations" in zone_report and zone_report["violations"]:
-                    st.markdown("#### ⚠️ Violations Detected")
-                    for violation in zone_report["violations"]:
-                        st.warning(f"🚫 **{violation['name']}** (ID: {violation['global_id']}) entered unauthorized zone **{violation['zone_name']}** at {violation['time']:.1f}s")
 
                 logger.info(f"✅ [Detect & Track] Zone report displayed")
             except Exception as e:
@@ -788,12 +782,12 @@ IOU Threshold: {iou_threshold}
         # Download buttons - USE CACHED DATA
         st.markdown("### 📁 Download Results")
 
-        # Adjust columns based on whether zone report exists
+        # Adjust columns based on whether zone report exists (removed log download)
         if json_data:
-            col1, col2, col3, col4 = st.columns(4)
-        else:
             col1, col2, col3 = st.columns(3)
-            col4 = None
+        else:
+            col1, col2 = st.columns(2)
+            col3 = None
 
         with col1:
             if video_data:
@@ -823,21 +817,7 @@ IOU Threshold: {iou_threshold}
             else:
                 st.warning("CSV not available")
 
-        with col3:
-            if log_data:
-                if st.download_button(
-                    label="📄 Download Log",
-                    data=log_data,
-                    file_name=f"{job_id}_detection.log",
-                    mime="text/plain",
-                    key=f"download_detect_log_{job_id}",
-                    use_container_width=True
-                ):
-                    logger.info(f"📥 [Detect & Track] User downloading log: {job_id}_detection.log ({len(log_data) / 1024:.2f} KB)")
-            else:
-                st.warning("Log not available")
-
-        if col4 and json_data:
+        if col3 and json_data:
             if st.download_button(
                 label="🗺️ Download Zone Report",
                 data=json_data,

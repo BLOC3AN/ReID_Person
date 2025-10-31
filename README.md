@@ -11,12 +11,13 @@ Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tr
 - ✅ GPU-accelerated inference
 
 ### Zone Monitoring
-- ✅ **IOU-based zone detection** (60% overlap threshold)
+- ✅ **IoP-based zone detection** (Intersection over Person - % of person in zone)
 - ✅ **R-tree spatial indexing** for O(log n) performance
 - ✅ **Authorization checking** per zone
 - ✅ **Time tracking** for presence in zones
 - ✅ **Violation detection** for unauthorized entries
 - ✅ **Ruler overlay** on video for easy coordinate reference
+- ✅ **Works correctly** when zone is much larger than person (unlike IOU)
 
 ### UI Features
 - ✅ **Create zones in UI** - No YAML editing needed
