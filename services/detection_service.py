@@ -6,7 +6,14 @@ FastAPI service for person detection, tracking, and re-identification
 
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+# Add scripts directory to path
+scripts_dir = project_root / "scripts"
+sys.path.insert(0, str(scripts_dir))
 
 import os
 import shutil
@@ -16,9 +23,12 @@ from pydantic import BaseModel
 from typing import Optional, List
 import uuid
 from loguru import logger
-from scripts.detect_and_track import PersonReIDPipeline
 import threading
 import time
+
+# Import modules
+from scripts.detect_and_track import PersonReIDPipeline
+from scripts.zone_monitor import process_video_with_zones
 
 app = FastAPI(title="Detection Service", version="1.0.0")
 
@@ -41,6 +51,8 @@ class JobStatus(BaseModel):
     output_video: Optional[str] = None
     output_csv: Optional[str] = None
     output_log: Optional[str] = None
+    output_json: Optional[str] = None  # Zone monitoring JSON report
+    zone_monitoring: bool = False
     error: Optional[str] = None
 
 
@@ -57,8 +69,9 @@ class ProgressStatus(BaseModel):
 def process_detection(job_id: str, video_path: str, output_video: str,
                       output_csv: str, output_log: str, config_path: Optional[str],
                       similarity_threshold: float = 0.8, model_type: Optional[str] = None,
-                      conf_thresh: Optional[float] = None, track_thresh: Optional[float] = None):
-    """Background task to process detection and tracking"""
+                      conf_thresh: Optional[float] = None, track_thresh: Optional[float] = None,
+                      zone_config_path: Optional[str] = None, iou_threshold: float = 0.6):
+    """Background task to process detection and tracking with optional zone monitoring"""
     try:
         jobs[job_id]["status"] = "processing"
         logger.info(f"Starting detection job {job_id}")
@@ -71,33 +84,71 @@ def process_detection(job_id: str, video_path: str, output_video: str,
             "last_update": time.time()
         }
 
-        # Initialize pipeline
-        pipeline = PersonReIDPipeline(config_path=config_path)
+        # Check if zone monitoring is enabled
+        use_zones = zone_config_path is not None and Path(zone_config_path).exists()
 
-        # Override config parameters if provided
-        if model_type is not None:
-            pipeline.config['detection']['model_type'] = model_type
+        if use_zones:
+            logger.info(f"Zone monitoring enabled: {zone_config_path}")
+            # Use zone monitoring pipeline
+            from scripts.zone_monitor import process_video_with_zones
 
-        if conf_thresh is not None:
-            pipeline.config['detection']['conf_threshold'] = conf_thresh
+            # Get total frames
+            import cv2
+            cap = cv2.VideoCapture(video_path)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+            progress_data[job_id]["total_frames"] = total_frames
 
-        if track_thresh is not None:
-            pipeline.config['tracking']['track_thresh'] = track_thresh
+            # Output JSON for zone report
+            output_json = str(Path(output_log).parent / f"{job_id}_zones.json")
 
-        # Components will be initialized automatically in process_video()
+            # Run with zone monitoring
+            process_video_with_zones(
+                video_path=video_path,
+                zone_config_path=zone_config_path,
+                reid_config_path=config_path,
+                similarity_threshold=similarity_threshold,
+                iou_threshold=iou_threshold,
+                output_video_path=output_video,
+                output_csv_path=output_csv,
+                output_json_path=output_json,
+                max_frames=None,
+                progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks)
+            )
 
-        # Get total frames from video
-        import cv2
-        cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
-        progress_data[job_id]["total_frames"] = total_frames
+            jobs[job_id]["output_json"] = output_json
 
-        # Run detection and tracking with specific output paths
-        pipeline.process_video(
-            video_path=video_path,
-            similarity_threshold=similarity_threshold,
-            output_video_path=output_video,
+        else:
+            # Standard detection without zones
+            logger.info("Standard detection (no zone monitoring)")
+
+            # Initialize pipeline
+            pipeline = PersonReIDPipeline(config_path=config_path)
+
+            # Override config parameters if provided
+            if model_type is not None:
+                pipeline.config['detection']['model_type'] = model_type
+
+            if conf_thresh is not None:
+                pipeline.config['detection']['conf_threshold'] = conf_thresh
+
+            if track_thresh is not None:
+                pipeline.config['tracking']['track_thresh'] = track_thresh
+
+            # Components will be initialized automatically in process_video()
+
+            # Get total frames from video
+            import cv2
+            cap = cv2.VideoCapture(video_path)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+            progress_data[job_id]["total_frames"] = total_frames
+
+            # Run detection and tracking with specific output paths
+            pipeline.process_video(
+                video_path=video_path,
+                similarity_threshold=similarity_threshold,
+                output_video_path=output_video,
             output_csv_path=output_csv,
             output_log_path=output_log,
             progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks)
@@ -146,10 +197,12 @@ async def detect_and_track(
     similarity_threshold: float = Form(0.8),
     model_type: Optional[str] = Form(None),
     conf_thresh: Optional[float] = Form(None),
-    track_thresh: Optional[float] = Form(None)
+    track_thresh: Optional[float] = Form(None),
+    zone_config: Optional[UploadFile] = File(None),
+    iou_threshold: float = Form(0.6)
 ):
     """
-    Detect, track, and re-identify persons in video
+    Detect, track, and re-identify persons in video with optional zone monitoring
 
     Args:
         video: Video file to process
@@ -158,6 +211,8 @@ async def detect_and_track(
         model_type: Detection model type - 'mot17' or 'yolox' (default: from config)
         conf_thresh: Detection confidence threshold 0-1 (default: from config)
         track_thresh: Tracking confidence threshold 0-1 (default: from config)
+        zone_config: Optional zone configuration YAML file
+        iou_threshold: Zone IOU threshold 0-1 (default: 0.6 = 60%)
 
     Returns:
         Job ID for tracking the detection process
@@ -165,32 +220,44 @@ async def detect_and_track(
     try:
         # Generate job ID
         job_id = str(uuid.uuid4())
-        
+
         # Save uploaded video
         video_filename = f"{job_id}_{video.filename}"
         video_path = UPLOAD_DIR / video_filename
-        
+
         with open(video_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
-        
+
+        # Save zone config if provided
+        zone_config_path = None
+        if zone_config is not None:
+            zone_config_filename = f"{job_id}_zones.yaml"
+            zone_config_path = UPLOAD_DIR / zone_config_filename
+
+            with open(zone_config_path, "wb") as buffer:
+                shutil.copyfileobj(zone_config.file, buffer)
+
+            logger.info(f"Zone config saved: {zone_config_path}")
+
         # Setup output paths
         output_video = str(OUTPUT_DIR / "videos" / f"{job_id}_output.mp4")
         output_csv = str(OUTPUT_DIR / "csv" / f"{job_id}_tracking.csv")
         output_log = str(OUTPUT_DIR / "logs" / f"{job_id}_detection.log")
-        
+
         # Create output directories
         (OUTPUT_DIR / "videos").mkdir(parents=True, exist_ok=True)
         (OUTPUT_DIR / "csv").mkdir(parents=True, exist_ok=True)
         (OUTPUT_DIR / "logs").mkdir(parents=True, exist_ok=True)
-        
+
         # Initialize job status
         jobs[job_id] = {
             "job_id": job_id,
             "status": "pending",
             "message": "Job queued for processing",
-            "video_path": str(video_path)
+            "video_path": str(video_path),
+            "zone_monitoring": zone_config_path is not None
         }
-        
+
         # Add background task
         background_tasks.add_task(
             process_detection,
@@ -203,7 +270,9 @@ async def detect_and_track(
             similarity_threshold=similarity_threshold,
             model_type=model_type,
             conf_thresh=conf_thresh,
-            track_thresh=track_thresh
+            track_thresh=track_thresh,
+            zone_config_path=str(zone_config_path) if zone_config_path else None,
+            iou_threshold=iou_threshold
         )
         
         return JSONResponse(content={
@@ -303,18 +372,41 @@ async def download_log(job_id: str):
     """Download the detection log"""
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     if jobs[job_id]["status"] != "completed":
         raise HTTPException(status_code=400, detail="Job not completed yet")
-    
+
     log_path = Path(jobs[job_id]["output_log"])
     if not log_path.exists():
         raise HTTPException(status_code=404, detail="Log file not found")
-    
+
     return FileResponse(
         path=log_path,
         media_type="text/plain",
         filename=f"{job_id}_detection.log"
+    )
+
+
+@app.get("/download/json/{job_id}")
+async def download_json(job_id: str):
+    """Download the zone monitoring JSON report"""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if jobs[job_id]["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Job not completed yet")
+
+    if "output_json" not in jobs[job_id]:
+        raise HTTPException(status_code=404, detail="Zone monitoring was not enabled for this job")
+
+    json_path = Path(jobs[job_id]["output_json"])
+    if not json_path.exists():
+        raise HTTPException(status_code=404, detail="JSON report file not found")
+
+    return FileResponse(
+        path=json_path,
+        media_type="application/json",
+        filename=f"{job_id}_zones.json"
     )
 
 

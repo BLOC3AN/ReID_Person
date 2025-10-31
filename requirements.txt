@@ -17,6 +17,9 @@ onnxruntime-gpu==1.15.1  # Compatible with CUDA 11.8
 # Vector Database
 qdrant-client>=1.0.0
 
+# Spatial Indexing (for zone monitoring)
+rtree>=1.0.0
+
 # Utilities
 loguru>=0.6.0
 pyyaml>=6.0

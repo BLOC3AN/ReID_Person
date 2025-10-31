@@ -1,22 +1,43 @@
 # Person Re-Identification System
 
-Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tracking, **ArcFace (InsightFace)** face recognition, and Qdrant vector database.
+Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tracking, **ArcFace (InsightFace)** face recognition, Qdrant vector database, and **Zone Monitoring** with IOU-based detection.
 
-## 🎯 ArcFace Face Recognition
+## 🎯 Key Features
 
-System uses **ArcFace (InsightFace)** for high-accuracy face recognition:
+### ArcFace Face Recognition
 - ✅ High accuracy (similarity 0.85-0.95)
 - ✅ Robust to pose/lighting changes
 - ✅ Face-focused detection (512-dim embeddings)
 - ✅ GPU-accelerated inference
 
+### Zone Monitoring
+- ✅ **IOU-based zone detection** (60% overlap threshold)
+- ✅ **R-tree spatial indexing** for O(log n) performance
+- ✅ **Authorization checking** per zone
+- ✅ **Time tracking** for presence in zones
+- ✅ **Violation detection** for unauthorized entries
+- ✅ **Ruler overlay** on video for easy coordinate reference
+
+### UI Features
+- ✅ **Create zones in UI** - No YAML editing needed
+- ✅ **Real-time progress bar** with track info
+- ✅ **Zone report visualization** with summary and violations
+- ✅ **Download zone config** for reuse
+
 📖 **Documentation**: See [docs/](docs/) for detailed guides
 🔧 **Configuration**: Edit `configs/config.yaml` for model settings
+🗺️ **Zone Monitoring**: See [docs/ZONE_MONITORING_GUIDE.md](docs/ZONE_MONITORING_GUIDE.md)
 
 ## Pipeline
 
 ```
-Video → YOLOX MOT17 Detection → ByteTrack Tracking → ArcFace Face Recognition → Qdrant Search → ReID Decision → Output
+Video → YOLOX Detection → ByteTrack Tracking → ArcFace ReID → Qdrant Search → Zone Monitoring → Output
+                                                                      ↓
+                                                            IOU-based Zone Detection
+                                                                      ↓
+                                                            Authorization Check
+                                                                      ↓
+                                                            Time Tracking + Violations
 ```
 
 
