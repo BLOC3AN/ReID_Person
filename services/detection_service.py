@@ -71,7 +71,8 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                       similarity_threshold: float = 0.8, model_type: Optional[str] = None,
                       conf_thresh: Optional[float] = None, track_thresh: Optional[float] = None,
                       zone_config_path: Optional[str] = None, iou_threshold: float = 0.6,
-                      zone_opacity: float = 0.15):
+                      zone_opacity: float = 0.15, max_frames: Optional[int] = None,
+                      max_duration_seconds: Optional[int] = None):
     """Background task to process detection and tracking with optional zone monitoring"""
     try:
         jobs[job_id]["status"] = "processing"
@@ -159,7 +160,7 @@ def process_detection(job_id: str, video_path: str, output_video: str,
 
             # Components will be initialized automatically in process_video()
 
-            # Get total frames from video
+            # Get total frames from video (will be 0 for streams)
             import cv2
             cap = cv2.VideoCapture(video_path)
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -171,10 +172,12 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                 video_path=video_path,
                 similarity_threshold=similarity_threshold,
                 output_video_path=output_video,
-            output_csv_path=output_csv,
-            output_log_path=output_log,
-            progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks)
-        )
+                output_csv_path=output_csv,
+                output_log_path=output_log,
+                max_frames=max_frames,
+                max_duration_seconds=max_duration_seconds,
+                progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks)
+            )
 
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["message"] = "Detection and tracking completed successfully"
@@ -308,6 +311,111 @@ async def detect_and_track(
         
     except Exception as e:
         logger.error(f"Error starting detection: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/detect_stream")
+async def detect_and_track_stream(
+    background_tasks: BackgroundTasks,
+    stream_url: str = Form(...),
+    config_path: Optional[str] = Form(None),
+    similarity_threshold: float = Form(0.8),
+    model_type: Optional[str] = Form(None),
+    conf_thresh: Optional[float] = Form(None),
+    track_thresh: Optional[float] = Form(None),
+    zone_config: Optional[UploadFile] = File(None),
+    iou_threshold: float = Form(0.6),
+    zone_opacity: float = Form(0.15),
+    max_frames: Optional[int] = Form(None),
+    max_duration_seconds: Optional[int] = Form(None)
+):
+    """
+    Detect, track, and re-identify persons from video stream (UDP/RTSP)
+
+    Args:
+        stream_url: Stream URL (e.g., 'udp://127.0.0.1:1905', 'rtsp://camera_ip/stream')
+        config_path: Optional path to custom config file
+        similarity_threshold: Cosine similarity threshold for ReID (default: 0.8)
+        model_type: Detection model type - 'mot17' or 'yolox' (default: from config)
+        conf_thresh: Detection confidence threshold 0-1 (default: from config)
+        track_thresh: Tracking confidence threshold 0-1 (default: from config)
+        zone_config: Optional zone configuration YAML file
+        iou_threshold: Zone IoP threshold 0-1 (default: 0.6 = 60%)
+        zone_opacity: Zone fill opacity 0-1 (default: 0.15 = 15%)
+        max_frames: Maximum frames to process (None for unlimited)
+        max_duration_seconds: Maximum duration in seconds (None for unlimited)
+
+    Returns:
+        Job ID for tracking the detection process
+    """
+    try:
+        # Generate job ID
+        job_id = str(uuid.uuid4())
+
+        # Save zone config if provided
+        zone_config_path = None
+        if zone_config is not None:
+            zone_config_filename = f"{job_id}_zones.yaml"
+            zone_config_path = UPLOAD_DIR / zone_config_filename
+
+            with open(zone_config_path, "wb") as buffer:
+                shutil.copyfileobj(zone_config.file, buffer)
+
+            logger.info(f"Zone config saved: {zone_config_path}")
+
+        # Setup output paths
+        output_video = str(OUTPUT_DIR / "videos" / f"{job_id}_stream_output.mp4")
+        output_csv = str(OUTPUT_DIR / "csv" / f"{job_id}_stream_tracking.csv")
+        output_log = str(OUTPUT_DIR / "logs" / f"{job_id}_stream_detection.log")
+
+        # Create output directories
+        (OUTPUT_DIR / "videos").mkdir(parents=True, exist_ok=True)
+        (OUTPUT_DIR / "csv").mkdir(parents=True, exist_ok=True)
+        (OUTPUT_DIR / "logs").mkdir(parents=True, exist_ok=True)
+
+        # Initialize job status
+        jobs[job_id] = {
+            "job_id": job_id,
+            "status": "pending",
+            "message": "Stream detection job queued for processing",
+            "video_path": stream_url,
+            "zone_monitoring": zone_config_path is not None,
+            "is_stream": True,
+            "max_frames": max_frames,
+            "max_duration_seconds": max_duration_seconds
+        }
+
+        # Add background task
+        background_tasks.add_task(
+            process_detection,
+            job_id=job_id,
+            video_path=stream_url,  # Pass stream URL directly
+            output_video=output_video,
+            output_csv=output_csv,
+            output_log=output_log,
+            config_path=config_path,
+            similarity_threshold=similarity_threshold,
+            model_type=model_type,
+            conf_thresh=conf_thresh,
+            track_thresh=track_thresh,
+            zone_config_path=str(zone_config_path) if zone_config_path else None,
+            iou_threshold=iou_threshold,
+            zone_opacity=zone_opacity,
+            max_frames=max_frames,
+            max_duration_seconds=max_duration_seconds
+        )
+
+        return JSONResponse(content={
+            "job_id": job_id,
+            "status": "pending",
+            "message": "Stream detection job started",
+            "stream_url": stream_url,
+            "max_frames": max_frames,
+            "max_duration_seconds": max_duration_seconds
+        })
+
+    except Exception as e:
+        logger.error(f"Error starting stream detection: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

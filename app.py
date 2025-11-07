@@ -331,16 +331,69 @@ elif page == "Register Person":
 # ============================================================================
 elif page == "Detect & Track":
     st.header("Detect & Track Persons")
-    st.markdown("Detect and identify registered persons in video")
+    st.markdown("Detect and identify registered persons in video or stream")
 
-    col1, col2 = st.columns([2, 1])
+    # Input method selection
+    input_method = st.radio(
+        "Input Source",
+        ["Upload Video File", "Stream URL (UDP/RTSP)"],
+        horizontal=True
+    )
 
-    with col1:
-        video_file = st.file_uploader("Upload Video to Analyze", type=['mp4', 'avi', 'mkv', 'mov'])
+    video_file = None
+    stream_url = None
+    max_frames = None
+    max_duration = None
 
-    with col2:
-        st.markdown("### Info")
-        st.info("This will detect and track all registered persons in the video")
+    if input_method == "Upload Video File":
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            video_file = st.file_uploader("Upload Video to Analyze", type=['mp4', 'avi', 'mkv', 'mov'])
+
+        with col2:
+            st.markdown("### Info")
+            st.info("This will detect and track all registered persons in the video")
+
+    else:  # Stream URL
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            stream_url = st.text_input(
+                "Stream URL",
+                value="udp://127.0.0.1:1905",
+                help="Enter UDP or RTSP stream URL (e.g., udp://127.0.0.1:1905, rtsp://camera_ip/stream)"
+            )
+
+            st.markdown("### Stream Limits")
+            limit_type = st.radio(
+                "Limit by",
+                ["Duration (seconds)", "Number of frames", "No limit"],
+                horizontal=True
+            )
+
+            if limit_type == "Duration (seconds)":
+                max_duration = st.number_input(
+                    "Maximum duration (seconds)",
+                    min_value=1,
+                    max_value=3600,
+                    value=60,
+                    help="How many seconds of stream to process"
+                )
+            elif limit_type == "Number of frames":
+                max_frames = st.number_input(
+                    "Maximum frames",
+                    min_value=1,
+                    max_value=100000,
+                    value=1800,
+                    help="How many frames to process (e.g., 1800 frames = 60s at 30fps)"
+                )
+
+        with col2:
+            st.markdown("### Info")
+            st.info("⚠️ Stream will be processed in real-time. Output video will be saved with the specified limit.")
+            if stream_url:
+                st.code(f"Stream: {stream_url}", language="text")
 
     # Zone Monitoring Section
     with st.expander("🗺️ Zone Monitoring (Optional)", expanded=False):
@@ -562,11 +615,24 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
 
     if st.button("🚀 Start Detection", type="primary"):
         logger.info(f"📌 [Detect & Track] Start Detection button clicked")
-        if video_file is None:
+
+        # Validate input
+        if input_method == "Upload Video File" and video_file is None:
             logger.warning(f"⚠️ [Detect & Track] No video file uploaded")
             st.error("Please upload a video file")
+        elif input_method == "Stream URL (UDP/RTSP)" and not stream_url:
+            logger.warning(f"⚠️ [Detect & Track] No stream URL provided")
+            st.error("Please enter a stream URL")
         else:
-            logger.info(f"📹 [Detect & Track] Uploading video: {video_file.name} ({len(video_file.getvalue()) / (1024*1024):.2f} MB)")
+            if input_method == "Upload Video File":
+                logger.info(f"📹 [Detect & Track] Uploading video: {video_file.name} ({len(video_file.getvalue()) / (1024*1024):.2f} MB)")
+            else:
+                logger.info(f"📡 [Detect & Track] Stream URL: {stream_url}")
+                if max_frames:
+                    logger.info(f"⏱️ [Detect & Track] Max frames: {max_frames}")
+                if max_duration:
+                    logger.info(f"⏱️ [Detect & Track] Max duration: {max_duration}s")
+
             logger.info(f"⚙️ [Detect & Track] Parameters: model={model_type}, similarity={similarity_threshold}, conf={conf_thresh}, track={track_thresh}")
 
             # Check if zone monitoring is enabled
@@ -577,32 +643,78 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                 else:
                     logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {len(zones_data['zones'])} zones")
 
-            with st.spinner("Uploading video and starting detection..."):
+            spinner_text = "Uploading video and starting detection..." if input_method == "Upload Video File" else "Starting stream detection..."
+            with st.spinner(spinner_text):
                 try:
-                    # Prepare files and data for API call
-                    files = {"video": (video_file.name, video_file.getvalue(), "video/mp4")}
+                    if input_method == "Upload Video File":
+                        # Prepare files and data for API call (existing code)
+                        files = {"video": (video_file.name, video_file.getvalue(), "video/mp4")}
 
-                    # Add zone config if provided
-                    if zone_config_file:
-                        # Use uploaded file
-                        files["zone_config"] = (zone_config_file.name, zone_config_file.getvalue(), "application/x-yaml")
-                    elif zones_data:
-                        # Create YAML from UI data
-                        yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
-                        files["zone_config"] = ("zones.yaml", yaml_content.encode('utf-8'), "application/x-yaml")
+                        # Add zone config if provided
+                        if zone_config_file:
+                            # Use uploaded file
+                            files["zone_config"] = (zone_config_file.name, zone_config_file.getvalue(), "application/x-yaml")
+                        elif zones_data:
+                            # Create YAML from UI data
+                            yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
+                            files["zone_config"] = ("zones.yaml", yaml_content.encode('utf-8'), "application/x-yaml")
 
-                    data = {
-                        "similarity_threshold": similarity_threshold,
-                        "model_type": model_type,
-                        "conf_thresh": conf_thresh,
-                        "track_thresh": track_thresh,
-                        "iou_threshold": iou_threshold,
-                        "zone_opacity": zone_opacity
-                    }
+                        data = {
+                            "similarity_threshold": similarity_threshold,
+                            "model_type": model_type,
+                            "conf_thresh": conf_thresh,
+                            "track_thresh": track_thresh,
+                            "iou_threshold": iou_threshold,
+                            "zone_opacity": zone_opacity
+                        }
 
-                    # Call Detection API
-                    logger.info(f"🔄 [Detect & Track] Calling detection API: {DETECTION_API_URL}/detect")
-                    response = requests.post(f"{DETECTION_API_URL}/detect", files=files, data=data)
+                        # Call Detection API
+                        logger.info(f"🔄 [Detect & Track] Calling detection API: {DETECTION_API_URL}/detect")
+                        response = requests.post(f"{DETECTION_API_URL}/detect", files=files, data=data)
+
+                    else:  # Stream URL
+                        # Prepare multipart form data for stream API call
+                        files = {}
+                        data = {}
+
+                        # Add zone config if provided
+                        if zone_config_file:
+                            files["zone_config"] = (zone_config_file.name, zone_config_file.getvalue(), "application/x-yaml")
+                        elif zones_data:
+                            yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
+                            files["zone_config"] = ("zones.yaml", yaml_content.encode('utf-8'), "application/x-yaml")
+
+                        # Prepare form data (all parameters must be strings for multipart/form-data)
+                        data = {
+                            "stream_url": stream_url,
+                            "similarity_threshold": str(similarity_threshold),
+                            "iou_threshold": str(iou_threshold),
+                            "zone_opacity": str(zone_opacity)
+                        }
+
+                        # Add optional parameters only if they have values
+                        if model_type:
+                            data["model_type"] = model_type
+                        if conf_thresh is not None:
+                            data["conf_thresh"] = str(conf_thresh)
+                        if track_thresh is not None:
+                            data["track_thresh"] = str(track_thresh)
+                        if max_frames:
+                            data["max_frames"] = str(max_frames)
+                        if max_duration:
+                            data["max_duration_seconds"] = str(max_duration)
+
+                        # Call Stream Detection API
+                        # Always use multipart form-data (files parameter) even if no files are uploaded
+                        # This ensures compatibility with FastAPI Form(...) parameters
+                        logger.info(f"🔄 [Detect & Track] Calling stream detection API: {DETECTION_API_URL}/detect_stream")
+                        logger.info(f"📡 [Detect & Track] Stream URL: {stream_url}")
+                        if max_frames:
+                            logger.info(f"⏱️ [Detect & Track] Max frames: {max_frames}")
+                        if max_duration:
+                            logger.info(f"⏱️ [Detect & Track] Max duration: {max_duration}s")
+
+                        response = requests.post(f"{DETECTION_API_URL}/detect_stream", files=files, data=data)
 
                     if response.status_code == 200:
                         result = response.json()
@@ -630,16 +742,27 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                                     progress = progress_response.json()
 
                                     # Update progress bar
-                                    progress_bar.progress(min(progress['progress_percent'] / 100, 0.99))
+                                    if progress['total_frames'] > 0:
+                                        progress_bar.progress(min(progress['progress_percent'] / 100, 0.99))
+                                    else:
+                                        # For streams, show indeterminate progress
+                                        progress_bar.progress(0.5)
 
                                     # Update status text
                                     status_text.text(f"Status: {progress['status']}")
 
                                     # Update progress text
-                                    progress_text.text(f"📊 Frame {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+                                    if progress['total_frames'] > 0:
+                                        progress_text.text(f"📊 Frame {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+                                    else:
+                                        # For streams, show only current frame
+                                        progress_text.text(f"📊 Frame {progress['current_frame']} (streaming...)")
 
                                     if poll_count % 10 == 0:  # Log every 10 polls
-                                        logger.info(f"📊 [Detect & Track] Progress: {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+                                        if progress['total_frames'] > 0:
+                                            logger.info(f"📊 [Detect & Track] Progress: {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+                                        else:
+                                            logger.info(f"📊 [Detect & Track] Progress: Frame {progress['current_frame']} (streaming)")
 
                                     # Display current tracks
                                     if progress['tracks']:

@@ -5,8 +5,7 @@ services:
       context: ..
       dockerfile: deployment/Dockerfile.ui
     container_name: person_reid_ui
-    ports:
-      - "8501:8501"
+    network_mode: "host"
     volumes:
       - ../outputs:/app/outputs
       - ../data:/app/data
@@ -14,15 +13,13 @@ services:
       - ../configs:/app/configs
       - ../models:/app/models
     environment:
-      - QDRANT_HOST=qdrant_container
+      - QDRANT_HOST=127.0.0.1
       - QDRANT_PORT=6333
-      - EXTRACT_API_URL=http://extract:8001
-      - REGISTER_API_URL=http://register:8002
-      - DETECTION_API_URL=http://detection:8003
+      - EXTRACT_API_URL=http://localhost:8001
+      - REGISTER_API_URL=http://localhost:8002
+      - DETECTION_API_URL=http://localhost:8003
     env_file:
       - ../configs/.env
-    networks:
-      - person_reid_network
     restart: unless-stopped
     shm_size: '2gb'
     healthcheck:
@@ -39,8 +36,7 @@ services:
       dockerfile: deployment/Dockerfile.extract
     container_name: person_reid_extract
     runtime: nvidia
-    ports:
-      - "8001:8001"
+    network_mode: "host"
     volumes:
       - ../outputs:/app/outputs
       - ../data:/app/data
@@ -48,13 +44,11 @@ services:
       - ../configs:/app/configs
       - ../models:/app/models
     environment:
-      - QDRANT_HOST=qdrant_container
+      - QDRANT_HOST=127.0.0.1
       - QDRANT_PORT=6333
       - NVIDIA_VISIBLE_DEVICES=all
     env_file:
       - ../configs/.env
-    networks:
-      - person_reid_network
     restart: unless-stopped
     shm_size: '4gb'
     healthcheck:
@@ -71,8 +65,7 @@ services:
       dockerfile: deployment/Dockerfile.register
     container_name: person_reid_register
     runtime: nvidia
-    ports:
-      - "8002:8002"
+    network_mode: "host"
     volumes:
       - ../outputs:/app/outputs
       - ../data:/app/data
@@ -80,13 +73,11 @@ services:
       - ../configs:/app/configs
       - ../models:/app/models
     environment:
-      - QDRANT_HOST=qdrant_container
+      - QDRANT_HOST=127.0.0.1
       - QDRANT_PORT=6333
       - NVIDIA_VISIBLE_DEVICES=all
     env_file:
       - ../configs/.env
-    networks:
-      - person_reid_network
     restart: unless-stopped
     shm_size: '4gb'
     healthcheck:
@@ -103,8 +94,7 @@ services:
       dockerfile: deployment/Dockerfile.detection
     container_name: person_reid_detection
     runtime: nvidia
-    ports:
-      - "8003:8003"
+    network_mode: "host"
     volumes:
       - ../outputs:/app/outputs
       - ../data:/app/data
@@ -112,13 +102,11 @@ services:
       - ../configs:/app/configs
       - ../models:/app/models
     environment:
-      - QDRANT_HOST=qdrant_container
+      - QDRANT_HOST=127.0.0.1
       - QDRANT_PORT=6333
       - NVIDIA_VISIBLE_DEVICES=all
     env_file:
       - ../configs/.env
-    networks:
-      - person_reid_network
     restart: unless-stopped
     shm_size: '4gb'
     healthcheck:
@@ -128,6 +116,7 @@ services:
       retries: 3
       start_period: 30s
 
-networks:
-  person_reid_network:
-    external: true
+# Network not needed when using host mode
+# networks:
+#   person_reid_network:
+#     external: true

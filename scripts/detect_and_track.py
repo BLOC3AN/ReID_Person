@@ -10,6 +10,7 @@ import cv2
 import csv
 import yaml
 import argparse
+import time
 import numpy as np
 from pathlib import Path
 from datetime import datetime
@@ -19,6 +20,7 @@ from loguru import logger
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB
+from utils.stream_reader import StreamReader
 
 
 class PersonReIDPipeline:
@@ -127,12 +129,12 @@ class PersonReIDPipeline:
     
     def process_video(self, video_path, similarity_threshold=0.8, output_dir=None,
                       output_video_path=None, output_csv_path=None, output_log_path=None,
-                      max_frames=None, progress_callback=None):
+                      max_frames=None, max_duration_seconds=None, progress_callback=None):
         """
         Process video with detection, tracking, and ReID
 
         Args:
-            video_path: Path to input video
+            video_path: Path to input video or stream URL (e.g., 'udp://127.0.0.1:1905', 'rtsp://...')
             similarity_threshold: Cosine similarity threshold
             output_dir: Output directory for results (used if specific paths not provided)
             output_video_path: Specific path for output video (optional)
@@ -140,6 +142,7 @@ class PersonReIDPipeline:
             output_csv_path: Specific path for output CSV (optional)
             output_log_path: Specific path for output log (optional)
             max_frames: Maximum frames to process (None for all)
+            max_duration_seconds: Maximum duration in seconds to process (None for all)
         """
         logger.info("="*80)
         logger.info(f"Processing Video: {video_path}")
@@ -162,25 +165,44 @@ class PersonReIDPipeline:
             logger.info("Initializing database...")
             self.initialize_database()
 
-        # Open video
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            logger.error(f"Failed to open video: {video_path}")
+        # Open video/stream using StreamReader
+        try:
+            stream_reader = StreamReader(video_path, use_ffmpeg_for_udp=True)
+            props = stream_reader.get_properties()
+
+            logger.info("="*80)
+            logger.info("Stream Properties:")
+            logger.info(f"  Source: {props['source']}")
+            logger.info(f"  Resolution: {props['width']}x{props['height']}")
+            logger.info(f"  FPS: {props['fps']:.1f}")
+            logger.info(f"  Type: {'Stream' if props['is_stream'] else 'File'}")
+            logger.info(f"  Backend: {'ffmpeg subprocess' if props['using_ffmpeg'] else 'OpenCV'}")
+            logger.info("="*80)
+
+            width = props['width']
+            height = props['height']
+            is_stream = props['is_stream']
+
+            # Get total frames for video files (not available for streams)
+            total_frames = 0
+            if not is_stream and stream_reader.cap is not None:
+                total_frames = int(stream_reader.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        except Exception as e:
+            logger.error(f"Failed to open video source: {e}")
             return
 
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        # Calculate max frames from duration if specified
+        if max_duration_seconds is not None and max_frames is None:
+            max_frames = int(max_duration_seconds * props['fps'])
+            logger.info(f"Max duration: {max_duration_seconds}s → {max_frames} frames at {props['fps']:.1f} FPS")
 
         # Get registered persons from database
         registered_persons = list(self.database.person_metadata.keys())
-        logger.info(f"Video Info:")
-        logger.info(f"  Resolution: {width}x{height}")
-        logger.info(f"  FPS: {fps}")
-        logger.info(f"  Total frames: {total_frames}")
         logger.info(f"  Registered persons: {len(registered_persons)} ({registered_persons})")
         logger.info(f"  Similarity threshold: {similarity_threshold}")
+        if not is_stream and total_frames > 0:
+            logger.info(f"  Total frames in file: {total_frames}")
         
         # Setup output paths
         if output_video_path and output_csv_path and output_log_path:
@@ -198,7 +220,12 @@ class PersonReIDPipeline:
             output_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-            video_name = Path(video_path).stem
+            # Handle stream URL vs file path
+            if is_stream:
+                video_name = f"stream_{timestamp}"
+            else:
+                video_name = Path(video_path).stem
+
             output_video = output_dir / "videos" / f"{video_name}_{timestamp}.mp4"
             output_csv = output_dir / "csv" / f"{video_name}_{timestamp}.csv"
             output_log = output_dir / "logs" / f"{video_name}_{timestamp}.log"
@@ -211,7 +238,7 @@ class PersonReIDPipeline:
         # Video writer
         if self.config['output']['save_video']:
             fourcc = cv2.VideoWriter_fourcc(*self.config['output']['video_codec'])
-            vid_writer = cv2.VideoWriter(str(output_video), fourcc, fps, (width, height))
+            vid_writer = cv2.VideoWriter(str(output_video), fourcc, props['fps'], (width, height))
         
         # CSV writer
         csv_file = open(output_csv, 'w', newline='')
@@ -231,18 +258,40 @@ class PersonReIDPipeline:
         track_embeddings = {}  # Store first 3 embeddings for voting
 
         # FPS tracking
-        import time
         fps_history = []
         frame_start_time = time.time()
 
         logger.info("="*80)
         logger.info("Starting Processing...")
         logger.info("="*80)
-        
+
+        # For streams: track consecutive read failures
+        consecutive_failures = 0
+        max_consecutive_failures = 30 if is_stream else 3  # Increased for streams
+
         while True:
-            ret, frame = cap.read()
+            ret, frame = stream_reader.read()
+
+            # Handle read failures
             if not ret:
-                break
+                if is_stream:
+                    consecutive_failures += 1
+                    if consecutive_failures <= max_consecutive_failures:
+                        # For streams: SKIP failed frames immediately, don't wait
+                        # This prevents blocking when stream is lagging
+                        logger.debug(f"Skipped frame (failure {consecutive_failures}/{max_consecutive_failures})")
+                        continue
+                    else:
+                        logger.error(f"Stream ended or lost connection after {consecutive_failures} consecutive failures")
+                        break
+                else:
+                    # For video files, end of file is normal
+                    logger.info("Reached end of video file")
+                    break
+
+            # Reset failure counter on successful read
+            if ret and frame is not None:
+                consecutive_failures = 0
 
             # Check max frames limit
             if max_frames is not None and frame_id >= max_frames:
@@ -258,9 +307,12 @@ class PersonReIDPipeline:
             # Log frame info
             log_msg = f"\n[Frame {frame_id}] Detected {len(detections)} objects, Tracked {len(tracks)} persons\n"
             log_file.write(log_msg)
-            
+
             if frame_id % 30 == 0:
-                logger.info(f"Frame {frame_id}/{total_frames}: {len(tracks)} tracks")
+                if is_stream:
+                    logger.info(f"Frame {frame_id}: {len(tracks)} tracks")
+                else:
+                    logger.info(f"Frame {frame_id}/{total_frames}: {len(tracks)} tracks")
             
             # Process each track
             for track in tracks:
@@ -414,7 +466,10 @@ class PersonReIDPipeline:
                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
 
                 # Frame counter (top-left, below FPS)
-                frame_text = f"Frame: {frame_id}/{total_frames}"
+                if is_stream:
+                    frame_text = f"Frame: {frame_id}"
+                else:
+                    frame_text = f"Frame: {frame_id}/{total_frames}"
                 cv2.putText(frame, frame_text, (10, 70),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
@@ -439,9 +494,9 @@ class PersonReIDPipeline:
             # Reset timer for next frame
             frame_start_time = time.time()
             frame_id += 1
-        
+
         # Cleanup
-        cap.release()
+        stream_reader.release()
         if self.config['output']['save_video']:
             vid_writer.release()
         csv_file.close()
@@ -466,7 +521,8 @@ class PersonReIDPipeline:
 
 def main():
     parser = argparse.ArgumentParser(description="Person ReID Detection and Tracking")
-    parser.add_argument("--video", type=str, required=True, help="Input video path")
+    parser.add_argument("--video", type=str, required=True,
+                       help="Input video path or stream URL (e.g., udp://127.0.0.1:1905)")
     parser.add_argument("--model", type=str, default="mot17",
                        choices=['mot17', 'yolox'], help="Detection model")
     parser.add_argument("--threshold", type=float, default=0.8,
@@ -477,6 +533,8 @@ def main():
                        help="Config file path")
     parser.add_argument("--max-frames", type=int, default=None,
                        help="Maximum frames to process (for testing)")
+    parser.add_argument("--max-duration", type=int, default=None,
+                       help="Maximum duration in seconds to process (for streams)")
 
     args = parser.parse_args()
 
@@ -494,7 +552,8 @@ def main():
         video_path=args.video,
         similarity_threshold=args.threshold,
         output_dir=args.output,
-        max_frames=args.max_frames
+        max_frames=args.max_frames,
+        max_duration_seconds=args.max_duration
     )
 
 
