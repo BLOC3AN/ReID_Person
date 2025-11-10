@@ -19,15 +19,26 @@ Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tr
 - ✅ **Ruler overlay** on video for easy coordinate reference
 - ✅ **Works correctly** when zone is much larger than person (unlike IOU)
 
+### Multi-Camera Processing
+- ✅ **Parallel processing** of multiple camera streams
+- ✅ **Frame synchronization** across cameras
+- ✅ **Combined view** output (horizontal stack)
+- ✅ **Job cancellation** - Stop processing anytime via UI
+- ✅ **Thread-safe** cancellation mechanism
+
 ### UI Features
 - ✅ **Create zones in UI** - No YAML editing needed
 - ✅ **Real-time progress bar** with track info
 - ✅ **Zone report visualization** with summary and violations
 - ✅ **Download zone config** for reuse
+- ✅ **Stop button** for stream processing
 
 📖 **Documentation**: See [docs/](docs/) for detailed guides
 🔧 **Configuration**: Edit `configs/config.yaml` for model settings
 🗺️ **Zone Monitoring**: See [docs/ZONE_MONITORING_GUIDE.md](docs/ZONE_MONITORING_GUIDE.md)
+🎥 **Multi-Camera & Cancellation**: See [docs/MULTI_CAMERA_GUIDE.md](docs/MULTI_CAMERA_GUIDE.md)
+📉 **Frame Drop Analysis**: See [docs/FRAME_DROP_ANALYSIS.md](docs/FRAME_DROP_ANALYSIS.md)
+📊 **Frame Drop Presentation**: See [docs/FRAME_DROP_PRESENTATION.md](docs/FRAME_DROP_PRESENTATION.md)
 
 ## Pipeline
 
