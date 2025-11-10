@@ -7,6 +7,7 @@ from .tracker import ByteTrackWrapper
 from .feature_extractor import ArcFaceExtractor
 from .vector_db import QdrantVectorDB
 from .reid_matcher import ReIDMatcher
+from .preloaded_manager import preloaded_manager
 
 __all__ = [
     'YOLOXDetector',
@@ -14,5 +15,6 @@ __all__ = [
     'ArcFaceExtractor',
     'QdrantVectorDB',
     'ReIDMatcher',
+    'preloaded_manager',
 ]
 

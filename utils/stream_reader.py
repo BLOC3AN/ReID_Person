@@ -10,6 +10,8 @@ import numpy as np
 import time
 import select
 import sys
+import socket
+from urllib.parse import urlparse
 from loguru import logger
 from typing import Optional, Tuple
 
@@ -19,11 +21,11 @@ class StreamReader:
     Unified interface for reading video streams and files.
     Handles problematic streams (missing SPS/PPS headers) using ffmpeg subprocess.
     """
-    
+
     def __init__(self, source: str, use_ffmpeg_for_udp: bool = True):
         """
         Initialize stream reader.
-        
+
         Args:
             source: Video source (file path, UDP URL, RTSP URL, etc.)
             use_ffmpeg_for_udp: Use ffmpeg subprocess for UDP streams (more reliable)
@@ -32,24 +34,76 @@ class StreamReader:
         self.use_ffmpeg_for_udp = use_ffmpeg_for_udp
         self.is_stream = source.startswith(('udp://', 'rtsp://', 'rtmp://', 'http://', 'https://'))
         self.is_udp = source.startswith('udp://')
-        
+
         # Stream properties
         self.width = None
         self.height = None
         self.fps = None
-        
+
         # OpenCV or ffmpeg backend
         self.cap = None
         self.ffmpeg_process = None
         self.using_ffmpeg = False
-        
+
         # Initialize the stream
         self._initialize()
+
+    def _check_udp_port_availability(self, url: str) -> tuple[bool, str]:
+        """
+        Check if UDP port is available and provide diagnostic info.
+
+        Note: This is a basic check. UDP ports can be "available" for binding
+        but still fail if no data is being sent to them.
+
+        Returns:
+            Tuple of (is_available, diagnostic_message)
+        """
+        try:
+            parsed = urlparse(url)
+            host = parsed.hostname or '127.0.0.1'
+            port = parsed.port
+
+            if not port:
+                return False, "No port specified in UDP URL"
+
+            # Try to bind to the port to check availability
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+            try:
+                sock.bind((host, port))
+                sock.close()
+                return True, f"Port {port} is bindable (but may not have active stream)"
+            except OSError as e:
+                sock.close()
+                if "Address already in use" in str(e):
+                    return False, f"Port {port} is already in use by another process"
+                else:
+                    return False, f"Cannot bind to port {port}: {e}"
+
+        except Exception as e:
+            return False, f"Error checking port: {e}"
     
     def _initialize(self):
         """Initialize the video source."""
         if self.is_udp and self.use_ffmpeg_for_udp:
-            self._initialize_ffmpeg_udp()
+            # Check port availability for UDP streams
+            is_available, port_msg = self._check_udp_port_availability(self.source)
+            logger.info(f"UDP port check: {port_msg}")
+
+            if not is_available and "already in use" in port_msg:
+                logger.warning("UDP port is in use. This may cause connection issues.")
+                logger.info("Possible solutions:")
+                logger.info("  1. Stop other processes using this port")
+                logger.info("  2. Use a different port")
+                logger.info("  3. Ensure the stream is actually broadcasting")
+
+            try:
+                self._initialize_ffmpeg_udp()
+            except Exception as e:
+                logger.warning(f"ffmpeg initialization failed: {e}")
+                logger.info("Falling back to OpenCV for UDP stream...")
+                self._initialize_opencv()
         else:
             self._initialize_opencv()
     
@@ -82,7 +136,7 @@ class StreamReader:
         """Initialize UDP stream using ffmpeg subprocess (more reliable)."""
         logger.info(f"Opening UDP stream via ffmpeg: {self.source}")
         logger.info("This method is more reliable for streams with missing SPS/PPS headers")
-        
+
         # For UDP streams, skip probing (ffprobe will also try to bind the port)
         # Use default values instead
         logger.info("Skipping probe for UDP stream (would cause port binding conflict)")
@@ -90,9 +144,9 @@ class StreamReader:
         self.width = 1920
         self.height = 1080
         self.fps = 25.0
-        
+
         logger.info(f"Stream properties: {self.width}x{self.height} @ {self.fps:.1f} FPS")
-        
+
         # Add UDP-specific options to the source URL
         source_url = self.source
         if 'udp://' in self.source and '?' not in self.source:
@@ -102,11 +156,11 @@ class StreamReader:
         # Build ffmpeg command to decode and output raw BGR24 frames
         ffmpeg_cmd = [
             'ffmpeg',
-            '-timeout', '5000000',  # 5 second timeout for network operations (in microseconds)
+            '-timeout', '10000000',  # 10 second timeout for network operations (in microseconds)
             '-fflags', '+genpts+discardcorrupt',
             '-flags', 'low_delay',
             '-probesize', '32M',  # Increased probe size
-            '-analyzeduration', '5M',  # Some analysis to get codec info
+            '-analyzeduration', '10M',  # Increased analysis duration
             '-i', source_url,
             '-vsync', '0',  # Pass through timestamps, don't wait for missing frames
             '-f', 'rawvideo',
@@ -115,29 +169,61 @@ class StreamReader:
             '-sn',  # No subtitles
             'pipe:1'
         ]
-        
+
         logger.info(f"Starting ffmpeg subprocess...")
         logger.debug(f"Command: {' '.join(ffmpeg_cmd)}")
 
-        # Start ffmpeg process
-        # IMPORTANT: Redirect stderr to DEVNULL to prevent pipe buffer overflow
-        # ffmpeg writes A LOT of logs to stderr (decode errors, warnings, etc.)
-        # If stderr pipe fills up (~65KB), ffmpeg will BLOCK and stop writing to stdout
+        # Start ffmpeg process with stderr capture for debugging
+        # We'll capture stderr temporarily to diagnose issues
         self.ffmpeg_process = subprocess.Popen(
             ffmpeg_cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,  # Prevent stderr buffer overflow!
+            stderr=subprocess.PIPE,  # Capture stderr for debugging
             bufsize=10**8
         )
-        
-        # Wait for ffmpeg to start and begin decoding
-        logger.info("Waiting for ffmpeg to start decoding (5 seconds)...")
-        time.sleep(5)
 
-        # Check if process is still running
+        # Wait for ffmpeg to start and begin decoding
+        logger.info("Waiting for ffmpeg to start decoding (10 seconds)...")
+
+        # Check process status periodically
+        for i in range(10):
+            time.sleep(1)
+            if self.ffmpeg_process.poll() is not None:
+                # Process terminated, capture error
+                _, stderr = self.ffmpeg_process.communicate()
+                error_msg = stderr.decode('utf-8', errors='ignore') if stderr else "No error message"
+                logger.error(f"ffmpeg process terminated during startup (exit code: {self.ffmpeg_process.returncode})")
+                logger.error(f"ffmpeg stderr: {error_msg}")
+                raise RuntimeError(f"ffmpeg process terminated unexpectedly (exit code: {self.ffmpeg_process.returncode}). Error: {error_msg}")
+
+            logger.debug(f"ffmpeg startup check {i+1}/10...")
+
+        # Process is still running, switch stderr to DEVNULL to prevent buffer overflow
+        logger.info("ffmpeg started successfully, switching to production mode...")
+
+        # Create new process with stderr redirected to DEVNULL
+        old_process = self.ffmpeg_process
+        self.ffmpeg_process = subprocess.Popen(
+            ffmpeg_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,  # Prevent stderr buffer overflow in production
+            bufsize=10**8
+        )
+
+        # Terminate the old process
+        old_process.terminate()
+        try:
+            old_process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            old_process.kill()
+
+        # Wait a bit for new process to stabilize
+        time.sleep(2)
+
+        # Final check
         if self.ffmpeg_process.poll() is not None:
-            raise RuntimeError(f"ffmpeg process terminated unexpectedly (exit code: {self.ffmpeg_process.returncode})")
-        
+            raise RuntimeError(f"ffmpeg process terminated after restart (exit code: {self.ffmpeg_process.returncode})")
+
         logger.info(f"✓ Stream opened via ffmpeg subprocess: {self.width}x{self.height} @ {self.fps:.1f} FPS")
         self.using_ffmpeg = True
     

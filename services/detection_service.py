@@ -29,12 +29,14 @@ import time
 # Import modules
 from scripts.detect_and_track import PersonReIDPipeline
 from scripts.zone_monitor import process_video_with_zones
+from core.preloaded_manager import preloaded_manager
 
 app = FastAPI(title="Detection Service", version="1.0.0")
 
-# Storage paths
-UPLOAD_DIR = Path("/app/data/uploads")
-OUTPUT_DIR = Path("/app/outputs")
+# Storage paths (use relative paths for development, absolute for Docker)
+project_root = Path(__file__).parent.parent
+UPLOAD_DIR = project_root / "data" / "uploads"
+OUTPUT_DIR = project_root / "outputs"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -42,11 +44,26 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 jobs = {}
 # Progress tracking
 progress_data = {}  # {job_id: {"current_frame": int, "total_frames": int, "tracks": [...]}}
+# Cancellation flags
+cancellation_flags = {}  # {job_id: threading.Event()}
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize pre-loaded components at service startup"""
+    logger.info("🚀 Detection Service starting up...")
+    try:
+        # Initialize pre-loaded components
+        preloaded_manager.initialize()
+        logger.info("✅ Detection Service ready with pre-loaded components")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize pre-loaded components: {e}")
+        logger.warning("⚠️  Service will fall back to lazy loading")
 
 
 class JobStatus(BaseModel):
     job_id: str
-    status: str  # pending, processing, completed, failed
+    status: str  # pending, processing, completed, failed, cancelled
     message: Optional[str] = None
     output_video: Optional[str] = None
     output_csv: Optional[str] = None
@@ -77,6 +94,9 @@ def process_detection(job_id: str, video_path: str, output_video: str,
     try:
         jobs[job_id]["status"] = "processing"
         logger.info(f"Starting detection job {job_id}")
+
+        # Initialize cancellation flag
+        cancellation_flags[job_id] = threading.Event()
 
         # Initialize progress tracking
         progress_data[job_id] = {
@@ -116,7 +136,8 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                 output_csv_path=output_csv,
                 output_json_path=output_json,
                 max_frames=None,
-                progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks)
+                progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks),
+                cancellation_flag=cancellation_flags.get(job_id)
             )
 
             # Create a simple log file for zone monitoring
@@ -145,10 +166,10 @@ def process_detection(job_id: str, video_path: str, output_video: str,
             # Standard detection without zones
             logger.info("Standard detection (no zone monitoring)")
 
-            # Initialize pipeline
-            pipeline = PersonReIDPipeline(config_path=config_path)
+            # Initialize pipeline with pre-loaded components
+            pipeline = PersonReIDPipeline(config_path=config_path, use_preloaded=True)
 
-            # Override config parameters if provided
+            # Override config parameters if provided (for this job only)
             if model_type is not None:
                 pipeline.config['detection']['model_type'] = model_type
 
@@ -158,7 +179,7 @@ def process_detection(job_id: str, video_path: str, output_video: str,
             if track_thresh is not None:
                 pipeline.config['tracking']['track_thresh'] = track_thresh
 
-            # Components will be initialized automatically in process_video()
+            # Components are either pre-loaded or will be initialized automatically
 
             # Get total frames from video (will be 0 for streams)
             import cv2
@@ -176,24 +197,39 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                 output_log_path=output_log,
                 max_frames=max_frames,
                 max_duration_seconds=max_duration_seconds,
-                progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks)
+                progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks),
+                cancellation_flag=cancellation_flags.get(job_id)
             )
 
-        jobs[job_id]["status"] = "completed"
-        jobs[job_id]["message"] = "Detection and tracking completed successfully"
-        jobs[job_id]["output_video"] = output_video
-        jobs[job_id]["output_csv"] = output_csv
-        jobs[job_id]["output_log"] = output_log
-        logger.info(f"Detection job {job_id} completed")
+        # Check if job was cancelled
+        if job_id in cancellation_flags and cancellation_flags[job_id].is_set():
+            jobs[job_id]["status"] = "cancelled"
+            jobs[job_id]["message"] = "Job cancelled by user"
+            logger.info(f"Detection job {job_id} cancelled")
+        else:
+            jobs[job_id]["status"] = "completed"
+            jobs[job_id]["message"] = "Detection and tracking completed successfully"
+            jobs[job_id]["output_video"] = output_video
+            jobs[job_id]["output_csv"] = output_csv
+            jobs[job_id]["output_log"] = output_log
+            logger.info(f"Detection job {job_id} completed")
 
     except Exception as e:
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(e)
-        logger.error(f"Detection job {job_id} failed: {e}")
+        # Check if exception was due to cancellation
+        if job_id in cancellation_flags and cancellation_flags[job_id].is_set():
+            jobs[job_id]["status"] = "cancelled"
+            jobs[job_id]["message"] = "Job cancelled by user"
+            logger.info(f"Detection job {job_id} cancelled (exception during cancellation)")
+        else:
+            jobs[job_id]["status"] = "failed"
+            jobs[job_id]["error"] = str(e)
+            logger.error(f"Detection job {job_id} failed: {e}")
     finally:
-        # Cleanup progress data after some time
+        # Cleanup
         if job_id in progress_data:
             progress_data[job_id]["cleanup_time"] = time.time()
+        if job_id in cancellation_flags:
+            del cancellation_flags[job_id]
 
 
 def _update_progress(job_id: str, frame_id: int, tracks: List[dict]):
@@ -212,6 +248,65 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.post("/test_stream")
+async def test_stream_connection(request: dict):
+    """
+    Test stream connection without starting full processing
+    Useful for debugging stream issues
+
+    Body: {"stream_url": "udp://127.0.0.1:1905"}
+    """
+    stream_url = request.get("stream_url")
+
+    if not stream_url:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "message": "stream_url is required in request body"
+            }
+        )
+
+    try:
+        from utils.stream_reader import StreamReader
+
+        logger.info(f"Testing stream connection: {stream_url}")
+
+        # Test stream connection
+        stream_reader = StreamReader(stream_url, use_ffmpeg_for_udp=True)
+        props = stream_reader.get_properties()
+
+        # Try to read a few frames
+        frames_read = 0
+        for i in range(3):
+            ret, frame = stream_reader.read()
+            if ret and frame is not None:
+                frames_read += 1
+            time.sleep(0.1)
+
+        stream_reader.release()
+
+        return JSONResponse(content={
+            "status": "success",
+            "stream_url": stream_url,
+            "properties": props,
+            "frames_read": frames_read,
+            "message": f"Stream test completed. Read {frames_read}/3 frames successfully."
+        })
+
+    except Exception as e:
+        logger.error(f"Stream test failed: {e}")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "status": "error",
+                "stream_url": stream_url,
+                "error": str(e),
+                "message": "Stream connection failed. Check stream URL and ensure stream is broadcasting."
+            }
+        )
 
 
 @app.post("/detect")
@@ -541,6 +636,42 @@ async def download_json(job_id: str):
         media_type="application/json",
         filename=f"{job_id}_zones.json"
     )
+
+
+@app.post("/cancel/{job_id}")
+async def cancel_job(job_id: str):
+    """Cancel a running detection job"""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job_status = jobs[job_id]["status"]
+
+    if job_status in ["completed", "failed"]:
+        return JSONResponse(content={
+            "job_id": job_id,
+            "message": f"Job already {job_status}, cannot cancel"
+        })
+
+    if job_status == "cancelled":
+        return JSONResponse(content={
+            "job_id": job_id,
+            "message": "Job already cancelled"
+        })
+
+    # Set cancellation flag
+    if job_id in cancellation_flags:
+        cancellation_flags[job_id].set()
+        logger.info(f"Cancellation requested for job {job_id}")
+
+    # Update job status
+    jobs[job_id]["status"] = "cancelled"
+    jobs[job_id]["message"] = "Job cancelled by user"
+
+    return JSONResponse(content={
+        "job_id": job_id,
+        "status": "cancelled",
+        "message": "Job cancellation requested"
+    })
 
 
 if __name__ == "__main__":

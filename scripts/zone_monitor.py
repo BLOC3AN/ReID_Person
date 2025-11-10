@@ -465,7 +465,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                              similarity_threshold=0.8, iou_threshold=0.6, zone_opacity=0.15,
                              output_dir=None, max_frames=None,
                              output_video_path=None, output_csv_path=None, output_json_path=None,
-                             progress_callback=None):
+                             progress_callback=None, cancellation_flag=None):
     """
     Process video with zone monitoring integrated into ReID pipeline
 
@@ -478,6 +478,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                       Note: Parameter name is 'iou_threshold' for backward compatibility,
                       but it's actually IoP (Intersection over Person) threshold.
                       IoP = 0.6 means 60% of person's body is inside the zone.
+        cancellation_flag: Optional threading.Event() to signal cancellation
         zone_opacity: Zone fill opacity (default: 0.15 = 15%)
         output_dir: Output directory for results (used if specific paths not provided)
         max_frames: Maximum frames to process
@@ -567,6 +568,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     start_time = time.time()
 
     while True:
+        # Check cancellation flag
+        if cancellation_flag is not None and cancellation_flag.is_set():
+            logger.info("Processing cancelled by user")
+            break
+
         ret, frame = cap.read()
         if not ret:
             break

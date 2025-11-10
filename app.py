@@ -359,10 +359,11 @@ elif page == "Detect & Track":
         col1, col2 = st.columns([2, 1])
 
         with col1:
-            stream_url = st.text_input(
-                "Stream URL",
+            stream_url = st.text_area(
+                "Stream URL(s)",
                 value="udp://127.0.0.1:1905",
-                help="Enter UDP or RTSP stream URL (e.g., udp://127.0.0.1:1905, rtsp://camera_ip/stream)"
+                height=100,
+                help="Enter one or more stream URLs:\n- Single camera: udp://127.0.0.1:1905\n- Multiple cameras (comma-separated): udp://127.0.0.1:1905, udp://127.0.0.1:1906\n- Multiple cameras (newline-separated): one URL per line"
             )
 
             st.markdown("### Stream Limits")
@@ -731,9 +732,27 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                         status_text = st.empty()
                         progress_text = st.empty()
                         tracks_container = st.empty()
+                        stop_button_container = st.empty()
 
                         poll_count = 0
+                        user_cancelled = False
+
                         while True:
+                            # Show stop button while processing
+                            if stop_button_container.button("🛑 Stop Processing", type="secondary", key=f"stop_{job_id}_{poll_count}"):
+                                logger.info(f"🛑 [Detect & Track] User requested to stop job: {job_id}")
+                                try:
+                                    cancel_response = requests.post(f"{DETECTION_API_URL}/cancel/{job_id}")
+                                    if cancel_response.status_code == 200:
+                                        logger.info(f"✅ [Detect & Track] Cancellation request sent for job: {job_id}")
+                                        user_cancelled = True
+                                        st.warning("⚠️ Stopping processing... Please wait.")
+                                    else:
+                                        logger.error(f"❌ [Detect & Track] Failed to cancel job: {cancel_response.text}")
+                                        st.error(f"Failed to cancel job: {cancel_response.text}")
+                                except Exception as e:
+                                    logger.error(f"❌ [Detect & Track] Error cancelling job: {e}")
+                                    st.error(f"Error cancelling job: {e}")
                             poll_count += 1
                             # Get progress
                             try:
@@ -784,6 +803,8 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                                     progress_bar.progress(1.0)
                                     logger.info(f"✅ [Detect & Track] Detection completed: {job_id}")
                                     st.success("✅ Detection complete!")
+                                    # Clear stop button
+                                    stop_button_container.empty()
 
                                     # Fetch results ONCE and cache in session state
                                     video_url = f"{DETECTION_API_URL}/download/video/{job_id}"
@@ -834,6 +855,15 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                                 elif status["status"] == "failed":
                                     logger.error(f"❌ [Detect & Track] Detection failed: {status.get('error', 'Unknown error')}")
                                     st.error(f"❌ Detection failed: {status.get('error', 'Unknown error')}")
+                                    # Clear stop button
+                                    stop_button_container.empty()
+                                    break
+
+                                elif status["status"] == "cancelled":
+                                    logger.info(f"🛑 [Detect & Track] Detection cancelled: {job_id}")
+                                    st.warning("⚠️ Processing stopped by user")
+                                    # Clear stop button
+                                    stop_button_container.empty()
                                     break
 
                             time.sleep(1)

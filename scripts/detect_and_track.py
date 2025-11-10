@@ -20,32 +20,53 @@ from loguru import logger
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB
+from core.preloaded_manager import preloaded_manager
 from utils.stream_reader import StreamReader
+from utils.multi_stream_reader import MultiStreamReader, parse_stream_urls
 
 
 class PersonReIDPipeline:
     """Main pipeline for person detection, tracking, and re-identification"""
-    
-    def __init__(self, config_path=None):
-        """Initialize pipeline with configuration"""
-        # Load config
-        if config_path is None:
-            config_path = Path(__file__).parent.parent / "configs" / "config.yaml"
-        
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
-        
-        # Setup logging
-        self.setup_logging()
-        
-        # Initialize components
-        self.detector = None
-        self.tracker = None
-        self.extractor = None
-        self.database = None
-        
+
+    def __init__(self, config_path=None, use_preloaded=True):
+        """
+        Initialize pipeline with configuration
+
+        Args:
+            config_path: Path to config file (optional)
+            use_preloaded: Use pre-loaded components if available (default: True)
+        """
+        self.use_preloaded = use_preloaded
+
+        # Try to use pre-loaded components first
+        if use_preloaded and preloaded_manager.is_initialized():
+            logger.info("🚀 Using pre-loaded components (instant ready)")
+            self.detector, self.tracker, self.extractor, self.database, self.config = preloaded_manager.get_components()
+            self._preloaded = True
+        else:
+            # Fallback to lazy loading
+            logger.info("⏳ Using lazy loading (components will be initialized on demand)")
+
+            # Load config
+            if config_path is None:
+                config_path = Path(__file__).parent.parent / "configs" / "config.yaml"
+
+            with open(config_path, 'r') as f:
+                self.config = yaml.safe_load(f)
+
+            # Setup logging
+            self.setup_logging()
+
+            # Initialize components as None (lazy loading)
+            self.detector = None
+            self.tracker = None
+            self.extractor = None
+            self.database = None
+            self._preloaded = False
+
         logger.info("="*80)
         logger.info("Person ReID Pipeline Initialized")
+        logger.info(f"Mode: {'Pre-loaded' if self._preloaded else 'Lazy Loading'}")
         logger.info("="*80)
     
     def setup_logging(self):
@@ -129,7 +150,8 @@ class PersonReIDPipeline:
     
     def process_video(self, video_path, similarity_threshold=0.8, output_dir=None,
                       output_video_path=None, output_csv_path=None, output_log_path=None,
-                      max_frames=None, max_duration_seconds=None, progress_callback=None):
+                      max_frames=None, max_duration_seconds=None, progress_callback=None,
+                      cancellation_flag=None):
         """
         Process video with detection, tracking, and ReID
 
@@ -143,40 +165,59 @@ class PersonReIDPipeline:
             output_log_path: Specific path for output log (optional)
             max_frames: Maximum frames to process (None for all)
             max_duration_seconds: Maximum duration in seconds to process (None for all)
+            cancellation_flag: Optional threading.Event() to signal cancellation
         """
         logger.info("="*80)
         logger.info(f"Processing Video: {video_path}")
         logger.info("="*80)
 
-        # Initialize components if not already initialized
-        if self.detector is None:
-            logger.info("Initializing detector...")
-            self.initialize_detector()
+        # Initialize components if not pre-loaded
+        if not self._preloaded:
+            if self.detector is None:
+                logger.info("Initializing detector...")
+                self.initialize_detector()
 
-        if self.tracker is None:
-            logger.info("Initializing tracker...")
-            self.initialize_tracker()
+            if self.tracker is None:
+                logger.info("Initializing tracker...")
+                self.initialize_tracker()
 
-        if self.extractor is None:
-            logger.info("Initializing feature extractor...")
-            self.initialize_extractor()
+            if self.extractor is None:
+                logger.info("Initializing feature extractor...")
+                self.initialize_extractor()
 
-        if self.database is None:
-            logger.info("Initializing database...")
-            self.initialize_database()
+            if self.database is None:
+                logger.info("Initializing database...")
+                self.initialize_database()
+        else:
+            logger.debug("Components already pre-loaded, skipping initialization")
 
-        # Open video/stream using StreamReader
+        # Parse video_path to check if it contains multiple URLs
+        urls = parse_stream_urls(video_path)
+
+        # Open video/stream using appropriate reader
         try:
-            stream_reader = StreamReader(video_path, use_ffmpeg_for_udp=True)
+            if len(urls) > 1:
+                # Multiple cameras - use MultiStreamReader
+                logger.info(f"Detected {len(urls)} camera streams")
+                stream_reader = MultiStreamReader(urls, use_ffmpeg_for_udp=True)
+            else:
+                # Single camera - use StreamReader
+                stream_reader = StreamReader(video_path, use_ffmpeg_for_udp=True)
+
             props = stream_reader.get_properties()
 
             logger.info("="*80)
             logger.info("Stream Properties:")
             logger.info(f"  Source: {props['source']}")
+            if 'sources' in props:
+                for i, src in enumerate(props['sources']):
+                    logger.info(f"    Camera {i+1}: {src}")
             logger.info(f"  Resolution: {props['width']}x{props['height']}")
             logger.info(f"  FPS: {props['fps']:.1f}")
             logger.info(f"  Type: {'Stream' if props['is_stream'] else 'File'}")
             logger.info(f"  Backend: {'ffmpeg subprocess' if props['using_ffmpeg'] else 'OpenCV'}")
+            if 'num_streams' in props:
+                logger.info(f"  Number of cameras: {props['num_streams']}")
             logger.info("="*80)
 
             width = props['width']
@@ -260,6 +301,7 @@ class PersonReIDPipeline:
         # FPS tracking
         fps_history = []
         frame_start_time = time.time()
+        avg_fps = 0.0  # Initialize avg_fps to prevent "referenced before assignment" error
 
         logger.info("="*80)
         logger.info("Starting Processing...")
@@ -270,6 +312,11 @@ class PersonReIDPipeline:
         max_consecutive_failures = 30 if is_stream else 3  # Increased for streams
 
         while True:
+            # Check cancellation flag
+            if cancellation_flag is not None and cancellation_flag.is_set():
+                logger.info("Processing cancelled by user")
+                break
+
             ret, frame = stream_reader.read()
 
             # Handle read failures
