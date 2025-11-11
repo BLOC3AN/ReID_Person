@@ -1,6 +1,6 @@
 detection:
-  # Backend selection: pytorch or tensorrt
-  backend: pytorch  # Options: pytorch, tensorrt
+  # Backend selection: pytorch, tensorrt, or triton
+  backend: pytorch  # Options: pytorch, tensorrt, triton
 
   # PyTorch model paths
   model_type: mot17
@@ -11,6 +11,20 @@ detection:
   tensorrt_engine_mot17: models/bytetrack_x_mot17_fp16.trt
   tensorrt_engine_yolox: models/yolox_x_fp16.trt
 
+  # Triton Inference Server settings (used when backend=triton)
+  triton:
+    url: localhost:8101  # Triton gRPC endpoint (changed from 8001 to avoid conflict)
+    model_name: bytetrack_tensorrt  # Model name in Triton repository
+    model_version: ''  # Empty string = latest version
+    timeout: 10.0  # Request timeout in seconds
+    verbose: false  # Enable verbose logging
+
+    # Dynamic batching settings (configured in Triton model config)
+    # These are for reference - actual config is in model repository
+    max_batch_size: 8  # Maximum batch size for dynamic batching
+    max_queue_delay_ms: 5  # Max delay to wait for batching (milliseconds)
+    preferred_batch_sizes: [1, 2, 4, 8]  # Preferred batch sizes
+
   # Detection parameters
   conf_threshold: 0.5
   nms_threshold: 0.45
@@ -18,7 +32,7 @@ detection:
   - 640
   - 640
   device: cuda
-  fp16: true  # Only for PyTorch backend (TensorRT uses engine precision)
+  fp16: true  # Only for PyTorch backend (TensorRT/Triton use engine precision)
 tracking:
   track_thresh: 0.5
   track_buffer: 30

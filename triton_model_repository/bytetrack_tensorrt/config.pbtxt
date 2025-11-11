@@ -1,0 +1,70 @@
+name: "bytetrack_tensorrt"
+platform: "tensorrt_plan"
+max_batch_size: 1
+
+input [
+  {
+    name: "images"
+    data_type: TYPE_FP32
+    dims: [ 3, 640, 640 ]
+  }
+]
+
+output [
+  {
+    name: "output"
+    data_type: TYPE_FP32
+    dims: [ 8400, 6 ]
+  }
+]
+
+# Note: Dynamic batching disabled because TensorRT engine was built with fixed batch_size=1
+# To enable batching, re-export ONNX and rebuild TensorRT engine with dynamic batch support
+
+# Instance group configuration
+instance_group [
+  {
+    # Number of instances per GPU
+    count: 1
+    
+    # GPU device
+    kind: KIND_GPU
+    
+    # Use GPU 0
+    gpus: [ 0 ]
+  }
+]
+
+# Optimization settings
+optimization {
+  # Enable CUDA graphs for faster inference
+  cuda {
+    graphs: true
+    graph_spec {
+      batch_size: 1
+      input {
+        key: "images"
+        value {
+          dim: [ 3, 640, 640 ]
+        }
+      }
+    }
+  }
+}
+
+# Model warmup
+model_warmup [
+  {
+    name: "batch_size_1"
+    batch_size: 1
+    inputs {
+      key: "images"
+      value {
+        data_type: TYPE_FP32
+        dims: [ 3, 640, 640 ]
+        zero_data: true
+      }
+    }
+  }
+]
+

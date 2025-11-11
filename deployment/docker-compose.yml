@@ -1,4 +1,39 @@
 services:
+  # Triton Inference Server (for multi-stream optimization)
+  triton:
+    image: nvcr.io/nvidia/tritonserver:24.01-py3
+    container_name: triton_inference_server
+    runtime: nvidia
+    network_mode: "host"
+    volumes:
+      - ../triton_model_repository:/models:ro
+      - ../logs/triton:/logs
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - TRT_LOGGER_LEVEL=WARNING
+    command: >
+      tritonserver
+      --model-repository=/models
+      --strict-model-config=false
+      --http-port=8100
+      --grpc-port=8101
+      --metrics-port=8102
+      --log-verbose=1
+      --log-info=true
+      --log-warning=true
+      --log-error=true
+      --exit-on-error=false
+      --model-control-mode=poll
+      --repository-poll-secs=30
+    restart: unless-stopped
+    shm_size: '4gb'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8100/v2/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   # UI Service (Streamlit)
   ui:
     build:
@@ -101,14 +136,19 @@ services:
       - ../logs:/app/logs
       - ../configs:/app/configs
       - ../models:/app/models
+      - ../triton_model_repository:/app/triton_model_repository:ro
     environment:
       - QDRANT_HOST=127.0.0.1
       - QDRANT_PORT=6333
       - NVIDIA_VISIBLE_DEVICES=all
+      - TRITON_URL=localhost:8001
     env_file:
       - ../configs/.env
     restart: unless-stopped
     shm_size: '4gb'
+    depends_on:
+      triton:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
       interval: 10s

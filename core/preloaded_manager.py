@@ -13,6 +13,7 @@ from typing import Optional
 
 from .detector import YOLOXDetector
 from .detector_trt import TensorRTDetector
+from .detector_triton import TritonDetector
 from .tracker import ByteTrackWrapper
 from .feature_extractor import ArcFaceExtractor
 from .vector_db import QdrantVectorDB
@@ -107,13 +108,31 @@ class PreloadedPipelineManager:
             self.config = yaml.safe_load(f)
     
     def _init_detector(self) -> None:
-        """Initialize detector (PyTorch or TensorRT)"""
+        """Initialize detector (PyTorch, TensorRT, or Triton)"""
         cfg = self.config['detection']
         backend = cfg.get('backend', 'pytorch').lower()
 
         logger.info(f"Loading detector with backend: {backend}")
 
-        if backend == 'tensorrt':
+        if backend == 'triton':
+            # Triton Inference Server backend
+            triton_cfg = cfg['triton']
+
+            self.detector = TritonDetector(
+                triton_url=triton_cfg['url'],
+                model_name=triton_cfg['model_name'],
+                model_version=triton_cfg.get('model_version', ''),
+                conf_thresh=cfg['conf_threshold'],
+                nms_thresh=cfg['nms_threshold'],
+                test_size=tuple(cfg['test_size']),
+                timeout=triton_cfg.get('timeout', 10.0),
+                verbose=triton_cfg.get('verbose', False)
+            )
+            logger.info("✓ Triton Detector loaded")
+            logger.info(f"  Server: {triton_cfg['url']}")
+            logger.info(f"  Model: {triton_cfg['model_name']}")
+
+        elif backend == 'tensorrt':
             # TensorRT backend
             model_type = cfg.get('model_type', 'mot17')
             if model_type == 'mot17':
