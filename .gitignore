@@ -308,3 +308,9 @@ docker-volumes/
 *.backup
 *_backup
 *_old
+
+
+uploads/
+
+
+triton_model_repository/
