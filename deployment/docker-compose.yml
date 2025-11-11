@@ -141,7 +141,7 @@ services:
       - QDRANT_HOST=127.0.0.1
       - QDRANT_PORT=6333
       - NVIDIA_VISIBLE_DEVICES=all
-      - TRITON_URL=localhost:8001
+      - TRITON_URL=localhost:8101
     env_file:
       - ../configs/.env
     restart: unless-stopped

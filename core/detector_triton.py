@@ -1,48 +1,31 @@
 #!/usr/bin/env python3
 """
-Triton Inference Server Detector
-Optimized for multi-stream camera inference with dynamic batching
+Triton Inference Server detector for YOLOX/ByteTrack
+Optimized for multi-stream inference with dynamic batching
 """
 
 import numpy as np
 import cv2
-from typing import Tuple, Optional
+from typing import Tuple, List, Optional
 from loguru import logger
 
 try:
     import tritonclient.grpc as grpcclient
-    from tritonclient.utils import InferenceServerException
-    TRITON_AVAILABLE = True
 except ImportError:
-    TRITON_AVAILABLE = False
-    logger.warning("tritonclient not installed. Install with: pip install tritonclient[all]")
+    logger.error("tritonclient not installed. Install with: pip install tritonclient[all]")
+    raise
 
 
 class TritonDetector:
     """
-    YOLOX Detector using NVIDIA Triton Inference Server
-    
-    Features:
-    - Dynamic batching for multi-stream cameras
-    - Async inference support
-    - Automatic model warmup
-    - Connection pooling
-    
-    Args:
-        triton_url: Triton server URL (e.g., 'localhost:8001')
-        model_name: Model name in Triton repository
-        model_version: Model version (default: latest)
-        conf_thresh: Confidence threshold for detections
-        nms_thresh: NMS threshold
-        test_size: Input size (height, width)
-        timeout: Request timeout in seconds
-        verbose: Enable verbose logging
+    YOLOX detector using Triton Inference Server
+    Supports gRPC protocol for low-latency inference
     """
     
     def __init__(
         self,
-        triton_url: str = 'localhost:8001',
-        model_name: str = 'bytetrack_tensorrt',
+        triton_url: str,
+        model_name: str,
         model_version: str = '',
         conf_thresh: float = 0.5,
         nms_thresh: float = 0.45,
@@ -50,33 +33,49 @@ class TritonDetector:
         timeout: float = 10.0,
         verbose: bool = False
     ):
-        if not TRITON_AVAILABLE:
-            raise ImportError(
-                "tritonclient not installed. Install with:\n"
-                "  pip install tritonclient[all]"
-            )
+        """
+        Initialize Triton detector
         
+        Args:
+            triton_url: Triton server URL (host:port for gRPC)
+            model_name: Model name in Triton repository
+            model_version: Model version (empty string for latest)
+            conf_thresh: Confidence threshold
+            nms_thresh: NMS threshold
+            test_size: Input size (height, width)
+            timeout: Request timeout in seconds
+            verbose: Enable verbose logging
+        """
         self.triton_url = triton_url
         self.model_name = model_name
         self.model_version = model_version
         self.conf_thresh = conf_thresh
         self.nms_thresh = nms_thresh
         self.test_size = test_size
-        self.timeout = timeout
         self.verbose = verbose
         
-        # Initialize Triton client
+        # Convert timeout to milliseconds (integer)
+        self.timeout = int(timeout * 1000)
+        
+        # Preprocessing params (same as YOLOX)
+        self.rgb_means = (0.485, 0.456, 0.406)
+        self.std = (0.229, 0.224, 0.225)
+        
+        logger.info(f"Initializing Triton Detector...")
+        logger.info(f"  Server: {triton_url}")
+        logger.info(f"  Model: {model_name}")
+        logger.info(f"  Timeout: {timeout}s")
+        
+        # Initialize gRPC client
         self._init_client()
         
         # Get model metadata
         self._get_model_info()
         
         # Warmup
-        self._warmup()
-        
-        logger.info("✅ Triton Detector initialized successfully")
+        self._warmup(num_iterations=3)
     
-    def _init_client(self):
+    def _init_client(self) -> None:
         """Initialize Triton gRPC client"""
         try:
             self.client = grpcclient.InferenceServerClient(
@@ -86,18 +85,18 @@ class TritonDetector:
             
             # Check server health
             if not self.client.is_server_live():
-                raise ConnectionError(f"Triton server at {self.triton_url} is not live")
+                raise RuntimeError(f"Triton server at {self.triton_url} is not live")
             
             if not self.client.is_server_ready():
-                raise ConnectionError(f"Triton server at {self.triton_url} is not ready")
+                raise RuntimeError(f"Triton server at {self.triton_url} is not ready")
             
             logger.info(f"✓ Connected to Triton server at {self.triton_url}")
             
         except Exception as e:
-            logger.error(f"❌ Failed to connect to Triton server: {e}")
+            logger.error(f"Failed to connect to Triton server: {e}")
             raise
     
-    def _get_model_info(self):
+    def _get_model_info(self) -> None:
         """Get model metadata from Triton"""
         try:
             # Get model metadata
@@ -126,26 +125,32 @@ class TritonDetector:
             # Check if dynamic batching is enabled
             if hasattr(config, 'dynamic_batching'):
                 logger.info(f"  Dynamic batching: ENABLED")
-                if hasattr(config.dynamic_batching, 'max_queue_delay_microseconds'):
-                    delay_us = config.dynamic_batching.max_queue_delay_microseconds
-                    logger.info(f"  Max queue delay: {delay_us/1000:.1f}ms")
+            else:
+                logger.info(f"  Dynamic batching: DISABLED")
             
-        except InferenceServerException as e:
-            logger.error(f"❌ Failed to get model info: {e}")
+            logger.info("✓ Model metadata loaded")
+            
+        except Exception as e:
+            logger.error(f"Failed to get model metadata: {e}")
             raise
     
-    def _warmup(self, num_iterations: int = 3):
+    def _warmup(self, num_iterations: int = 3) -> None:
         """Warmup model with dummy inputs"""
         logger.info(f"Warming up model ({num_iterations} iterations)...")
-        
-        dummy_input = np.random.rand(1, 3, *self.test_size).astype(np.float32)
-        
+
+        # Create dummy input with correct shape and dtype
+        h, w = self.test_size
+        if self.input_dtype == 'FP16':
+            dummy_input = np.random.rand(1, 3, h, w).astype(np.float16)
+        else:
+            dummy_input = np.random.rand(1, 3, h, w).astype(np.float32)
+
         for i in range(num_iterations):
             try:
                 self._infer(dummy_input)
             except Exception as e:
                 logger.warning(f"Warmup iteration {i+1} failed: {e}")
-        
+
         logger.info("✓ Model warmed up")
     
     def _infer(self, input_data: np.ndarray) -> np.ndarray:
@@ -171,7 +176,7 @@ class TritonDetector:
             model_version=self.model_version,
             inputs=inputs,
             outputs=outputs,
-            timeout=self.timeout
+            client_timeout=self.timeout
         )
         
         # Get output
@@ -181,36 +186,29 @@ class TritonDetector:
     
     def preprocess(self, img: np.ndarray) -> Tuple[np.ndarray, float]:
         """
-        Preprocess image for inference
-        
+        Preprocess image using YOLOX's preproc function
+
         Args:
             img: Input image (BGR format)
-            
+
         Returns:
             Tuple of (preprocessed_tensor, scale_ratio)
         """
-        if len(img.shape) == 3:
-            padded_img = np.ones((self.test_size[0], self.test_size[1], 3), dtype=np.uint8) * 114
-        else:
-            padded_img = np.ones(self.test_size, dtype=np.uint8) * 114
-        
-        # Calculate scale
-        r = min(self.test_size[0] / img.shape[0], self.test_size[1] / img.shape[1])
-        resized_img = cv2.resize(
-            img,
-            (int(img.shape[1] * r), int(img.shape[0] * r)),
-            interpolation=cv2.INTER_LINEAR,
-        ).astype(np.uint8)
-        
-        # Paste resized image
-        padded_img[: int(img.shape[0] * r), : int(img.shape[1] * r)] = resized_img
-        
-        # Convert to tensor format [1, 3, H, W]
-        padded_img = padded_img.transpose((2, 0, 1))  # HWC -> CHW
-        padded_img = np.ascontiguousarray(padded_img, dtype=np.float32)
-        padded_img = np.expand_dims(padded_img, axis=0)  # Add batch dimension
-        
-        return padded_img, r
+        # Use YOLOX's preproc function for consistency
+        from yolox.data.data_augment import preproc
+
+        # preproc returns (img_tensor, ratio)
+        # img_tensor shape: [3, H, W], dtype: float32, normalized
+        img_tensor, ratio = preproc(img, self.test_size, self.rgb_means, self.std)
+
+        # Add batch dimension: [1, 3, H, W]
+        img_tensor = np.expand_dims(img_tensor, axis=0)
+
+        # Convert to FP16 if model expects FP16
+        if self.input_dtype == 'FP16':
+            img_tensor = img_tensor.astype(np.float16)
+
+        return img_tensor, ratio
     
     def postprocess(
         self,
@@ -220,37 +218,120 @@ class TritonDetector:
     ) -> np.ndarray:
         """
         Postprocess model outputs
-        
+
         Args:
-            outputs: Model output [batch, num_detections, 6] (x1, y1, x2, y2, conf, class)
+            outputs: Model output [batch, num_detections, 6] - RAW format (cx, cy, w, h, obj_conf, cls_conf)
             img_size: Original image size (height, width)
             ratio: Scale ratio from preprocessing
-            
+
         Returns:
-            Detections array [N, 5] (x1, y1, x2, y2, conf)
+            detections: (N, 5) - [x1, y1, x2, y2, conf]
         """
-        # Remove batch dimension
+        from yolox.utils.demo_utils import multiclass_nms
+
+        # Step 1: Decode outputs from grid format to absolute coordinates
+        # outputs shape: [batch, 8400, 6] where 8400 = 80x80 + 40x40 + 20x20
+        # Format: [cx_offset, cy_offset, w_log, h_log, objectness_logit, class_conf_logit]
+
+        # IMPORTANT: Make a writable copy
+        outputs = np.array(outputs, copy=True)
+
+        # Remove batch dimension first
         if len(outputs.shape) == 3:
-            outputs = outputs[0]
-        
-        # Filter by confidence
-        mask = outputs[:, 4] >= self.conf_thresh
-        outputs = outputs[mask]
-        
-        if len(outputs) == 0:
+            outputs = outputs[0]  # [num_detections, 6]
+
+        # Check if outputs are ALREADY DECODED (w/h > 100 means absolute pixels, not log values)
+        # The TensorRT model has decode_in_inference=True by default, so outputs are already decoded
+        max_w_h = max(np.max(outputs[:, 2]), np.max(outputs[:, 3]))
+
+        if max_w_h > 100:
+            # Model outputs are ALREADY DECODED: [cx, cy, w, h, obj_conf, cls_conf]
+            # Confidence scores are already probabilities (0-1), no need for sigmoid
+            obj_conf = outputs[:, 4]
+            cls_conf = outputs[:, 5]
+        else:
+            # Model outputs are RAW: [cx_offset, cy_offset, w_log, h_log, obj_logit, cls_logit]
+            # Need to decode grid offsets and apply sigmoid
+
+            strides = [8, 16, 32]
+            hsizes = [self.test_size[0] // stride for stride in strides]
+            wsizes = [self.test_size[1] // stride for stride in strides]
+
+            grids = []
+            expanded_strides = []
+
+            for hsize, wsize, stride in zip(hsizes, wsizes, strides):
+                xv, yv = np.meshgrid(np.arange(wsize), np.arange(hsize))
+                grid = np.stack((xv, yv), 2).reshape(1, -1, 2)
+                grids.append(grid)
+                shape = grid.shape[:2]
+                expanded_strides.append(np.full((*shape, 1), stride))
+
+            grids = np.concatenate(grids, 1)
+            expanded_strides = np.concatenate(expanded_strides, 1)
+
+            # Decode center coordinates
+            outputs[..., :2] = (outputs[..., :2] + grids) * expanded_strides
+
+            # Decode width/height
+            outputs[..., 2:4] = np.exp(outputs[..., 2:4]) * expanded_strides
+
+            # Apply sigmoid to confidence scores
+            obj_conf = 1.0 / (1.0 + np.exp(-outputs[:, 4]))
+            cls_conf = 1.0 / (1.0 + np.exp(-outputs[:, 5]))
+
+        # Compute final confidence (objectness * class_conf)
+        scores = obj_conf * cls_conf
+
+        # Step 4: Filter by confidence threshold
+        mask = scores >= self.conf_thresh
+
+        if not np.any(mask):
             return np.empty((0, 5))
-        
-        # Scale boxes back to original image size
-        outputs[:, :4] /= ratio
-        
+
+        # Apply mask to all data
+        filtered_outputs = outputs[mask]
+        filtered_scores = scores[mask]
+
+        if len(filtered_outputs) == 0:
+            return np.empty((0, 5))
+
+        boxes = np.zeros((len(filtered_outputs), 4), dtype=np.float32)
+        boxes[:, 0] = filtered_outputs[:, 0] - filtered_outputs[:, 2] / 2  # x1 = cx - w/2
+        boxes[:, 1] = filtered_outputs[:, 1] - filtered_outputs[:, 3] / 2  # y1 = cy - h/2
+        boxes[:, 2] = filtered_outputs[:, 0] + filtered_outputs[:, 2] / 2  # x2 = cx + w/2
+        boxes[:, 3] = filtered_outputs[:, 1] + filtered_outputs[:, 3] / 2  # y2 = cy + h/2
+
+        # Step 6: Scale boxes back to original image size
+        boxes /= ratio
+
+        # Step 7: Apply NMS (Non-Maximum Suppression)
+        # multiclass_nms expects: (boxes, scores, nms_thr, score_thr)
+        # scores shape should be [N, num_classes]
+        scores_expanded = filtered_scores[:, np.newaxis]  # [N, 1] for single class
+
+        nms_output = multiclass_nms(
+            boxes,
+            scores_expanded,
+            nms_thr=self.nms_thresh,
+            score_thr=self.conf_thresh
+        )
+
+        if nms_output is None or len(nms_output) == 0:
+            return np.empty((0, 5))
+
+        # nms_output format: [x1, y1, x2, y2, score, class_id]
+        # We need: [x1, y1, x2, y2, score]
+        detections = nms_output[:, :5]
+
         # Clip to image boundaries
-        outputs[:, 0] = np.clip(outputs[:, 0], 0, img_size[1])
-        outputs[:, 1] = np.clip(outputs[:, 1], 0, img_size[0])
-        outputs[:, 2] = np.clip(outputs[:, 2], 0, img_size[1])
-        outputs[:, 3] = np.clip(outputs[:, 3], 0, img_size[0])
-        
+        detections[:, 0] = np.clip(detections[:, 0], 0, img_size[1])
+        detections[:, 1] = np.clip(detections[:, 1], 0, img_size[0])
+        detections[:, 2] = np.clip(detections[:, 2], 0, img_size[1])
+        detections[:, 3] = np.clip(detections[:, 3], 0, img_size[0])
+
         # Return [x1, y1, x2, y2, conf]
-        return outputs[:, :5]
+        return detections
     
     def detect(self, img: np.ndarray) -> np.ndarray:
         """
@@ -260,30 +341,28 @@ class TritonDetector:
             img: Input image (BGR format)
             
         Returns:
-            Detections array [N, 5] (x1, y1, x2, y2, conf)
+            detections: (N, 5) - [x1, y1, x2, y2, conf]
         """
-        img_size = img.shape[:2]
-        
         # Preprocess
-        input_tensor, ratio = self.preprocess(img)
+        img_tensor, ratio = self.preprocess(img)
         
         # Inference
-        outputs = self._infer(input_tensor)
+        outputs = self._infer(img_tensor)
         
         # Postprocess
-        detections = self.postprocess(outputs, img_size, ratio)
+        detections = self.postprocess(outputs, img.shape[:2], ratio)
         
         return detections
     
-    def detect_batch(self, imgs: list) -> list:
+    def detect_batch(self, imgs: List[np.ndarray]) -> List[np.ndarray]:
         """
-        Detect objects in batch of images (for dynamic batching)
+        Detect objects in batch of images
         
         Args:
             imgs: List of input images (BGR format)
             
         Returns:
-            List of detection arrays
+            List of detections for each image
         """
         if len(imgs) == 0:
             return []
@@ -308,20 +387,23 @@ class TritonDetector:
         # Postprocess each output
         results = []
         for i in range(len(imgs)):
-            detections = self.postprocess(
-                batch_outputs[i:i+1],
-                img_sizes[i],
-                ratios[i]
-            )
+            detections = self.postprocess(batch_outputs[i:i+1], img_sizes[i], ratios[i])
             results.append(detections)
         
         return results
     
-    def __del__(self):
-        """Cleanup"""
-        if hasattr(self, 'client'):
-            try:
-                self.client.close()
-            except:
-                pass
+    def get_info(self) -> dict:
+        """Get detector information"""
+        return {
+            'triton_url': self.triton_url,
+            'model_name': self.model_name,
+            'model_version': self.model_version,
+            'conf_thresh': self.conf_thresh,
+            'nms_thresh': self.nms_thresh,
+            'test_size': self.test_size,
+            'input_name': self.input_name,
+            'output_name': self.output_name,
+            'input_shape': self.input_shape,
+            'output_shape': self.output_shape,
+        }
 

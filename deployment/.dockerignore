@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+../hai_venv/
+../hai_venv_py310/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+!README.md
+
+# Logs (will be mounted as volume)
+logs/
+*.log
+
+# Outputs (will be mounted as volume)
+outputs/
+stores/
+
+# Data (will be mounted as volume)
+data/
+
+# Models - EXCLUDE LARGE FILES, mount as volume instead
+models/*.pth.tar
+models/*.onnx
+models/*.trt
+models/*.engine
+triton_model_repository/
+
+# Deployment files
+deployment/*
+!deployment/requirements.ui.txt
+.dockerignore
+Dockerfile*
+docker-compose*.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Test files
+test_*.py
+*_test.py
+tests/
+tools/test_*.py
+tools/benchmark*.py
+
+# Notebooks
+*.ipynb
+*.html
+
+# Old/backup files
+*_old.py
+*_backup.py
+core/detector_triton_old.py
+
+*.mp4 
+
+*.mkv
+
+*.avi
+
+*.mov

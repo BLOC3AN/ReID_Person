@@ -149,9 +149,12 @@ class StreamReader:
 
         # Add UDP-specific options to the source URL
         source_url = self.source
-        if 'udp://' in self.source and '?' not in self.source:
-            # Add options to prevent binding and handle packet loss
-            source_url = f"{self.source}?overrun_nonfatal=1&fifo_size=50000000"
+        if 'udp://' in self.source:
+            # Add options to allow multiple readers and handle packet loss
+            if '?' not in self.source:
+                source_url = f"{self.source}?reuse=1&overrun_nonfatal=1&fifo_size=50000000"
+            elif 'reuse=' not in self.source:
+                source_url = f"{self.source}&reuse=1"
 
         # Build ffmpeg command to decode and output raw BGR24 frames
         ffmpeg_cmd = [

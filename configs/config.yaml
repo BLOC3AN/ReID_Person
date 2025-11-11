@@ -1,6 +1,7 @@
 detection:
   # Backend selection: pytorch, tensorrt, or triton
-  backend: pytorch  # Options: pytorch, tensorrt, triton
+  # PRIORITY: triton (optimized for multi-camera streaming)
+  backend: triton  # Options: pytorch, tensorrt, triton
 
   # PyTorch model paths
   model_type: mot17

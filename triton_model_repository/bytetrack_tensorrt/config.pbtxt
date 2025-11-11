@@ -5,7 +5,7 @@ max_batch_size: 1
 input [
   {
     name: "images"
-    data_type: TYPE_FP32
+    data_type: TYPE_FP16
     dims: [ 3, 640, 640 ]
   }
 ]
@@ -13,13 +13,33 @@ input [
 output [
   {
     name: "output"
-    data_type: TYPE_FP32
+    data_type: TYPE_FP16
     dims: [ 8400, 6 ]
   }
 ]
 
-# Note: Dynamic batching disabled because TensorRT engine was built with fixed batch_size=1
-# To enable batching, re-export ONNX and rebuild TensorRT engine with dynamic batch support
+# Dynamic batching configuration
+# Note: TensorRT engine supports max_batch_size=1, so we can only batch single requests
+# For true multi-batch support, need to rebuild TensorRT engine with dynamic shapes
+dynamic_batching {
+  # Only batch size 1 is supported by current TensorRT engine
+  preferred_batch_size: [ 1 ]
+
+  # Maximum queue delay in microseconds (500us = 0.5ms)
+  # Short delay to reduce latency while still allowing request batching
+  max_queue_delay_microseconds: 500
+
+  # Preserve ordering of requests for consistent results
+  preserve_ordering: true
+
+  # Queue policy - reject requests if queue is full
+  default_queue_policy {
+    timeout_action: REJECT
+    default_timeout_microseconds: 10000
+    allow_timeout_override: true
+    max_queue_size: 32
+  }
+}
 
 # Instance group configuration
 instance_group [
@@ -60,7 +80,7 @@ model_warmup [
     inputs {
       key: "images"
       value {
-        data_type: TYPE_FP32
+        data_type: TYPE_FP16
         dims: [ 3, 640, 640 ]
         zero_data: true
       }
