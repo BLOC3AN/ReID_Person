@@ -544,15 +544,170 @@ docker-compose restart triton
 
 ---
 
+## 🎓 ADVANCED TOPICS
+
+### Model Output Format Detection
+
+The Triton detector automatically detects whether model outputs are **decoded** or **raw**:
+
+```python
+# In core/detector_triton.py postprocess() method
+max_w_h = max(np.max(outputs[:, 2]), np.max(outputs[:, 3]))
+
+if max_w_h > 100:
+    # Model outputs are ALREADY DECODED: [cx, cy, w, h, obj_conf, cls_conf]
+    # Values are in absolute pixels (e.g., w=150, h=200)
+    obj_conf = outputs[:, 4]  # Already probabilities (0-1)
+    cls_conf = outputs[:, 5]
+else:
+    # Model outputs are RAW: [cx_offset, cy_offset, w_log, h_log, obj_logit, cls_logit]
+    # Values are grid offsets and log values (e.g., w=2.5, h=3.1)
+    # Need to decode and apply sigmoid
+    obj_conf = 1 / (1 + np.exp(-outputs[:, 4]))  # Sigmoid
+    cls_conf = 1 / (1 + np.exp(-outputs[:, 5]))
+```
+
+**Why this matters:**
+- YOLOX models can be exported with `decode_in_inference=True` (default) or `False`
+- If `True`: Model outputs decoded coordinates → skip manual decoding
+- If `False`: Model outputs raw grid predictions → need manual decoding
+- Auto-detection eliminates configuration errors
+
+**How it works:**
+- Decoded outputs have w/h in pixels (typically 50-500)
+- Raw outputs have w/h as log values (typically 0-10)
+- Threshold of 100 reliably distinguishes between them
+
+### Multi-GPU Configuration
+
+For systems with multiple GPUs:
+
+```protobuf
+# triton_model_repository/bytetrack_tensorrt/config.pbtxt
+
+instance_group [
+  {
+    count: 2  # 2 instances on GPU 0
+    kind: KIND_GPU
+    gpus: [ 0 ]
+  },
+  {
+    count: 2  # 2 instances on GPU 1
+    kind: KIND_GPU
+    gpus: [ 1 ]
+  }
+]
+```
+
+**Load balancing:**
+- Triton automatically distributes requests across instances
+- Each instance can handle 1 request at a time
+- Total capacity: 4 concurrent requests (2 per GPU)
+
+### Dynamic Batching Tuning
+
+**Scenario 1: Low Latency (1-2 cameras)**
+```protobuf
+dynamic_batching {
+  preferred_batch_size: [ 1 ]
+  max_queue_delay_microseconds: 100  # 0.1ms - minimal batching
+  preserve_ordering: true
+}
+```
+
+**Scenario 2: Balanced (3-4 cameras)**
+```protobuf
+dynamic_batching {
+  preferred_batch_size: [ 1, 2, 4 ]
+  max_queue_delay_microseconds: 500  # 0.5ms - current config
+  preserve_ordering: true
+}
+```
+
+**Scenario 3: High Throughput (8+ cameras)**
+```protobuf
+dynamic_batching {
+  preferred_batch_size: [ 2, 4, 8 ]
+  max_queue_delay_microseconds: 2000  # 2ms - aggressive batching
+  preserve_ordering: false  # Allow reordering for better throughput
+}
+```
+
+### CUDA Graphs for Multiple Batch Sizes
+
+```protobuf
+optimization {
+  cuda {
+    graphs: true
+
+    # Capture graph for batch size 1
+    graph_spec {
+      batch_size: 1
+      input {
+        key: "images"
+        value { dim: [ 3, 640, 640 ] }
+      }
+    }
+
+    # Capture graph for batch size 4
+    graph_spec {
+      batch_size: 4
+      input {
+        key: "images"
+        value { dim: [ 3, 640, 640 ] }
+      }
+    }
+  }
+}
+```
+
+**Note**: Current TensorRT engine has `max_batch_size=1`, so only batch size 1 is supported. To enable larger batches, rebuild engine with dynamic shapes.
+
+### Monitoring with Prometheus
+
+**Expose metrics:**
+```bash
+# Metrics available at http://localhost:8102/metrics
+curl http://localhost:8102/metrics | grep nv_inference
+```
+
+**Key metrics:**
+- `nv_inference_request_success` - Total successful requests
+- `nv_inference_request_failure` - Total failed requests
+- `nv_inference_request_duration_us` - Request latency (microseconds)
+- `nv_inference_queue_duration_us` - Time spent in queue
+- `nv_inference_compute_infer_duration_us` - Actual inference time
+- `nv_gpu_utilization` - GPU utilization percentage
+- `nv_gpu_memory_total_bytes` - Total GPU memory
+- `nv_gpu_memory_used_bytes` - Used GPU memory
+
+**Grafana dashboard example:**
+```yaml
+# Query for average latency
+avg(rate(nv_inference_request_duration_us[5m]))
+
+# Query for throughput (requests/sec)
+rate(nv_inference_request_success[5m])
+
+# Query for GPU utilization
+nv_gpu_utilization{gpu_uuid="GPU-xxxxx"}
+```
+
+---
+
 ## 🔗 REFERENCES
 
 - [Triton Inference Server Docs](https://docs.nvidia.com/deeplearning/triton-inference-server/)
 - [TensorRT Backend](https://github.com/triton-inference-server/tensorrt_backend)
 - [Dynamic Batching](https://docs.nvidia.com/deeplearning/triton-inference-server/user-guide/docs/user_guide/model_configuration.html#dynamic-batcher)
+- [CUDA Graphs](https://docs.nvidia.com/deeplearning/triton-inference-server/user-guide/docs/user_guide/optimization.html#cuda-graphs)
+- [Model Configuration](https://github.com/triton-inference-server/server/blob/main/docs/user_guide/model_configuration.md)
+- [Backend Strategy Guide](../docs/BACKEND_STRATEGY.md)
+- [Stream Processing Strategy](../docs/STREAM_STRATEGY.md)
 
 ---
 
-**Last Updated:** 2025-11-11  
-**Triton Version:** 24.01  
+**Last Updated:** 2025-11-11
+**Triton Version:** 24.01
 **TensorRT Version:** 8.6.1
 
