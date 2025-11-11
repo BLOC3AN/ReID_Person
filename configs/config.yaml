@@ -17,7 +17,7 @@ detection:
     url: localhost:8101  # Triton gRPC endpoint (changed from 8001 to avoid conflict)
     model_name: bytetrack_tensorrt  # Model name in Triton repository
     model_version: ''  # Empty string = latest version
-    timeout: 10.0  # Request timeout in seconds
+    timeout: 20.0  # Request timeout in seconds (increased for multi-stream)
     verbose: false  # Enable verbose logging
 
     # Dynamic batching settings (configured in Triton model config)

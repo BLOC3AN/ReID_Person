@@ -26,7 +26,7 @@ services:
       --model-control-mode=poll
       --repository-poll-secs=30
     restart: unless-stopped
-    shm_size: '4gb'
+    shm_size: '8gb'  # Increased from 4GB for multi-instance support
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8100/v2/health/ready"]
       interval: 10s
