@@ -12,6 +12,7 @@ from loguru import logger
 from typing import Optional
 
 from .detector import YOLOXDetector
+from .detector_trt import TensorRTDetector
 from .tracker import ByteTrackWrapper
 from .feature_extractor import ArcFaceExtractor
 from .vector_db import QdrantVectorDB
@@ -106,26 +107,52 @@ class PreloadedPipelineManager:
             self.config = yaml.safe_load(f)
     
     def _init_detector(self) -> None:
-        """Initialize YOLOX detector"""
-        logger.info("Loading YOLOX detector...")
+        """Initialize detector (PyTorch or TensorRT)"""
         cfg = self.config['detection']
-        
-        model_type = cfg.get('model_type', 'mot17')
-        if model_type == 'mot17':
-            model_path = Path(__file__).parent.parent / cfg['model_path_mot17']
+        backend = cfg.get('backend', 'pytorch').lower()
+
+        logger.info(f"Loading detector with backend: {backend}")
+
+        if backend == 'tensorrt':
+            # TensorRT backend
+            model_type = cfg.get('model_type', 'mot17')
+            if model_type == 'mot17':
+                engine_path = Path(__file__).parent.parent / cfg['tensorrt_engine_mot17']
+            else:
+                engine_path = Path(__file__).parent.parent / cfg['tensorrt_engine_yolox']
+
+            if not engine_path.exists():
+                logger.error(f"❌ TensorRT engine not found: {engine_path}")
+                logger.info("💡 Please convert ONNX to TensorRT first:")
+                logger.info(f"   python tools/convert_tensorrt.py --onnx <onnx_path>")
+                raise FileNotFoundError(f"TensorRT engine not found: {engine_path}")
+
+            self.detector = TensorRTDetector(
+                engine_path=str(engine_path),
+                conf_thresh=cfg['conf_threshold'],
+                nms_thresh=cfg['nms_threshold'],
+                test_size=tuple(cfg['test_size'])
+            )
+            logger.info("✓ TensorRT Detector loaded")
+
         else:
-            model_path = Path(__file__).parent.parent / cfg['model_path_yolox']
-        
-        self.detector = YOLOXDetector(
-            model_path=str(model_path),
-            model_type=model_type,
-            device=cfg['device'],
-            fp16=cfg['fp16'],
-            conf_thresh=cfg['conf_threshold'],
-            nms_thresh=cfg['nms_threshold'],
-            test_size=tuple(cfg['test_size'])
-        )
-        logger.info("✓ Detector loaded")
+            # PyTorch backend (default)
+            model_type = cfg.get('model_type', 'mot17')
+            if model_type == 'mot17':
+                model_path = Path(__file__).parent.parent / cfg['model_path_mot17']
+            else:
+                model_path = Path(__file__).parent.parent / cfg['model_path_yolox']
+
+            self.detector = YOLOXDetector(
+                model_path=str(model_path),
+                model_type=model_type,
+                device=cfg['device'],
+                fp16=cfg['fp16'],
+                conf_thresh=cfg['conf_threshold'],
+                nms_thresh=cfg['nms_threshold'],
+                test_size=tuple(cfg['test_size'])
+            )
+            logger.info("✓ PyTorch Detector loaded")
     
     def _init_tracker(self) -> None:
         """Initialize ByteTrack tracker"""

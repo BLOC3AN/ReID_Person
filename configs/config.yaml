@@ -1,14 +1,24 @@
 detection:
+  # Backend selection: pytorch or tensorrt
+  backend: pytorch  # Options: pytorch, tensorrt
+
+  # PyTorch model paths
   model_type: mot17
   model_path_mot17: models/bytetrack_x_mot17.pth.tar
   model_path_yolox: models/yolox_x.pth
+
+  # TensorRT engine paths (used when backend=tensorrt)
+  tensorrt_engine_mot17: models/bytetrack_x_mot17_fp16.trt
+  tensorrt_engine_yolox: models/yolox_x_fp16.trt
+
+  # Detection parameters
   conf_threshold: 0.5
   nms_threshold: 0.45
   test_size:
   - 640
   - 640
   device: cuda
-  fp16: true
+  fp16: true  # Only for PyTorch backend (TensorRT uses engine precision)
 tracking:
   track_thresh: 0.5
   track_buffer: 30

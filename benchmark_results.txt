@@ -1,0 +1,76 @@
+2025-11-11 11:18:50.576 | INFO     | __main__:main:222 - ================================================================================
+2025-11-11 11:18:50.576 | INFO     | __main__:main:223 - BENCHMARK: PYTORCH VS TENSORRT
+2025-11-11 11:18:50.576 | INFO     | __main__:main:224 - ================================================================================
+2025-11-11 11:18:50.576 | INFO     | __main__:load_test_frames:149 - 📹 Loading test frames from data/test_video.mp4...
+2025-11-11 11:18:51.173 | INFO     | __main__:load_test_frames:170 - ✅ Loaded 100 frames
+2025-11-11 11:18:51.173 | INFO     | __main__:main:237 - 
+================================================================================
+2025-11-11 11:18:51.173 | INFO     | __main__:main:238 - 🔥 PYTORCH DETECTOR
+2025-11-11 11:18:51.173 | INFO     | __main__:main:239 - ================================================================================
+2025-11-11 11:18:51.190 | INFO     | core.detector:__init__:42 - Initializing YOLOX Detector (MOT17)...
+2025-11-11 11:18:51.190 | INFO     | core.detector:__init__:43 -   Device: cuda
+2025-11-11 11:18:51.190 | INFO     | core.detector:__init__:44 -   FP16: True
+2025-11-11 11:18:51.190 | INFO     | core.detector:__init__:45 -   Conf threshold: 0.5
+2025-11-11 11:18:51.190 | INFO     | core.detector:__init__:46 -   NMS threshold: 0.45
+2025-11-11 11:18:53.622 | INFO     | core.detector:__init__:60 - Loading weights from models/bytetrack_x_mot17.pth.tar...
+2025-11-11 11:18:54.399 | INFO     | core.detector:__init__:68 - Fusing model...
+/home/ubuntu/data/hai_venv_py310/lib/python3.10/site-packages/torch/nn/modules/module.py:831: UserWarning: The .grad attribute of a Tensor that is not a leaf Tensor is being accessed. Its .grad attribute won't be populated during autograd.backward(). If you indeed want the .grad field to be populated for a non-leaf Tensor, use .retain_grad() on the non-leaf Tensor. If you access the non-leaf Tensor by mistake, make sure you access the leaf Tensor instead. See github.com/pytorch/pytorch/pull/30531 for more informations. (Triggered internally at aten/src/ATen/core/TensorBody.h:486.)
+  if param.grad is not None:
+2025-11-11 11:18:55.354 | INFO     | core.detector:__init__:78 - ✅ Detector initialized successfully
+2025-11-11 11:18:55.357 | INFO     | __main__:benchmark_detector:36 - 
+🔥 Warming up (10 iterations)...
+/home/ubuntu/data/hai_venv_py310/lib/python3.10/site-packages/torch/functional.py:504: UserWarning: torch.meshgrid: in an upcoming release, it will be required to pass the indexing argument. (Triggered internally at ../aten/src/ATen/native/TensorShape.cpp:3483.)
+  return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+2025-11-11 11:18:56.238 | INFO     | __main__:benchmark_detector:41 - ⏱️  Benchmarking (100 iterations)...
+2025-11-11 11:19:00.804 | INFO     | __main__:main:256 - 
+📊 PyTorch Results:
+2025-11-11 11:19:00.804 | INFO     | __main__:main:257 -   Average: 45.63 ± 12.56 ms
+2025-11-11 11:19:00.805 | INFO     | __main__:main:258 -   Min: 36.92 ms
+2025-11-11 11:19:00.805 | INFO     | __main__:main:259 -   Max: 89.01 ms
+2025-11-11 11:19:00.805 | INFO     | __main__:main:260 -   P50: 40.26 ms
+2025-11-11 11:19:00.805 | INFO     | __main__:main:261 -   P95: 77.93 ms
+2025-11-11 11:19:00.805 | INFO     | __main__:main:262 -   P99: 79.97 ms
+2025-11-11 11:19:00.805 | INFO     | __main__:main:263 -   FPS: 21.91
+2025-11-11 11:19:00.805 | INFO     | __main__:main:270 - 
+================================================================================
+2025-11-11 11:19:00.805 | INFO     | __main__:main:271 - ⚡ TENSORRT DETECTOR
+2025-11-11 11:19:00.805 | INFO     | __main__:main:272 - ================================================================================
+2025-11-11 11:19:00.806 | INFO     | core.detector_trt:__init__:34 - Initializing TensorRT Detector...
+2025-11-11 11:19:00.806 | INFO     | core.detector_trt:__init__:35 -   Engine: models/bytetrack_x_mot17_fp16.trt
+2025-11-11 11:19:00.806 | INFO     | core.detector_trt:__init__:36 -   Conf threshold: 0.5
+2025-11-11 11:19:00.806 | INFO     | core.detector_trt:__init__:37 -   NMS threshold: 0.45
+2025-11-11 11:19:00.806 | INFO     | core.detector_trt:__init__:38 -   Test size: (640, 640)
+2025-11-11 11:19:01.352 | INFO     | core.detector_trt:__init__:55 -   Input shape: (1, 3, 640, 640)
+2025-11-11 11:19:01.352 | INFO     | core.detector_trt:__init__:56 -   Output shape: (1, 8400, 6)
+2025-11-11 11:19:01.358 | INFO     | core.detector_trt:__init__:65 - ✅ TensorRT Detector initialized successfully
+2025-11-11 11:19:01.358 | INFO     | __main__:benchmark_detector:36 - 
+🔥 Warming up (10 iterations)...
+2025-11-11 11:19:01.870 | INFO     | __main__:benchmark_detector:41 - ⏱️  Benchmarking (100 iterations)...
+2025-11-11 11:19:05.430 | INFO     | __main__:main:291 - 
+📊 TensorRT Results:
+2025-11-11 11:19:05.431 | INFO     | __main__:main:292 -   Average: 35.58 ± 2.09 ms
+2025-11-11 11:19:05.431 | INFO     | __main__:main:293 -   Min: 33.28 ms
+2025-11-11 11:19:05.431 | INFO     | __main__:main:294 -   Max: 46.02 ms
+2025-11-11 11:19:05.431 | INFO     | __main__:main:295 -   P50: 34.87 ms
+2025-11-11 11:19:05.431 | INFO     | __main__:main:296 -   P95: 39.60 ms
+2025-11-11 11:19:05.431 | INFO     | __main__:main:297 -   P99: 43.62 ms
+2025-11-11 11:19:05.431 | INFO     | __main__:main:298 -   FPS: 28.11
+2025-11-11 11:19:05.431 | INFO     | __main__:main:305 - 
+================================================================================
+2025-11-11 11:19:05.431 | INFO     | __main__:main:306 - 📊 COMPARISON
+2025-11-11 11:19:05.431 | INFO     | __main__:main:307 - ================================================================================
+2025-11-11 11:19:05.431 | INFO     | __main__:main:312 - 
+⚡ Speed:
+2025-11-11 11:19:05.431 | INFO     | __main__:main:313 -   PyTorch: 45.63 ms (21.91 FPS)
+2025-11-11 11:19:05.431 | INFO     | __main__:main:314 -   TensorRT: 35.58 ms (28.11 FPS)
+2025-11-11 11:19:05.431 | INFO     | __main__:main:315 -   Speedup: 1.28x
+2025-11-11 11:19:05.432 | INFO     | __main__:main:316 -   FPS Gain: +6.19 FPS
+2025-11-11 11:19:05.432 | INFO     | __main__:main:319 - 
+🎯 Accuracy (comparing 100 frames):
+2025-11-11 11:19:05.432 | INFO     | __main__:main:332 -   Precision: 1.0000
+2025-11-11 11:19:05.432 | INFO     | __main__:main:333 -   Recall: 1.0000
+2025-11-11 11:19:05.432 | INFO     | __main__:main:334 -   F1 Score: 1.0000
+2025-11-11 11:19:05.433 | INFO     | __main__:main:336 - 
+================================================================================
+2025-11-11 11:19:05.433 | INFO     | __main__:main:337 - ✅ BENCHMARK COMPLETED
+2025-11-11 11:19:05.433 | INFO     | __main__:main:338 - ================================================================================
