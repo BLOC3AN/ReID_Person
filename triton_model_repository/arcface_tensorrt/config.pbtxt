@@ -1,0 +1,143 @@
+name: "arcface_tensorrt"
+platform: "tensorrt_plan"
+max_batch_size: 16
+
+input [
+  {
+    name: "input.1"
+    data_type: TYPE_FP32
+    dims: [ 3, 112, 112 ]
+  }
+]
+
+output [
+  {
+    name: "683"
+    data_type: TYPE_FP32
+    dims: [ 512 ]
+  }
+]
+
+# Dynamic batching configuration
+# ArcFace supports batch 1-16 for multi-face processing
+dynamic_batching {
+  # Preferred batch sizes for optimal performance
+  # batch=1: single face
+  # batch=4: typical multi-face scenario
+  # batch=8: many faces in frame
+  preferred_batch_size: [ 1, 4, 8 ]
+
+  # Maximum queue delay in microseconds (2000us = 2ms)
+  # Allow some time to collect faces from multiple frames
+  max_queue_delay_microseconds: 2000
+
+  # Preserve ordering disabled for better throughput
+  preserve_ordering: false
+
+  # Queue policy
+  default_queue_policy {
+    timeout_action: REJECT
+    default_timeout_microseconds: 50000  # 50ms timeout
+    allow_timeout_override: true
+    max_queue_size: 256
+  }
+}
+
+# Instance group configuration
+# Deploy on GPU 0 (same as ByteTrack, plenty of VRAM available)
+# 8 instances for parallel face embedding extraction
+instance_group [
+  {
+    # Number of instances per GPU
+    # 8 instances = 8 parallel requests
+    # Each instance uses ~100MB GPU memory
+    # Total: ~800MB GPU memory (GPU 0 has 10GB free)
+    count: 8
+
+    # GPU device
+    kind: KIND_GPU
+
+    # Use GPU 0 (same as ByteTrack - 10GB VRAM available)
+    gpus: [ 0 ]
+  }
+]
+
+# Optimization settings
+optimization {
+  # Enable CUDA graphs for faster inference
+  cuda {
+    graphs: true
+    
+    # Graph specs for common batch sizes
+    graph_spec {
+      batch_size: 1
+      input {
+        key: "input.1"
+        value {
+          dim: [ 3, 112, 112 ]
+        }
+      }
+    }
+    
+    graph_spec {
+      batch_size: 4
+      input {
+        key: "input.1"
+        value {
+          dim: [ 3, 112, 112 ]
+        }
+      }
+    }
+    
+    graph_spec {
+      batch_size: 8
+      input {
+        key: "input.1"
+        value {
+          dim: [ 3, 112, 112 ]
+        }
+      }
+    }
+  }
+}
+
+# Model warmup
+model_warmup [
+  {
+    name: "batch_size_1"
+    batch_size: 1
+    inputs {
+      key: "input.1"
+      value {
+        data_type: TYPE_FP32
+        dims: [ 3, 112, 112 ]
+        zero_data: true
+      }
+    }
+  },
+  {
+    name: "batch_size_4"
+    batch_size: 4
+    inputs {
+      key: "input.1"
+      value {
+        data_type: TYPE_FP32
+        dims: [ 3, 112, 112 ]
+        zero_data: true
+      }
+    }
+  },
+  {
+    name: "batch_size_8"
+    batch_size: 8
+    inputs {
+      key: "input.1"
+      value {
+        data_type: TYPE_FP32
+        dims: [ 3, 112, 112 ]
+        zero_data: true
+      }
+    }
+  }
+]
+
