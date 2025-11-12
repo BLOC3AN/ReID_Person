@@ -52,6 +52,7 @@ database:
   qdrant_collection: cross_camera_matching_id
   max_embeddings_per_person: 100
   embedding_dim: 512
+  use_grpc: false  # Set to true to use gRPC protocol instead of HTTP
 matching:
   similarity_threshold: 0.8
   metric: cosine
