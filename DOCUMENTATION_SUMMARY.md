@@ -55,13 +55,21 @@ docs/
 ### Performance & Optimization (docs/)
 ```
 docs/
-├── BACKEND_STRATEGY.md              # Backend selection guide (NEW ✨)
+├── BACKEND_STRATEGY.md              # Backend selection guide
 │   ├── PyTorch vs TensorRT vs Triton comparison
 │   ├── Performance benchmarks
 │   ├── Decision tree
 │   └── Setup instructions
 │
-├── STREAM_STRATEGY.md               # Stream processing guide (NEW ✨)
+├── TRITON_OPTIMIZATION.md           # Triton resource tuning (NEW ⚡)
+│   ├── Instance count configuration
+│   ├── Queue size tuning
+│   ├── Dynamic batching optimization
+│   ├── Multi-stream configurations (4/8/16 instances)
+│   ├── GPU memory optimization
+│   └── Monitoring & troubleshooting
+│
+├── STREAM_STRATEGY.md               # Stream processing guide
 │   ├── OpenCV vs ffmpeg strategies
 │   ├── Frame buffering & synchronization
 │   ├── Multi-stream architecture
@@ -153,12 +161,12 @@ deployment/
 | Category | Files | Total Lines | Status |
 |----------|-------|-------------|--------|
 | Getting Started | 4 | ~2,000 | ✅ Complete |
-| Performance & Optimization | 3 | ~1,500 | ✅ Complete |
+| Performance & Optimization | 4 | ~1,900 | ✅ Complete |
 | Features & Guides | 2 | ~1,500 | ✅ Complete |
 | API & Architecture | 3 | ~2,000 | ✅ Complete |
 | Troubleshooting | 2 | ~1,000 | ✅ Complete |
 | Deployment | 2 | ~1,200 | ✅ Complete |
-| **Total** | **16** | **~9,200** | **✅ Complete** |
+| **Total** | **17** | **~9,600** | **✅ Complete** |
 
 ---
 

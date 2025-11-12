@@ -11,6 +11,7 @@ import cv2
 import csv
 import yaml
 import json
+import time
 import argparse
 import numpy as np
 from pathlib import Path
@@ -527,6 +528,14 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     output_json.parent.mkdir(parents=True, exist_ok=True)
 
+    # Create extracted_objects directory for person clips
+    # Use outputs/extracted_objects/ which is mounted in Docker
+    extracted_objects_dir = Path(__file__).parent.parent / "outputs" / "extracted_objects"
+    extracted_objects_dir.mkdir(parents=True, exist_ok=True)
+
+    # Track video writers for each person
+    person_video_writers = {}  # {track_id: {'writer': VideoWriter, 'label': str, 'path': Path}}
+
     # Open video
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -707,6 +716,84 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                 zone_id if zone_id else "", zone_name, authorized, f"{duration:.2f}"
             ])
 
+            # Save person video clip
+            # Create video writer for this track if not exists
+            if track_id not in person_video_writers:
+                # Get label for folder name
+                person_label = info['label']
+
+                # Create folder for this person
+                person_folder = extracted_objects_dir / person_label
+                person_folder.mkdir(parents=True, exist_ok=True)
+
+                # Generate unique filename with timestamp
+                video_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds
+                clip_filename = f"{person_label}_{video_timestamp}_track{track_id}.mp4"
+                clip_path = person_folder / clip_filename
+
+                # Create video writer for this person's clip
+                fourcc_clip = cv2.VideoWriter_fourcc(*'mp4v')
+                clip_writer = cv2.VideoWriter(
+                    str(clip_path),
+                    fourcc_clip,
+                    fps,
+                    (w, h)  # Size of cropped person
+                )
+
+                person_video_writers[track_id] = {
+                    'writer': clip_writer,
+                    'label': person_label,
+                    'path': clip_path,
+                    'frame_count': 0
+                }
+
+                logger.info(f"  📹 Created video clip for {person_label} (Track {track_id}): {clip_path.name}")
+
+            # Write cropped person frame to their video clip
+            if track_id in person_video_writers:
+                # Crop person from frame
+                person_crop = frame[y:y+h, x:x+w].copy()
+
+                # Check if label changed (re-verification updated it)
+                current_label = info['label']
+                saved_label = person_video_writers[track_id]['label']
+
+                if current_label != saved_label:
+                    # Label changed - close old writer and create new one
+                    logger.info(f"  🔄 Track {track_id} label changed: {saved_label} → {current_label}")
+
+                    # Close old writer
+                    person_video_writers[track_id]['writer'].release()
+
+                    # Create new folder and writer
+                    person_folder = extracted_objects_dir / current_label
+                    person_folder.mkdir(parents=True, exist_ok=True)
+
+                    video_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                    clip_filename = f"{current_label}_{video_timestamp}_track{track_id}.mp4"
+                    clip_path = person_folder / clip_filename
+
+                    fourcc_clip = cv2.VideoWriter_fourcc(*'mp4v')
+                    clip_writer = cv2.VideoWriter(
+                        str(clip_path),
+                        fourcc_clip,
+                        fps,
+                        (w, h)
+                    )
+
+                    person_video_writers[track_id] = {
+                        'writer': clip_writer,
+                        'label': current_label,
+                        'path': clip_path,
+                        'frame_count': 0
+                    }
+
+                    logger.info(f"  📹 Created new video clip: {clip_path.name}")
+
+                # Write frame to clip
+                person_video_writers[track_id]['writer'].write(person_crop)
+                person_video_writers[track_id]['frame_count'] += 1
+
             # Draw on frame
             # Color: Green=in zone, Red=outside zone
             if zone_id:
@@ -767,10 +854,19 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     vid_writer.release()
     csv_file.close()
 
+    # Close all person video writers
+    logger.info("")
+    logger.info("📹 Closing person video clips...")
+    for track_id, writer_info in person_video_writers.items():
+        writer_info['writer'].release()
+        logger.info(f"  ✅ Track {track_id} ({writer_info['label']}): {writer_info['frame_count']} frames → {writer_info['path'].name}")
+
     elapsed = time.time() - start_time
     logger.info("="*80)
     logger.info(f"✅ Processing completed in {elapsed:.1f}s")
     logger.info(f"   Processed {frame_id} frames @ {frame_id/elapsed:.1f} FPS")
+    logger.info(f"   Person clips saved to: {extracted_objects_dir}")
+    logger.info(f"   Total person clips: {len(person_video_writers)}")
     logger.info("="*80)
 
     # Print zone summary

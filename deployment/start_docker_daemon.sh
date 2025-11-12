@@ -8,6 +8,31 @@ echo "Stopping existing Docker daemon..."
 sudo pkill -f "dockerd --data-root"
 sleep 2
 
+# Create Docker config directory and daemon.json if not exists
+echo "Setting up Docker configuration..."
+sudo mkdir -p /etc/docker
+if [ ! -f /etc/docker/daemon.json ]; then
+    sudo tee /etc/docker/daemon.json > /dev/null << 'EOF'
+{
+  "runtimes": {
+    "nvidia": {
+      "path": "nvidia-container-runtime",
+      "runtimeArgs": []
+    }
+  },
+  "default-runtime": "nvidia",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+EOF
+    echo "✅ Created /etc/docker/daemon.json"
+else
+    echo "✅ /etc/docker/daemon.json already exists"
+fi
+
 # Start Docker daemon with config file
 echo "Starting Docker daemon with NVIDIA runtime..."
 sudo dockerd \

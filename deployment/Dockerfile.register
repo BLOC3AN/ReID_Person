@@ -1,38 +1,71 @@
-# Register Service Dockerfile
+# Register Service Dockerfile - Optimized
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 \
     python3-pip \
     python3-dev \
+    build-essential \
+    gcc \
+    g++ \
     libgl1-mesa-glx \
     libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
 # Create symlink for python
 RUN ln -s /usr/bin/python3.10 /usr/bin/python
 
 WORKDIR /app
 
-# Copy requirements
-COPY requirements.txt .
+# Create optimized requirements inline (minimal dependencies for register service)
+RUN echo "torch>=1.10.0" > requirements.register.txt && \
+    echo "torchvision>=0.11.0" >> requirements.register.txt && \
+    echo "opencv-python>=4.5.0" >> requirements.register.txt && \
+    echo "numpy>=1.21.0,<2.0.0" >> requirements.register.txt && \
+    echo "scipy>=1.7.0" >> requirements.register.txt && \
+    echo "insightface>=0.7.3" >> requirements.register.txt && \
+    echo "onnxruntime-gpu==1.15.1" >> requirements.register.txt && \
+    echo "qdrant-client>=1.0.0" >> requirements.register.txt && \
+    echo "loguru>=0.6.0" >> requirements.register.txt && \
+    echo "pyyaml>=6.0" >> requirements.register.txt && \
+    echo "python-dotenv>=0.19.0" >> requirements.register.txt && \
+    echo "scikit-image" >> requirements.register.txt && \
+    echo "Pillow" >> requirements.register.txt && \
+    echo "lap" >> requirements.register.txt && \
+    echo "filterpy" >> requirements.register.txt && \
+    echo "cython" >> requirements.register.txt && \
+    echo "cython_bbox" >> requirements.register.txt && \
+    echo "thop" >> requirements.register.txt && \
+    echo "pycocotools" >> requirements.register.txt && \
+    echo "tabulate" >> requirements.register.txt && \
+    echo "motmetrics" >> requirements.register.txt && \
+    echo "tritonclient[grpc]>=2.40.0" >> requirements.register.txt && \
+    echo "fastapi>=0.104.0" >> requirements.register.txt && \
+    echo "uvicorn>=0.24.0" >> requirements.register.txt && \
+    echo "python-multipart>=0.0.6" >> requirements.register.txt
 
-# Install Python dependencies
-RUN pip3 install --upgrade pip && \
-    pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu118 && \
-    pip3 install fastapi uvicorn python-multipart && \
-    pip3 install -r requirements.txt
+# Install Python dependencies with optimizations
+RUN pip3 install --no-cache-dir --upgrade pip && \
+    pip3 install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu118 && \
+    pip3 install --no-cache-dir -r requirements.register.txt && \
+    rm requirements.register.txt
 
-# Copy application code
-COPY . .
+# Copy only necessary application code
+COPY core/ ./core/
+COPY yolox/ ./yolox/
+COPY exps/ ./exps/
+COPY scripts/register_mot17.py ./scripts/
+COPY services/register_service.py ./services/
+COPY services/preload_models.py ./services/
+COPY models/ ./models/
+COPY configs/ ./configs/
 
 # Create necessary directories
 RUN mkdir -p /app/data/uploads \
+    /app/data/database \
     /app/logs
 
 EXPOSE 8002

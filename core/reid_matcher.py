@@ -18,7 +18,7 @@ class ReIDMatcher:
     """Match persons across cameras using ReID embeddings"""
     
     def __init__(self, distance_threshold=0.8, metric='cosine',
-                 use_qdrant=False, qdrant_url="http://localhost:6333"):
+                 use_qdrant=False, qdrant_url="http://localhost:6333", use_grpc=False):
         """
         Args:
             distance_threshold: Cosine similarity threshold (0-1)
@@ -28,13 +28,15 @@ class ReIDMatcher:
             metric: Distance metric ('cosine', 'euclidean')
             use_qdrant: Use Qdrant backend
             qdrant_url: Qdrant server URL
+            use_grpc: Use gRPC protocol instead of HTTP
         """
         self.distance_threshold = distance_threshold
         self.metric = metric
         self.db = QdrantVectorDB(
             use_qdrant=use_qdrant,
             qdrant_url=qdrant_url,
-            embedding_dim=512
+            embedding_dim=512,
+            use_grpc=use_grpc
         )
         self.camera_track_to_global = {}  # {(camera_id, track_id): global_id}
     

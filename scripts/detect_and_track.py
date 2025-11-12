@@ -133,12 +133,13 @@ class PersonReIDPipeline:
     def initialize_database(self):
         """Initialize Qdrant vector database"""
         cfg = self.config['database']
-        
+
         self.database = QdrantVectorDB(
             use_qdrant=cfg['use_qdrant'],
             collection_name=cfg['qdrant_collection'],
             max_embeddings_per_person=cfg['max_embeddings_per_person'],
-            embedding_dim=cfg['embedding_dim']
+            embedding_dim=cfg['embedding_dim'],
+            use_grpc=cfg.get('use_grpc', False)
         )
         
         # Load existing database
@@ -275,7 +276,15 @@ class PersonReIDPipeline:
         output_video.parent.mkdir(parents=True, exist_ok=True)
         output_csv.parent.mkdir(parents=True, exist_ok=True)
         output_log.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        # Create extracted_objects directory for person clips
+        # Use outputs/extracted_objects/ which is mounted in Docker
+        extracted_objects_dir = Path(__file__).parent.parent / "outputs" / "extracted_objects"
+        extracted_objects_dir.mkdir(parents=True, exist_ok=True)
+
+        # Track video writers for each person
+        person_video_writers = {}  # {track_id: {'writer': VideoWriter, 'label': str, 'path': Path}}
+
         # Video writer
         if self.config['output']['save_video']:
             fourcc = cv2.VideoWriter_fourcc(*self.config['output']['video_codec'])
@@ -470,13 +479,91 @@ class PersonReIDPipeline:
                     'similarity': 0.0,
                     'label': 'Unknown'
                 })
-                
+
                 # Write to CSV
                 csv_writer.writerow([
                     frame_id, track_id, x, y, w, h, f"{conf:.4f}",
                     info['global_id'], f"{info['similarity']:.4f}", info['label']
                 ])
-                
+
+                # Save person video clip
+                # Create video writer for this track if not exists
+                if track_id not in person_video_writers:
+                    # Get label for folder name
+                    person_label = info['label']
+
+                    # Create folder for this person
+                    person_folder = extracted_objects_dir / person_label
+                    person_folder.mkdir(parents=True, exist_ok=True)
+
+                    # Generate unique filename with timestamp
+                    video_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds
+                    clip_filename = f"{person_label}_{video_timestamp}_track{track_id}.mp4"
+                    clip_path = person_folder / clip_filename
+
+                    # Create video writer for this person's clip
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    clip_writer = cv2.VideoWriter(
+                        str(clip_path),
+                        fourcc,
+                        props['fps'],
+                        (w, h)  # Size of cropped person
+                    )
+
+                    person_video_writers[track_id] = {
+                        'writer': clip_writer,
+                        'label': person_label,
+                        'path': clip_path,
+                        'frame_count': 0
+                    }
+
+                    logger.info(f"  📹 Created video clip for {person_label} (Track {track_id}): {clip_path.name}")
+
+                # Write cropped person frame to their video clip
+                if track_id in person_video_writers:
+                    # Crop person from frame
+                    person_crop = frame[y:y+h, x:x+w].copy()
+
+                    # Check if label changed (re-verification updated it)
+                    current_label = info['label']
+                    saved_label = person_video_writers[track_id]['label']
+
+                    if current_label != saved_label:
+                        # Label changed - close old writer and create new one
+                        logger.info(f"  🔄 Track {track_id} label changed: {saved_label} → {current_label}")
+
+                        # Close old writer
+                        person_video_writers[track_id]['writer'].release()
+
+                        # Create new folder and writer
+                        person_folder = extracted_objects_dir / current_label
+                        person_folder.mkdir(parents=True, exist_ok=True)
+
+                        video_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                        clip_filename = f"{current_label}_{video_timestamp}_track{track_id}.mp4"
+                        clip_path = person_folder / clip_filename
+
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        clip_writer = cv2.VideoWriter(
+                            str(clip_path),
+                            fourcc,
+                            props['fps'],
+                            (w, h)
+                        )
+
+                        person_video_writers[track_id] = {
+                            'writer': clip_writer,
+                            'label': current_label,
+                            'path': clip_path,
+                            'frame_count': 0
+                        }
+
+                        logger.info(f"  📹 Created new video clip: {clip_path.name}")
+
+                    # Write frame to clip
+                    person_video_writers[track_id]['writer'].write(person_crop)
+                    person_video_writers[track_id]['frame_count'] += 1
+
                 # Draw on frame
                 if self.config['output']['save_video']:
                     # Use green for known persons, red for unknown
@@ -548,21 +635,31 @@ class PersonReIDPipeline:
             vid_writer.release()
         csv_file.close()
         log_file.close()
-        
+
+        # Close all person video writers
+        logger.info("")
+        logger.info("📹 Closing person video clips...")
+        for track_id, writer_info in person_video_writers.items():
+            writer_info['writer'].release()
+            logger.info(f"  ✅ Track {track_id} ({writer_info['label']}): {writer_info['frame_count']} frames → {writer_info['path'].name}")
+
         logger.info("="*80)
         logger.info("Processing Complete!")
         logger.info("="*80)
         logger.info(f"Output video: {output_video}")
         logger.info(f"Output CSV: {output_csv}")
         logger.info(f"Detailed log: {output_log}")
+        logger.info(f"Person clips saved to: {extracted_objects_dir}")
         logger.info(f"Total frames processed: {frame_id}")
         logger.info(f"Total tracks: {len(track_labels)}")
+        logger.info(f"Total person clips: {len(person_video_writers)}")
         logger.info(f"Average FPS: {avg_fps:.2f}")
         logger.info("")
         logger.info("Track Summary:")
         for tid, info in sorted(track_labels.items()):
             votes_info = f" (votes={info['votes']}/3)" if 'votes' in info else ""
-            logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){votes_info}")
+            clip_info = f" → {person_video_writers[tid]['path'].name}" if tid in person_video_writers else ""
+            logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){votes_info}{clip_info}")
         logger.info("="*80)
 
 

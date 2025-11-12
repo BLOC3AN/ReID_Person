@@ -13,12 +13,33 @@ import shutil
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import uuid
 from loguru import logger
 from scripts.register_mot17 import register_person_mot17
+from services.preload_models import preload_models
 
 app = FastAPI(title="Register Service", version="1.0.0")
+
+# Global models storage
+preloaded_models = {
+    "detector": None,
+    "extractor": None
+}
+
+# Preload models at startup
+@app.on_event("startup")
+async def startup_event():
+    """Preload models when service starts"""
+    try:
+        logger.info("🚀 Starting Register Service...")
+        detector, extractor = preload_models()
+        preloaded_models["detector"] = detector
+        preloaded_models["extractor"] = extractor
+        logger.info("✅ Register Service ready!")
+    except Exception as e:
+        logger.error(f"❌ Failed to start service: {e}")
+        raise
 
 # Storage paths
 UPLOAD_DIR = Path("/app/data/uploads")
@@ -37,25 +58,27 @@ class JobStatus(BaseModel):
     error: Optional[str] = None
 
 
-def process_registration(job_id: str, video_path: str, person_name: str, 
+def process_registration(job_id: str, video_path: str, person_name: str,
                          global_id: int, sample_rate: int, delete_existing: bool):
     """Background task to process person registration"""
     try:
         jobs[job_id]["status"] = "processing"
         logger.info(f"Starting registration job {job_id} for {person_name}")
-        
+
         register_person_mot17(
             video_path=video_path,
             person_name=person_name,
             global_id=global_id,
             sample_rate=sample_rate,
-            delete_existing=delete_existing
+            delete_existing=delete_existing,
+            detector=preloaded_models["detector"],
+            extractor=preloaded_models["extractor"]
         )
-        
+
         jobs[job_id]["status"] = "completed"
         jobs[job_id]["message"] = f"Person {person_name} registered successfully"
         logger.info(f"Registration job {job_id} completed")
-        
+
     except Exception as e:
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
@@ -146,20 +169,128 @@ async def get_status(job_id: str):
     return JobStatus(**jobs[job_id])
 
 
+@app.post("/register-batch")
+async def register_batch(
+    background_tasks: BackgroundTasks,
+    videos: List[UploadFile] = File(...),
+    person_name: str = Form(...),
+    global_id: int = Form(...),
+    sample_rate: int = Form(5),
+    delete_existing: bool = Form(False)
+):
+    """
+    Register a person with multiple videos into the vector database
+
+    Args:
+        videos: Multiple video files containing the person
+        person_name: Name of the person to register
+        global_id: Global ID for the person (unique identifier)
+        sample_rate: Extract 1 frame every N frames (default: 5)
+        delete_existing: Delete existing collection before registering
+
+    Returns:
+        List of Job IDs for tracking the registration process
+    """
+    try:
+        if not videos:
+            raise HTTPException(status_code=400, detail="No videos provided")
+
+        job_ids = []
+
+        for video in videos:
+            # Generate job ID
+            job_id = str(uuid.uuid4())
+
+            # Save uploaded video
+            video_filename = f"{job_id}_{video.filename}"
+            video_path = UPLOAD_DIR / video_filename
+
+            with open(video_path, "wb") as buffer:
+                shutil.copyfileobj(video.file, buffer)
+
+            # Initialize job status
+            jobs[job_id] = {
+                "job_id": job_id,
+                "status": "pending",
+                "message": "Job queued for processing",
+                "person_name": person_name,
+                "global_id": global_id,
+                "video_path": str(video_path),
+                "video_filename": video.filename
+            }
+
+            # Add background task
+            background_tasks.add_task(
+                process_registration,
+                job_id=job_id,
+                video_path=str(video_path),
+                person_name=person_name,
+                global_id=global_id,
+                sample_rate=sample_rate,
+                delete_existing=delete_existing and (job_ids == [])  # Only delete on first video
+            )
+
+            job_ids.append(job_id)
+
+        return JSONResponse(content={
+            "job_ids": job_ids,
+            "total_videos": len(job_ids),
+            "status": "pending",
+            "message": f"Registration jobs started for {person_name} with {len(job_ids)} video(s)"
+        })
+
+    except Exception as e:
+        logger.error(f"Error starting batch registration: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/status-batch")
+async def get_batch_status(job_ids: str = None):
+    """
+    Get status of multiple registration jobs
+
+    Args:
+        job_ids: Comma-separated list of job IDs
+
+    Returns:
+        Status of all requested jobs
+    """
+    if not job_ids:
+        raise HTTPException(status_code=400, detail="No job IDs provided")
+
+    job_id_list = [jid.strip() for jid in job_ids.split(",")]
+    statuses = []
+
+    for job_id in job_id_list:
+        if job_id in jobs:
+            statuses.append(JobStatus(**jobs[job_id]))
+        else:
+            statuses.append({
+                "job_id": job_id,
+                "status": "not_found",
+                "message": "Job not found"
+            })
+
+    return {
+        "total_jobs": len(job_id_list),
+        "jobs": statuses
+    }
+
+
 @app.delete("/jobs/{job_id}")
 async def delete_job(job_id: str):
     """Delete a job and its associated files"""
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     # Delete uploaded video
     video_path = Path(jobs[job_id].get("video_path", ""))
     if video_path.exists():
         video_path.unlink()
-    
+
     # Remove job from storage
     del jobs[job_id]
-    
+
     return {"message": "Job deleted successfully"}
 
 

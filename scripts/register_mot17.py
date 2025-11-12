@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import os
 import cv2
 import numpy as np
 from loguru import logger
@@ -15,7 +16,7 @@ from core import YOLOXDetector, ArcFaceExtractor, QdrantVectorDB
 from qdrant_client.models import Distance, VectorParams
 
 
-def register_person_mot17(video_path: str, person_name: str, global_id: int, sample_rate: int = 5, delete_existing: bool = False):
+def register_person_mot17(video_path: str, person_name: str, global_id: int, sample_rate: int = 5, delete_existing: bool = False, detector=None, extractor=None):
     """
     Register a person using MOT17 model
 
@@ -25,6 +26,8 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
         global_id: Global ID for the person (unique identifier)
         sample_rate: Extract 1 frame every N frames (default: 5)
         delete_existing: Delete existing collection before registering
+        detector: Pre-loaded YOLOX detector (optional, will create new if None)
+        extractor: Pre-loaded ArcFace extractor (optional, will create new if None)
     """
 
     logger.info("=" * 80)
@@ -33,24 +36,31 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
     logger.info(f"Video: {video_path}")
     logger.info(f"Sample rate: {sample_rate}")
     logger.info("=" * 80)
-    
-    # Initialize detector (MOT17 - same as detect_and_track.py)
-    logger.info("\nInitializing MOT17 detector...")
-    model_path = Path(__file__).parent.parent / "models" / "bytetrack_x_mot17.pth.tar"
-    detector = YOLOXDetector(
-        model_path=str(model_path),
-        model_type="mot17",
-        conf_thresh=0.6,
-        nms_thresh=0.45
-    )
-    
-    # Initialize ArcFace extractor
-    logger.info("Initializing ArcFace extractor...")
-    extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True)
+
+    # Use preloaded detector or initialize new one
+    if detector is None:
+        logger.info("\nInitializing MOT17 detector...")
+        model_path = Path(__file__).parent.parent / "models" / "bytetrack_x_mot17.pth.tar"
+        detector = YOLOXDetector(
+            model_path=str(model_path),
+            model_type="mot17",
+            conf_thresh=0.6,
+            nms_thresh=0.45
+        )
+    else:
+        logger.info("\n✅ Using preloaded MOT17 detector")
+
+    # Use preloaded extractor or initialize new one
+    if extractor is None:
+        logger.info("Initializing ArcFace extractor...")
+        extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True)
+    else:
+        logger.info("✅ Using preloaded ArcFace extractor")
     
     # Initialize database
     logger.info("Initializing database...")
-    db = QdrantVectorDB(use_qdrant=True, embedding_dim=512)
+    use_grpc = os.getenv("QDRANT_USE_GRPC", "false").lower() == "true"
+    db = QdrantVectorDB(use_qdrant=True, embedding_dim=512, use_grpc=use_grpc)
     
     # Extract frames
     logger.info(f"\nExtracting frames (sample rate={sample_rate})...")

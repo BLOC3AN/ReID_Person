@@ -254,31 +254,40 @@ if page == "Extract Objects":
 elif page == "Register Person":
     st.header("Register Person to Database")
     st.markdown("Register a person using face recognition (ArcFace)")
-    
+
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
-        video_file = st.file_uploader("Upload Person Video", type=['mp4', 'avi', 'mkv', 'mov'])
-        st.caption("Video should show clear face for best results")
-    
+        # Toggle between single and batch upload
+        upload_mode = st.radio("Upload Mode", ["Single Video", "Multiple Videos"], horizontal=True)
+
+        if upload_mode == "Single Video":
+            video_files = st.file_uploader("Upload Person Video", type=['mp4', 'avi', 'mkv', 'mov'])
+            if video_files:
+                video_files = [video_files]
+        else:
+            video_files = st.file_uploader("Upload Person Videos", type=['mp4', 'avi', 'mkv', 'mov'], accept_multiple_files=True)
+
+        st.caption("Video(s) should show clear face for best results")
+
     with col2:
         st.markdown("### Parameters")
         person_name = st.text_input("Person Name", placeholder="e.g., John Doe")
         global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique ID for this person")
         sample_rate = st.number_input("Sample Rate", min_value=1, value=5, help="Extract 1 frame every N frames")
-        delete_existing = st.checkbox("Delete Existing Collection", value=False, 
+        delete_existing = st.checkbox("Delete Existing Collection", value=False,
                                      help="⚠️ This will delete all registered persons!")
-    
+
     if st.button("✅ Register Person", type="primary"):
-        if video_file is None:
-            st.error("Please upload a video file")
+        if not video_files:
+            st.error("Please upload at least one video file")
         elif not person_name:
             st.error("Please enter person name")
         else:
-            with st.spinner(f"Uploading video and registering {person_name}..."):
+            with st.spinner(f"Uploading {len(video_files)} video(s) and registering {person_name}..."):
                 try:
                     # Prepare files and data for API call
-                    files = {"video": (video_file.name, video_file.getvalue(), "video/mp4")}
+                    files = [("videos", (vf.name, vf.getvalue(), "video/mp4")) for vf in video_files]
                     data = {
                         "person_name": person_name,
                         "global_id": global_id,
@@ -286,40 +295,57 @@ elif page == "Register Person":
                         "delete_existing": delete_existing
                     }
 
-                    # Call Register API
-                    response = requests.post(f"{REGISTER_API_URL}/register", files=files, data=data)
+                    # Call Register API (batch or single)
+                    if len(video_files) == 1:
+                        # Use single endpoint
+                        files_dict = {"video": (video_files[0].name, video_files[0].getvalue(), "video/mp4")}
+                        response = requests.post(f"{REGISTER_API_URL}/register", files=files_dict, data=data)
+                        job_ids = [response.json()["job_id"]] if response.status_code == 200 else []
+                    else:
+                        # Use batch endpoint
+                        response = requests.post(f"{REGISTER_API_URL}/register-batch", files=files, data=data)
+                        job_ids = response.json()["job_ids"] if response.status_code == 200 else []
 
                     if response.status_code == 200:
-                        result = response.json()
-                        job_id = result["job_id"]
+                        st.info(f"Started {len(job_ids)} registration job(s)")
 
-                        st.info(f"Job ID: {job_id}")
+                        # Create progress tracking for all jobs
+                        progress_bars = {}
+                        status_texts = {}
 
-                        # Poll for status
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
+                        for i, job_id in enumerate(job_ids):
+                            with st.expander(f"Video {i+1} - {video_files[i].name}", expanded=True):
+                                progress_bars[job_id] = st.progress(0)
+                                status_texts[job_id] = st.empty()
 
-                        while True:
-                            status_response = requests.get(f"{REGISTER_API_URL}/status/{job_id}")
-                            if status_response.status_code == 200:
-                                status = status_response.json()
-                                status_text.text(f"Status: {status['status']}")
+                        # Poll for status of all jobs
+                        all_completed = False
+                        while not all_completed:
+                            all_completed = True
 
-                                if status["status"] == "completed":
-                                    progress_bar.progress(100)
-                                    st.success(f"✅ {person_name} registered successfully!")
-                                    st.info(f"Global ID: {global_id}")
-                                    st.balloons()
-                                    break
+                            for job_id in job_ids:
+                                status_response = requests.get(f"{REGISTER_API_URL}/status/{job_id}")
+                                if status_response.status_code == 200:
+                                    status = status_response.json()
+                                    status_texts[job_id].text(f"Status: {status['status']}")
 
-                                elif status["status"] == "failed":
-                                    st.error(f"❌ Registration failed: {status.get('error', 'Unknown error')}")
-                                    break
+                                    if status["status"] == "completed":
+                                        progress_bars[job_id].progress(100)
+                                    elif status["status"] == "failed":
+                                        status_texts[job_id].error(f"❌ Failed: {status.get('error', 'Unknown error')}")
+                                    elif status["status"] == "processing":
+                                        progress_bars[job_id].progress(50)
+                                        all_completed = False
+                                    else:  # pending
+                                        progress_bars[job_id].progress(25)
+                                        all_completed = False
 
-                                elif status["status"] == "processing":
-                                    progress_bar.progress(50)
+                            if not all_completed:
+                                time.sleep(2)
 
-                            time.sleep(2)
+                        st.success(f"✅ {person_name} registered successfully with {len(job_ids)} video(s)!")
+                        st.info(f"Global ID: {global_id}")
+                        st.balloons()
                     else:
                         st.error(f"Failed to start registration: {response.text}")
 

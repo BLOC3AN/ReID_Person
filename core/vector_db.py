@@ -22,7 +22,7 @@ class QdrantVectorDB:
     
     def __init__(self, use_qdrant=False, qdrant_url=None,
                  collection_name=None, max_embeddings_per_person=100,
-                 embedding_dim=512, api_key=None):
+                 embedding_dim=512, api_key=None, use_grpc=False):
         """
         Args:
             use_qdrant: Use Qdrant backend (default: False, use in-memory)
@@ -31,6 +31,7 @@ class QdrantVectorDB:
             max_embeddings_per_person: Max embeddings to store per person
             embedding_dim: Embedding dimension (512 for ArcFace)
             api_key: Qdrant API key (auto-load from .env if None)
+            use_grpc: Use gRPC protocol instead of HTTP (default: False)
         """
         # Load from .env if not provided
         env_path = Path(__file__).parent.parent / "configs" / ".env"
@@ -38,6 +39,7 @@ class QdrantVectorDB:
             load_dotenv(env_path)
 
         self.use_qdrant = use_qdrant
+        self.use_grpc = use_grpc
         self.collection_name = collection_name or os.getenv("QDRANT_COLLECTION", "cross_camera_matching_id")
         self.max_embeddings = max_embeddings_per_person
         self.embedding_dim = embedding_dim
@@ -52,10 +54,17 @@ class QdrantVectorDB:
         if use_qdrant:
             qdrant_url = qdrant_url or os.getenv("QDRANT_URI", "http://localhost:6333")
             api_key = api_key or os.getenv("QDRANT_API_KEY")
-            self._init_qdrant(qdrant_url, api_key)
+            use_grpc = use_grpc or os.getenv("QDRANT_USE_GRPC", "false").lower() == "true"
+            self._init_qdrant(qdrant_url, api_key, use_grpc)
     
-    def _init_qdrant(self, qdrant_url, api_key=None):
-        """Initialize Qdrant client"""
+    def _init_qdrant(self, qdrant_url, api_key=None, use_grpc=False):
+        """Initialize Qdrant client
+
+        Args:
+            qdrant_url: Qdrant server URL (http://host:port or host:port for gRPC)
+            api_key: Optional API key for authentication
+            use_grpc: Use gRPC protocol instead of HTTP
+        """
         try:
             from qdrant_client import QdrantClient
             from qdrant_client.models import Distance, VectorParams
@@ -64,11 +73,31 @@ class QdrantVectorDB:
             if qdrant_url.startswith("host="):
                 qdrant_url = qdrant_url.replace("host=", "https://")
 
-            # Initialize client with API key if provided
-            if api_key:
-                self.client = QdrantClient(url=qdrant_url, api_key=api_key)
+            # Initialize client with gRPC or HTTP
+            if use_grpc:
+                # For gRPC, remove http:// or https:// prefix if present
+                if qdrant_url.startswith("http://"):
+                    qdrant_url = qdrant_url.replace("http://", "")
+                elif qdrant_url.startswith("https://"):
+                    qdrant_url = qdrant_url.replace("https://", "")
+
+                # Initialize with gRPC
+                if api_key:
+                    self.client = QdrantClient(host=qdrant_url.split(":")[0],
+                                              port=int(qdrant_url.split(":")[1]) if ":" in qdrant_url else 6334,
+                                              api_key=api_key, grpc_port=6334)
+                else:
+                    self.client = QdrantClient(host=qdrant_url.split(":")[0],
+                                              port=int(qdrant_url.split(":")[1]) if ":" in qdrant_url else 6334,
+                                              grpc_port=6334)
+                logger.info(f"✅ Initialized Qdrant client with gRPC protocol")
             else:
-                self.client = QdrantClient(url=qdrant_url)
+                # Initialize with HTTP (default)
+                if api_key:
+                    self.client = QdrantClient(url=qdrant_url, api_key=api_key)
+                else:
+                    self.client = QdrantClient(url=qdrant_url)
+                logger.info(f"✅ Initialized Qdrant client with HTTP protocol")
 
             # Create collection if not exists
             try:

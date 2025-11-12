@@ -43,6 +43,7 @@ Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tr
 🔧 **Configuration**: Edit `configs/config.yaml` for model settings
 🎯 **Backend Selection**: See [docs/BACKEND_STRATEGY.md](docs/BACKEND_STRATEGY.md) for choosing PyTorch/TensorRT/Triton
 📡 **Stream Processing**: See [docs/STREAM_STRATEGY.md](docs/STREAM_STRATEGY.md) for frame handling strategies
+⚡ **Triton Optimization**: See [docs/TRITON_OPTIMIZATION.md](docs/TRITON_OPTIMIZATION.md) for resource tuning
 🗺️ **Zone Monitoring**: See [docs/ZONE_MONITORING_GUIDE.md](docs/ZONE_MONITORING_GUIDE.md)
 🎥 **Multi-Camera**: See [docs/MULTI_CAMERA_GUIDE.md](docs/MULTI_CAMERA_GUIDE.md)
 🚀 **Deployment**: See [deployment/](deployment/) for Docker and Triton setup
@@ -74,9 +75,16 @@ detection:
 ```
 
 **Performance Comparison:**
-- **PyTorch**: ~10-15 FPS (baseline)
-- **TensorRT**: ~20-30 FPS (2-3x faster)
-- **Triton**: ~15-25 FPS per stream with dynamic batching (best for multi-camera)
+
+| Backend | Single Stream | Multi-Stream (4 cams) | Multi-Stream (16 cams) | GPU Memory |
+|---------|---------------|----------------------|------------------------|------------|
+| **PyTorch** | 10-15 FPS | 40-60 FPS total | N/A | ~1.5GB |
+| **TensorRT** | 20-30 FPS | 80-120 FPS total | N/A | ~1.5GB |
+| **Triton (4 instances)** | 15-25 FPS | 120-160 FPS total | N/A | ~2.5GB |
+| **Triton (16 instances)** | 20-30 FPS | 160-200 FPS total | **320-400+ FPS total** | ~8-10GB |
+
+**Current Configuration**: Triton with **16 instances** optimized for 12-16+ camera streams
+- See [docs/TRITON_OPTIMIZATION.md](docs/TRITON_OPTIMIZATION.md) for tuning guide
 
 
 
@@ -314,6 +322,7 @@ person_reid_system/
 
 ### Performance & Optimization
 - **[Backend Strategy](docs/BACKEND_STRATEGY.md)** - Choose PyTorch/TensorRT/Triton backend
+- **[Triton Optimization](docs/TRITON_OPTIMIZATION.md)** - Resource tuning for multi-stream (NEW ⚡)
 - **[Stream Processing Strategy](docs/STREAM_STRATEGY.md)** - Frame reading, buffering, synchronization
 - **[ReID Strategy](docs/REID_STRATEGY.md)** - First-3 + Re-verify strategy
 
