@@ -25,10 +25,10 @@ dynamic_batching {
   # Only batch size 1 is supported by current TensorRT engine
   preferred_batch_size: [ 1 ]
 
-  # Maximum queue delay in microseconds (5000us = 5ms)
-  # Optimized for multi-stream throughput (4-8 cameras)
-  # Lower value = lower latency, higher value = better throughput
-  max_queue_delay_microseconds: 5000
+  # Maximum queue delay in microseconds (1000us = 1ms)
+  # REDUCED from 5ms to 1ms for lower latency
+  # With 4-8 instances, we want faster dispatch
+  max_queue_delay_microseconds: 1000
 
   # Preserve ordering disabled for better throughput
   preserve_ordering: false
@@ -36,21 +36,24 @@ dynamic_batching {
   # Queue policy - optimized for multi-stream processing
   default_queue_policy {
     timeout_action: REJECT
-    default_timeout_microseconds: 20000  # 20ms timeout
+    default_timeout_microseconds: 50000  # 50ms timeout (increased for stability)
     allow_timeout_override: true
-    max_queue_size: 256  # Large queue for multi-stream
+    max_queue_size: 128  # Reduced queue size
   }
 }
 
 # Instance group configuration
 # Multiple instances enable parallel processing of concurrent requests
 # Each instance uses ~500MB GPU memory
-# 16 instances = 16 parallel requests = ~8GB GPU memory (optimized for 12-16+ streams)
+# OPTIMIZED: 8 instances for 2-4 streams (reduced from 16)
+# Reason: Lower overhead, better GPU utilization, less context switching
+# 8 instances = 8 parallel requests = ~4GB GPU memory
 instance_group [
   {
-    # Number of instances per GPU (high throughput configuration)
-    # Recommended: 4 (4-8 cams), 8 (8-12 cams), 16 (12-16+ cams)
-    count: 16
+    # Number of instances per GPU
+    # CHANGED: 16 → 8 for better performance with 2-4 streams
+    # Each stream gets 2-4 instances for parallel processing
+    count: 8
 
     # GPU device
     kind: KIND_GPU
