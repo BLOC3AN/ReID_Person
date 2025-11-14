@@ -60,10 +60,10 @@ class StreamStats:
 class MultiStreamBenchmark:
     """Benchmark with multiple camera streams"""
     
-    def __init__(self, stream_urls, config_path=".streamlit/configs/config.yaml"):
+    def __init__(self, stream_urls, config_path="configs/config.yaml"):
         self.stream_urls = stream_urls
         self.num_streams = len(stream_urls)
-        
+
         # Load config
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
@@ -390,7 +390,7 @@ if __name__ == "__main__":
     parser.add_argument("--streams", type=str, nargs='+', required=True, help="Stream URLs")
     parser.add_argument("--duration", type=int, default=60, help="Duration in seconds")
     parser.add_argument("--max-frames", type=int, default=None, help="Max frames per stream")
-    parser.add_argument("--config", type=str, default=".streamlit/configs/config.yaml", help="Config file")
+    parser.add_argument("--config", type=str, default="configs/config.yaml", help="Config file")
     
     args = parser.parse_args()
     

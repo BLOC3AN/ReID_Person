@@ -16,6 +16,7 @@ from .detector_trt import TensorRTDetector
 from .detector_triton import TritonDetector
 from .tracker import ByteTrackWrapper
 from .feature_extractor import ArcFaceExtractor
+from .arcface_triton_client import ArcFaceTritonClient
 from .vector_db import QdrantVectorDB
 
 
@@ -101,16 +102,16 @@ class PreloadedPipelineManager:
     def _load_config(self, config_path: Optional[str]) -> None:
         """Load configuration file"""
         if config_path is None:
-            # Try new location first (.streamlit/configs/), fallback to old location (configs/)
-            new_path = Path(__file__).parent.parent / ".streamlit" / "configs" / "config.yaml"
-            old_path = Path(__file__).parent.parent / "configs" / "config.yaml"
+            # Priority: configs/config.yaml (for services), then .streamlit/configs/config.yaml (for UI)
+            primary_path = Path(__file__).parent.parent / "configs" / "config.yaml"
+            fallback_path = Path(__file__).parent.parent / ".streamlit" / "configs" / "config.yaml"
 
-            if new_path.exists():
-                config_path = new_path
-            elif old_path.exists():
-                config_path = old_path
+            if primary_path.exists():
+                config_path = primary_path
+            elif fallback_path.exists():
+                config_path = fallback_path
             else:
-                raise FileNotFoundError(f"Config not found at {new_path} or {old_path}")
+                raise FileNotFoundError(f"Config not found at {primary_path} or {fallback_path}")
 
         logger.info(f"Loading config from: {config_path}")
         with open(config_path, 'r') as f:
@@ -197,16 +198,34 @@ class PreloadedPipelineManager:
         logger.info("✓ Tracker loaded")
     
     def _init_extractor(self) -> None:
-        """Initialize ArcFace feature extractor"""
+        """Initialize ArcFace feature extractor (Triton or InsightFace)"""
         logger.info("Loading ArcFace extractor...")
         cfg = self.config['reid']
-        
-        self.extractor = ArcFaceExtractor(
-            model_name=cfg.get('arcface_model_name', 'buffalo_l'),
-            use_cuda=cfg['use_cuda'],
-            feature_dim=cfg['feature_dim']
-        )
-        logger.info("✓ Extractor loaded")
+        reid_backend = cfg.get('backend', 'insightface')
+
+        if reid_backend == 'triton':
+            # Triton ArcFace backend
+            triton_cfg = cfg.get('triton', {})
+            triton_url = triton_cfg.get('url', 'localhost:8101')
+            model_name = triton_cfg.get('model_name', 'arcface_tensorrt')
+            feature_dim = triton_cfg.get('feature_dim', 512)
+
+            self.extractor = ArcFaceTritonClient(
+                triton_url=triton_url,
+                model_name=model_name,
+                feature_dim=feature_dim
+            )
+            logger.info("✓ Triton ArcFace Extractor loaded")
+            logger.info(f"  Server: {triton_url}")
+            logger.info(f"  Model: {model_name}")
+        else:
+            # InsightFace backend (default)
+            self.extractor = ArcFaceExtractor(
+                model_name=cfg.get('arcface_model_name', 'buffalo_l'),
+                use_cuda=cfg.get('use_cuda', True),
+                feature_dim=cfg.get('feature_dim', 512)
+            )
+            logger.info("✓ InsightFace ArcFace Extractor loaded")
     
     def _init_database(self) -> None:
         """Initialize Qdrant vector database"""

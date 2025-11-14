@@ -96,9 +96,9 @@ class PerformanceMonitor:
 class DetectionBenchmark:
     """Benchmark detection pipeline with detailed metrics"""
     
-    def __init__(self, video_path, config_path=".streamlit/configs/config.yaml"):
+    def __init__(self, video_path, config_path="configs/config.yaml"):
         self.video_path = video_path
-        
+
         # Load config
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
@@ -363,7 +363,7 @@ if __name__ == "__main__":
     parser.add_argument("--video", type=str, required=True, help="Path to video file")
     parser.add_argument("--max-frames", type=int, default=None, help="Max frames to process")
     parser.add_argument("--show", action="store_true", help="Show video while processing")
-    parser.add_argument("--config", type=str, default=".streamlit/configs/config.yaml", help="Config file path")
+    parser.add_argument("--config", type=str, default="configs/config.yaml", help="Config file path")
     
     args = parser.parse_args()
     

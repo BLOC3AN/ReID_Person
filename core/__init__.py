@@ -7,6 +7,7 @@ from .detector_trt import TensorRTDetector
 from .detector_triton import TritonDetector
 from .tracker import ByteTrackWrapper
 from .feature_extractor import ArcFaceExtractor
+from .arcface_triton_client import ArcFaceTritonClient
 from .vector_db import QdrantVectorDB
 from .reid_matcher import ReIDMatcher
 from .preloaded_manager import preloaded_manager
@@ -17,6 +18,7 @@ __all__ = [
     'TritonDetector',
     'ByteTrackWrapper',
     'ArcFaceExtractor',
+    'ArcFaceTritonClient',
     'QdrantVectorDB',
     'ReIDMatcher',
     'preloaded_manager',

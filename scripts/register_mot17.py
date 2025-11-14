@@ -12,7 +12,7 @@ import os
 import cv2
 import numpy as np
 from loguru import logger
-from core import YOLOXDetector, ArcFaceExtractor, QdrantVectorDB
+from core import YOLOXDetector, ArcFaceExtractor, ArcFaceTritonClient, QdrantVectorDB
 from qdrant_client.models import Distance, VectorParams
 from typing import List, Union
 
@@ -53,10 +53,10 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
 
     # Use preloaded extractor or initialize new one
     if extractor is None:
-        logger.info("Initializing ArcFace extractor...")
+        logger.info("Initializing ArcFace extractor (fallback to InsightFace)...")
         extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True)
     else:
-        logger.info("✅ Using preloaded ArcFace extractor")
+        logger.info("✅ Using preloaded ArcFace extractor (Triton or InsightFace)")
     
     # Initialize database
     logger.info("Initializing database...")
@@ -246,10 +246,10 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
 
     # Use preloaded extractor or initialize new one
     if extractor is None:
-        logger.info("Initializing ArcFace extractor...")
+        logger.info("Initializing ArcFace extractor (fallback to InsightFace)...")
         extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True)
     else:
-        logger.info("✅ Using preloaded ArcFace extractor")
+        logger.info("✅ Using preloaded ArcFace extractor (Triton or InsightFace)")
 
     # Initialize database
     logger.info("Initializing database...")
