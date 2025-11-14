@@ -486,8 +486,8 @@ class PersonReIDPipeline:
                     info['global_id'], f"{info['similarity']:.4f}", info['label']
                 ])
 
-                # Save person video clip
-                # Create video writer for this track if not exists
+                # Save person frames
+                # Create folder for this track if not exists
                 if track_id not in person_video_writers:
                     # Get label for folder name
                     person_label = info['label']
@@ -496,30 +496,22 @@ class PersonReIDPipeline:
                     person_folder = extracted_objects_dir / person_label
                     person_folder.mkdir(parents=True, exist_ok=True)
 
-                    # Generate unique filename with timestamp
-                    video_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds
-                    clip_filename = f"{person_label}_{video_timestamp}_track{track_id}.mp4"
-                    clip_path = person_folder / clip_filename
-
-                    # Create video writer for this person's clip
-                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                    clip_writer = cv2.VideoWriter(
-                        str(clip_path),
-                        fourcc,
-                        props['fps'],
-                        (w, h)  # Size of cropped person
-                    )
+                    # Generate unique folder name with timestamp
+                    folder_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds
+                    track_folder_name = f"{person_label}_{folder_timestamp}_track{track_id}"
+                    track_folder_path = person_folder / track_folder_name
+                    track_folder_path.mkdir(parents=True, exist_ok=True)
 
                     person_video_writers[track_id] = {
-                        'writer': clip_writer,
+                        'folder': track_folder_path,
                         'label': person_label,
-                        'path': clip_path,
+                        'path': track_folder_path,
                         'frame_count': 0
                     }
 
-                    logger.info(f"  📹 Created video clip for {person_label} (Track {track_id}): {clip_path.name}")
+                    logger.info(f"  � Created frames folder for {person_label} (Track {track_id}): {track_folder_name}")
 
-                # Write cropped person frame to their video clip
+                # Save cropped person frame to folder
                 if track_id in person_video_writers:
                     # Crop person from frame
                     person_crop = frame[y:y+h, x:x+w].copy()
@@ -529,39 +521,32 @@ class PersonReIDPipeline:
                     saved_label = person_video_writers[track_id]['label']
 
                     if current_label != saved_label:
-                        # Label changed - close old writer and create new one
+                        # Label changed - create new folder
                         logger.info(f"  🔄 Track {track_id} label changed: {saved_label} → {current_label}")
 
-                        # Close old writer
-                        person_video_writers[track_id]['writer'].release()
-
-                        # Create new folder and writer
+                        # Create new folder
                         person_folder = extracted_objects_dir / current_label
                         person_folder.mkdir(parents=True, exist_ok=True)
 
-                        video_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-                        clip_filename = f"{current_label}_{video_timestamp}_track{track_id}.mp4"
-                        clip_path = person_folder / clip_filename
-
-                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                        clip_writer = cv2.VideoWriter(
-                            str(clip_path),
-                            fourcc,
-                            props['fps'],
-                            (w, h)
-                        )
+                        folder_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                        track_folder_name = f"{current_label}_{folder_timestamp}_track{track_id}"
+                        track_folder_path = person_folder / track_folder_name
+                        track_folder_path.mkdir(parents=True, exist_ok=True)
 
                         person_video_writers[track_id] = {
-                            'writer': clip_writer,
+                            'folder': track_folder_path,
                             'label': current_label,
-                            'path': clip_path,
+                            'path': track_folder_path,
                             'frame_count': 0
                         }
 
-                        logger.info(f"  📹 Created new video clip: {clip_path.name}")
+                        logger.info(f"  � Created new frames folder: {track_folder_name}")
 
-                    # Write frame to clip
-                    person_video_writers[track_id]['writer'].write(person_crop)
+                    # Save frame as image
+                    frame_count = person_video_writers[track_id]['frame_count']
+                    frame_filename = f"frame_{frame_count:06d}.jpg"
+                    frame_path = person_video_writers[track_id]['folder'] / frame_filename
+                    cv2.imwrite(str(frame_path), person_crop)
                     person_video_writers[track_id]['frame_count'] += 1
 
                 # Draw on frame
@@ -636,11 +621,10 @@ class PersonReIDPipeline:
         csv_file.close()
         log_file.close()
 
-        # Close all person video writers
+        # Summary of saved person frames
         logger.info("")
-        logger.info("📹 Closing person video clips...")
+        logger.info("� Person frames summary...")
         for track_id, writer_info in person_video_writers.items():
-            writer_info['writer'].release()
             logger.info(f"  ✅ Track {track_id} ({writer_info['label']}): {writer_info['frame_count']} frames → {writer_info['path'].name}")
 
         logger.info("="*80)
@@ -649,17 +633,17 @@ class PersonReIDPipeline:
         logger.info(f"Output video: {output_video}")
         logger.info(f"Output CSV: {output_csv}")
         logger.info(f"Detailed log: {output_log}")
-        logger.info(f"Person clips saved to: {extracted_objects_dir}")
+        logger.info(f"Person frames saved to: {extracted_objects_dir}")
         logger.info(f"Total frames processed: {frame_id}")
         logger.info(f"Total tracks: {len(track_labels)}")
-        logger.info(f"Total person clips: {len(person_video_writers)}")
+        logger.info(f"Total person frame folders: {len(person_video_writers)}")
         logger.info(f"Average FPS: {avg_fps:.2f}")
         logger.info("")
         logger.info("Track Summary:")
         for tid, info in sorted(track_labels.items()):
             votes_info = f" (votes={info['votes']}/3)" if 'votes' in info else ""
-            clip_info = f" → {person_video_writers[tid]['path'].name}" if tid in person_video_writers else ""
-            logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){votes_info}{clip_info}")
+            folder_info = f" → {person_video_writers[tid]['path'].name}" if tid in person_video_writers else ""
+            logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){votes_info}{folder_info}")
         logger.info("="*80)
 
 

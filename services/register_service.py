@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import uuid
 from loguru import logger
-from scripts.register_mot17 import register_person_mot17
+from scripts.register_mot17 import register_person_mot17, register_person_from_images
 from services.preload_models import preload_models
 
 app = FastAPI(title="Register Service", version="1.0.0")
@@ -83,6 +83,32 @@ def process_registration(job_id: str, video_path: str, person_name: str,
         jobs[job_id]["status"] = "failed"
         jobs[job_id]["error"] = str(e)
         logger.error(f"Registration job {job_id} failed: {e}")
+
+
+def process_image_registration(job_id: str, image_paths: List[str], person_name: str,
+                                global_id: int, delete_existing: bool):
+    """Background task to process person registration from images"""
+    try:
+        jobs[job_id]["status"] = "processing"
+        logger.info(f"Starting image registration job {job_id} for {person_name}")
+
+        register_person_from_images(
+            image_paths=image_paths,
+            person_name=person_name,
+            global_id=global_id,
+            delete_existing=delete_existing,
+            detector=preloaded_models["detector"],
+            extractor=preloaded_models["extractor"]
+        )
+
+        jobs[job_id]["status"] = "completed"
+        jobs[job_id]["message"] = f"Person {person_name} registered successfully from {len(image_paths)} images"
+        logger.info(f"Image registration job {job_id} completed")
+
+    except Exception as e:
+        jobs[job_id]["status"] = "failed"
+        jobs[job_id]["error"] = str(e)
+        logger.error(f"Image registration job {job_id} failed: {e}")
 
 
 @app.get("/")
@@ -277,6 +303,76 @@ async def get_batch_status(job_ids: str = None):
     }
 
 
+@app.post("/register-images")
+async def register_person_images(
+    background_tasks: BackgroundTasks,
+    images: List[UploadFile] = File(...),
+    person_name: str = Form(...),
+    global_id: int = Form(...),
+    delete_existing: bool = Form(False)
+):
+    """
+    Register a person from images into the vector database
+
+    Args:
+        images: Image files containing the person
+        person_name: Name of the person to register
+        global_id: Global ID for the person (unique identifier)
+        delete_existing: Delete existing collection before registering
+
+    Returns:
+        Job ID for tracking the registration process
+    """
+    try:
+        if not images:
+            raise HTTPException(status_code=400, detail="No images provided")
+
+        # Generate job ID
+        job_id = str(uuid.uuid4())
+
+        # Save uploaded images
+        image_paths = []
+        for img in images:
+            img_filename = f"{job_id}_{img.filename}"
+            img_path = UPLOAD_DIR / img_filename
+
+            with open(img_path, "wb") as buffer:
+                shutil.copyfileobj(img.file, buffer)
+
+            image_paths.append(str(img_path))
+
+        # Initialize job status
+        jobs[job_id] = {
+            "job_id": job_id,
+            "status": "pending",
+            "message": "Job queued for processing",
+            "person_name": person_name,
+            "global_id": global_id,
+            "image_paths": image_paths,
+            "num_images": len(image_paths)
+        }
+
+        # Add background task
+        background_tasks.add_task(
+            process_image_registration,
+            job_id=job_id,
+            image_paths=image_paths,
+            person_name=person_name,
+            global_id=global_id,
+            delete_existing=delete_existing
+        )
+
+        return JSONResponse(content={
+            "job_id": job_id,
+            "status": "pending",
+            "message": f"Image registration job started for {person_name} with {len(image_paths)} image(s)"
+        })
+
+    except Exception as e:
+        logger.error(f"Error starting image registration: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/jobs/{job_id}")
 async def delete_job(job_id: str):
     """Delete a job and its associated files"""
@@ -287,6 +383,13 @@ async def delete_job(job_id: str):
     video_path = Path(jobs[job_id].get("video_path", ""))
     if video_path.exists():
         video_path.unlink()
+
+    # Delete uploaded images
+    image_paths = jobs[job_id].get("image_paths", [])
+    for img_path in image_paths:
+        img_path = Path(img_path)
+        if img_path.exists():
+            img_path.unlink()
 
     # Remove job from storage
     del jobs[job_id]
