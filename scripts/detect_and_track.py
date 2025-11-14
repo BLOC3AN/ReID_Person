@@ -19,7 +19,7 @@ from loguru import logger
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB
+from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, ArcFaceTritonClient, QdrantVectorDB
 from core.preloaded_manager import preloaded_manager
 from utils.stream_reader import StreamReader
 from utils.multi_stream_reader import MultiStreamReader, parse_stream_urls
@@ -122,13 +122,25 @@ class PersonReIDPipeline:
     def initialize_extractor(self):
         """Initialize ArcFace feature extractor for face recognition"""
         cfg = self.config['reid']
+        reid_backend = cfg.get('backend', 'insightface')
 
-        logger.info("Initializing ArcFace extractor for face recognition")
-        self.extractor = ArcFaceExtractor(
-            model_name=cfg.get('arcface_model_name', 'buffalo_l'),
-            use_cuda=cfg['use_cuda'],
-            feature_dim=cfg['feature_dim']
-        )
+        if reid_backend == 'triton':
+            logger.info("Initializing ArcFace Triton Client for face recognition")
+            triton_cfg = cfg.get('triton', {})
+            self.extractor = ArcFaceTritonClient(
+                triton_url=triton_cfg.get('url', 'localhost:8101'),
+                model_name=triton_cfg.get('model_name', 'arcface_tensorrt'),
+                feature_dim=triton_cfg.get('feature_dim', 512)
+            )
+            logger.info(f"✅ Using Triton ArcFace: {triton_cfg.get('url')}/{triton_cfg.get('model_name')}")
+        else:
+            logger.info("Initializing ArcFace extractor (InsightFace) for face recognition")
+            self.extractor = ArcFaceExtractor(
+                model_name=cfg.get('arcface_model_name', 'buffalo_l'),
+                use_cuda=cfg.get('use_cuda', True),
+                feature_dim=cfg.get('feature_dim', 512)
+            )
+            logger.info("✅ Using InsightFace ArcFace")
     
     def initialize_database(self):
         """Initialize Qdrant vector database"""
@@ -513,41 +525,74 @@ class PersonReIDPipeline:
 
                 # Save cropped person frame to folder
                 if track_id in person_video_writers:
-                    # Crop person from frame
-                    person_crop = frame[y:y+h, x:x+w].copy()
+                    try:
+                        # Validate bounding box first
+                        if x < 0 or y < 0 or w <= 0 or h <= 0:
+                            logger.warning(f"⚠️ Invalid bbox for track {track_id} at frame {frame_id}: ({x},{y},{w},{h})")
+                            continue
 
-                    # Check if label changed (re-verification updated it)
-                    current_label = info['label']
-                    saved_label = person_video_writers[track_id]['label']
+                        # Clip to frame boundaries
+                        frame_h, frame_w = frame.shape[:2]
+                        x_clipped = max(0, x)
+                        y_clipped = max(0, y)
+                        w_clipped = min(w, frame_w - x_clipped)
+                        h_clipped = min(h, frame_h - y_clipped)
 
-                    if current_label != saved_label:
-                        # Label changed - create new folder
-                        logger.info(f"  🔄 Track {track_id} label changed: {saved_label} → {current_label}")
+                        if w_clipped <= 0 or h_clipped <= 0:
+                            logger.warning(f"⚠️ Bbox outside frame for track {track_id}: ({x},{y},{w},{h}), frame_shape=({frame_h},{frame_w})")
+                            continue
 
-                        # Create new folder
-                        person_folder = extracted_objects_dir / current_label
-                        person_folder.mkdir(parents=True, exist_ok=True)
+                        # Crop person from frame
+                        person_crop = frame[y_clipped:y_clipped+h_clipped, x_clipped:x_clipped+w_clipped].copy()
 
-                        folder_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-                        track_folder_name = f"{current_label}_{folder_timestamp}_track{track_id}"
-                        track_folder_path = person_folder / track_folder_name
-                        track_folder_path.mkdir(parents=True, exist_ok=True)
+                        # Validate crop is not empty
+                        if person_crop.size == 0 or person_crop.shape[0] == 0 or person_crop.shape[1] == 0:
+                            logger.warning(f"⚠️ Empty crop for track {track_id} at frame {frame_id}")
+                            continue
 
-                        person_video_writers[track_id] = {
-                            'folder': track_folder_path,
-                            'label': current_label,
-                            'path': track_folder_path,
-                            'frame_count': 0
-                        }
+                        # Check if label changed (re-verification updated it)
+                        current_label = info['label']
+                        saved_label = person_video_writers[track_id]['label']
 
-                        logger.info(f"  � Created new frames folder: {track_folder_name}")
+                        if current_label != saved_label:
+                            # Label changed - create new folder
+                            logger.info(f"  🔄 Track {track_id} label changed: {saved_label} → {current_label}")
 
-                    # Save frame as image
-                    frame_count = person_video_writers[track_id]['frame_count']
-                    frame_filename = f"frame_{frame_count:06d}.jpg"
-                    frame_path = person_video_writers[track_id]['folder'] / frame_filename
-                    cv2.imwrite(str(frame_path), person_crop)
-                    person_video_writers[track_id]['frame_count'] += 1
+                            # Create new folder
+                            person_folder = extracted_objects_dir / current_label
+                            person_folder.mkdir(parents=True, exist_ok=True)
+
+                            folder_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                            track_folder_name = f"{current_label}_{folder_timestamp}_track{track_id}"
+                            track_folder_path = person_folder / track_folder_name
+                            track_folder_path.mkdir(parents=True, exist_ok=True)
+
+                            person_video_writers[track_id] = {
+                                'folder': track_folder_path,
+                                'label': current_label,
+                                'path': track_folder_path,
+                                'frame_count': 0
+                            }
+
+                            logger.info(f"  📁 Created new frames folder: {track_folder_name}")
+
+                        # Save frame as image
+                        frame_count = person_video_writers[track_id]['frame_count']
+                        frame_filename = f"frame_{frame_count:06d}.jpg"
+                        frame_path = person_video_writers[track_id]['folder'] / frame_filename
+
+                        # Try to write image
+                        success = cv2.imwrite(str(frame_path), person_crop)
+                        if not success:
+                            logger.error(f"❌ Failed to write image: {frame_path}")
+                        else:
+                            person_video_writers[track_id]['frame_count'] += 1
+
+                    except Exception as e:
+                        logger.error(f"❌ Error saving crop for track {track_id} at frame {frame_id}: {e}")
+                        logger.error(f"   Bbox: ({x},{y},{w},{h}), Frame shape: {frame.shape}")
+                        # Continue processing other tracks
+                        continue
 
                 # Draw on frame
                 if self.config['output']['save_video']:
