@@ -35,12 +35,14 @@ detection:
   device: cuda
   fp16: true  # Only for PyTorch backend (TensorRT/Triton use engine precision)
 tracking:
-  track_thresh: 0.5
-  track_buffer: 30
-  match_thresh: 0.8
-  aspect_ratio_thresh: 1.6
-  min_box_area: 10
-  mot20: false
+  # ByteTrack: Multi-object tracking with IoU + Kalman Filter
+  # Robust tracker for person tracking with high/low confidence detections
+  track_thresh: 0.5       # Tracking confidence threshold
+  track_buffer: 30        # Frames to keep lost tracks
+  match_thresh: 0.8       # Matching threshold for association
+  aspect_ratio_thresh: 1.6  # Aspect ratio threshold for filtering
+  min_box_area: 10        # Minimum box area for filtering
+  mot20: false            # Use MOT20 settings
 reid:
   # ArcFace face recognition settings
   arcface_model_name: buffalo_l  # Options: buffalo_l, buffalo_s, antelopev2

@@ -101,14 +101,18 @@ class MultiStreamBenchmark:
         else:
             raise ValueError(f"Only Triton backend supported")
         
-        # Tracker - one per stream
+        # Tracker - one per stream (ByteTrack)
         track_cfg = self.config['tracking']
         self.trackers = []
+
+        from core.tracker import ByteTrackWrapper
         for i in range(self.num_streams):
             tracker = ByteTrackWrapper(
-                track_thresh=track_cfg['track_thresh'],
-                track_buffer=track_cfg['track_buffer'],
-                match_thresh=track_cfg['match_thresh']
+                track_thresh=track_cfg.get('track_thresh', 0.5),
+                track_buffer=track_cfg.get('track_buffer', 30),
+                match_thresh=track_cfg.get('match_thresh', 0.8),
+                frame_rate=30,
+                mot20=track_cfg.get('mot20', False)
             )
             self.trackers.append(tracker)
         

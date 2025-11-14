@@ -101,8 +101,17 @@ class PreloadedPipelineManager:
     def _load_config(self, config_path: Optional[str]) -> None:
         """Load configuration file"""
         if config_path is None:
-            config_path = Path(__file__).parent.parent / "configs" / "config.yaml"
-        
+            # Try new location first (.streamlit/configs/), fallback to old location (configs/)
+            new_path = Path(__file__).parent.parent / ".streamlit" / "configs" / "config.yaml"
+            old_path = Path(__file__).parent.parent / "configs" / "config.yaml"
+
+            if new_path.exists():
+                config_path = new_path
+            elif old_path.exists():
+                config_path = old_path
+            else:
+                raise FileNotFoundError(f"Config not found at {new_path} or {old_path}")
+
         logger.info(f"Loading config from: {config_path}")
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
@@ -177,13 +186,13 @@ class PreloadedPipelineManager:
         """Initialize ByteTrack tracker"""
         logger.info("Loading ByteTrack tracker...")
         cfg = self.config['tracking']
-        
+
         self.tracker = ByteTrackWrapper(
-            track_thresh=cfg['track_thresh'],
-            track_buffer=cfg['track_buffer'],
-            match_thresh=cfg['match_thresh'],
+            track_thresh=cfg.get('track_thresh', 0.5),
+            track_buffer=cfg.get('track_buffer', 30),
+            match_thresh=cfg.get('match_thresh', 0.8),
             frame_rate=30,
-            mot20=cfg['mot20']
+            mot20=cfg.get('mot20', False)
         )
         logger.info("✓ Tracker loaded")
     
