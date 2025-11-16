@@ -533,8 +533,13 @@ elif page == "Detect & Track":
                 # Parse stream URLs
                 urls = [u.strip() for u in stream_url.replace('\n', ',').split(',') if u.strip()]
                 num_cameras = len(urls)
+
+                # Debug info
+                st.caption(f"🔍 Debug: Detected {num_cameras} camera(s) from stream URLs")
+
                 if num_cameras > 1:
                     st.info(f"📹 Detected {num_cameras} cameras. You can configure zones per camera.")
+                    st.caption(f"Stream URLs: {urls}")
 
             # Initialize session state for zones
             if 'zones_config' not in st.session_state:
