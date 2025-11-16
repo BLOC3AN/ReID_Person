@@ -529,7 +529,7 @@ elif page == "Detect & Track":
 
             # Detect number of cameras from stream URL
             num_cameras = 1
-            if input_method == "Stream URL" and stream_url:
+            if input_method == "Stream URL (UDP/RTSP)" and stream_url:
                 # Parse stream URLs
                 urls = [u.strip() for u in stream_url.replace('\n', ',').split(',') if u.strip()]
                 num_cameras = len(urls)
