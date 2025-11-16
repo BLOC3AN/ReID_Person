@@ -87,6 +87,7 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                       output_csv: str, output_log: str, config_path: Optional[str],
                       similarity_threshold: float = 0.8, model_type: Optional[str] = None,
                       conf_thresh: Optional[float] = None, track_thresh: Optional[float] = None,
+                      face_conf_thresh: Optional[float] = None,
                       zone_config_path: Optional[str] = None, iou_threshold: float = 0.6,
                       zone_opacity: float = 0.15, max_frames: Optional[int] = None,
                       max_duration_seconds: Optional[int] = None):
@@ -178,6 +179,13 @@ def process_detection(job_id: str, video_path: str, output_video: str,
 
             if track_thresh is not None:
                 pipeline.config['tracking']['track_thresh'] = track_thresh
+
+            if face_conf_thresh is not None:
+                pipeline.config['reid']['triton']['face_conf_threshold'] = face_conf_thresh
+                # Update SCRFD client threshold directly (for pre-loaded components)
+                if hasattr(pipeline.extractor, 'face_detector'):
+                    pipeline.extractor.face_detector.conf_threshold = face_conf_thresh
+                    logger.info(f"✅ Updated face confidence threshold to {face_conf_thresh}")
 
             # Components are either pre-loaded or will be initialized automatically
 
@@ -318,6 +326,7 @@ async def detect_and_track(
     model_type: Optional[str] = Form(None),
     conf_thresh: Optional[float] = Form(None),
     track_thresh: Optional[float] = Form(None),
+    face_conf_thresh: Optional[float] = Form(None),
     zone_config: Optional[UploadFile] = File(None),
     iou_threshold: float = Form(0.6),
     zone_opacity: float = Form(0.15)
@@ -332,6 +341,7 @@ async def detect_and_track(
         model_type: Detection model type - 'mot17' or 'yolox' (default: from config)
         conf_thresh: Detection confidence threshold 0-1 (default: from config)
         track_thresh: Tracking confidence threshold 0-1 (default: from config)
+        face_conf_thresh: Face detection confidence threshold 0-1 (default: from config)
         zone_config: Optional zone configuration YAML file
         iou_threshold: Zone IoP threshold 0-1 (default: 0.6 = 60%)
         zone_opacity: Zone fill opacity 0-1 (default: 0.15 = 15%)
@@ -393,6 +403,7 @@ async def detect_and_track(
             model_type=model_type,
             conf_thresh=conf_thresh,
             track_thresh=track_thresh,
+            face_conf_thresh=face_conf_thresh,
             zone_config_path=str(zone_config_path) if zone_config_path else None,
             iou_threshold=iou_threshold,
             zone_opacity=zone_opacity
@@ -418,6 +429,7 @@ async def detect_and_track_stream(
     model_type: Optional[str] = Form(None),
     conf_thresh: Optional[float] = Form(None),
     track_thresh: Optional[float] = Form(None),
+    face_conf_thresh: Optional[float] = Form(None),
     zone_config: Optional[UploadFile] = File(None),
     iou_threshold: float = Form(0.6),
     zone_opacity: float = Form(0.15),
@@ -434,6 +446,7 @@ async def detect_and_track_stream(
         model_type: Detection model type - 'mot17' or 'yolox' (default: from config)
         conf_thresh: Detection confidence threshold 0-1 (default: from config)
         track_thresh: Tracking confidence threshold 0-1 (default: from config)
+        face_conf_thresh: Face detection confidence threshold 0-1 (default: from config)
         zone_config: Optional zone configuration YAML file
         iou_threshold: Zone IoP threshold 0-1 (default: 0.6 = 60%)
         zone_opacity: Zone fill opacity 0-1 (default: 0.15 = 15%)
@@ -493,6 +506,7 @@ async def detect_and_track_stream(
             model_type=model_type,
             conf_thresh=conf_thresh,
             track_thresh=track_thresh,
+            face_conf_thresh=face_conf_thresh,
             zone_config_path=str(zone_config_path) if zone_config_path else None,
             iou_threshold=iou_threshold,
             zone_opacity=zone_opacity,

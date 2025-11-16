@@ -697,6 +697,15 @@ elif page == "Detect & Track":
                 help="Detection confidence threshold (higher = fewer detections)"
             )
 
+            face_conf_thresh = st.slider(
+                "Face Confidence",
+                min_value=0.1,
+                max_value=1.0,
+                value=0.5,
+                step=0.05,
+                help="Face detection confidence threshold (higher = stricter face detection)"
+            )
+
         with col_param2:
             track_thresh = st.slider(
                 "Tracking Threshold",
@@ -712,6 +721,7 @@ elif page == "Detect & Track":
 Model: {model_type}
 Similarity: {similarity_threshold}
 Detection: {conf_thresh}
+Face Detection: {face_conf_thresh}
 Tracking: {track_thresh}
 Zone Monitoring: {'Enabled' if zone_config_file else 'Disabled'}
 IoP Threshold: {iou_threshold} ({iou_threshold*100:.0f}% of person in zone)
@@ -738,7 +748,7 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                 if max_duration:
                     logger.info(f"⏱️ [Detect & Track] Max duration: {max_duration}s")
 
-            logger.info(f"⚙️ [Detect & Track] Parameters: model={model_type}, similarity={similarity_threshold}, conf={conf_thresh}, track={track_thresh}")
+            logger.info(f"⚙️ [Detect & Track] Parameters: model={model_type}, similarity={similarity_threshold}, conf={conf_thresh}, face_conf={face_conf_thresh}, track={track_thresh}")
 
             # Check if zone monitoring is enabled
             zone_enabled = zone_config_file is not None or zones_data is not None
@@ -769,6 +779,7 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                             "model_type": model_type,
                             "conf_thresh": conf_thresh,
                             "track_thresh": track_thresh,
+                            "face_conf_thresh": face_conf_thresh,
                             "iou_threshold": iou_threshold,
                             "zone_opacity": zone_opacity
                         }
@@ -804,6 +815,8 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                             data["conf_thresh"] = str(conf_thresh)
                         if track_thresh is not None:
                             data["track_thresh"] = str(track_thresh)
+                        if face_conf_thresh is not None:
+                            data["face_conf_thresh"] = str(face_conf_thresh)
                         if max_frames:
                             data["max_frames"] = str(max_frames)
                         if max_duration:

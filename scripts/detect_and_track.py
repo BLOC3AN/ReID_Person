@@ -123,16 +123,35 @@ class PersonReIDPipeline:
         """Initialize ArcFace feature extractor for face recognition"""
         cfg = self.config['reid']
         reid_backend = cfg.get('backend', 'insightface')
+        logger.info(f"ReID backend: {reid_backend}")
 
-        if reid_backend == 'triton':
+        if reid_backend == 'triton_pipeline':
+            logger.info("Initializing Face Recognition Pipeline (SCRFD + ArcFace)")
+            from core import FaceRecognitionTriton
+
+            triton_cfg = cfg.get('triton', {})
+            self.extractor = FaceRecognitionTriton(
+                triton_url=triton_cfg.get('url', 'localhost:8101'),
+                face_detector_model=triton_cfg.get('face_detector_model', 'scrfd_10g'),
+                arcface_model=triton_cfg.get('arcface_model', 'arcface_tensorrt'),
+                feature_dim=triton_cfg.get('feature_dim', 512),
+                face_conf_threshold=triton_cfg.get('face_conf_threshold', 0.5)
+            )
+            logger.info(f"✅ Using Triton Face Recognition Pipeline")
+            logger.info(f"   Face Detector: {triton_cfg.get('face_detector_model', 'scrfd_10g')}")
+            logger.info(f"   ArcFace: {triton_cfg.get('arcface_model', 'arcface_tensorrt')}")
+
+        elif reid_backend == 'triton':
             logger.info("Initializing ArcFace Triton Client for face recognition")
+            logger.warning("⚠️  Using Triton ArcFace without face detection (DEPRECATED)")
+
             triton_cfg = cfg.get('triton', {})
             self.extractor = ArcFaceTritonClient(
                 triton_url=triton_cfg.get('url', 'localhost:8101'),
-                model_name=triton_cfg.get('model_name', 'arcface_tensorrt'),
+                model_name=triton_cfg.get('arcface_model', triton_cfg.get('model_name', 'arcface_tensorrt')),
                 feature_dim=triton_cfg.get('feature_dim', 512)
             )
-            logger.info(f"✅ Using Triton ArcFace: {triton_cfg.get('url')}/{triton_cfg.get('model_name')}")
+            logger.info(f"✅ Using Triton ArcFace: {triton_cfg.get('url')}/{triton_cfg.get('model_name', 'arcface_tensorrt')}")
         else:
             logger.info("Initializing ArcFace extractor (InsightFace) for face recognition")
             self.extractor = ArcFaceExtractor(

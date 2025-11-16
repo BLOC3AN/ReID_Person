@@ -61,10 +61,11 @@ def build_arcface_engine(onnx_path, engine_path, max_batch_size=16):
     # Set memory pool limit (4GB)
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 4 << 30)
     
-    # Enable FP16
-    if builder.platform_has_fast_fp16:
-        print(f"✅ Enabling FP16 precision")
-        config.set_flag(trt.BuilderFlag.FP16)
+    # Disable FP16 for debugging
+    # if builder.platform_has_fast_fp16:
+    #     print(f"✅ Enabling FP16 precision")
+    #     config.set_flag(trt.BuilderFlag.FP16)
+    print(f"⚠️  Using FP32 precision (FP16 disabled for debugging)")
     
     # Create optimization profile for dynamic shapes
     profile = builder.create_optimization_profile()
@@ -137,7 +138,7 @@ def test_engine(engine_path):
 if __name__ == "__main__":
     # Paths
     onnx_path = os.path.expanduser("~/.insightface/models/buffalo_l/w600k_r50.onnx")
-    engine_path = "models/arcface_w600k_r50_fp16.trt"
+    engine_path = "models/arcface_w600k_r50_fp32.trt"
     
     # Check ONNX exists
     if not os.path.exists(onnx_path):

@@ -198,16 +198,40 @@ class PreloadedPipelineManager:
         logger.info("✓ Tracker loaded")
     
     def _init_extractor(self) -> None:
-        """Initialize ArcFace feature extractor (Triton or InsightFace)"""
+        """Initialize ArcFace feature extractor (Triton Pipeline, Triton, or InsightFace)"""
         logger.info("Loading ArcFace extractor...")
         cfg = self.config['reid']
         reid_backend = cfg.get('backend', 'insightface')
+        logger.info(f"  Backend: {reid_backend}")
 
-        if reid_backend == 'triton':
-            # Triton ArcFace backend
+        if reid_backend == 'triton_pipeline':
+            # Triton pipeline: SCRFD face detector + ArcFace
+            from .face_recognition_triton import FaceRecognitionTriton
+
             triton_cfg = cfg.get('triton', {})
             triton_url = triton_cfg.get('url', 'localhost:8101')
-            model_name = triton_cfg.get('model_name', 'arcface_tensorrt')
+            arcface_model = triton_cfg.get('arcface_model', 'arcface_tensorrt')
+            face_detector_model = triton_cfg.get('face_detector_model', 'scrfd_10g')
+            feature_dim = triton_cfg.get('feature_dim', 512)
+            face_conf_threshold = triton_cfg.get('face_conf_threshold', 0.5)
+
+            self.extractor = FaceRecognitionTriton(
+                triton_url=triton_url,
+                face_detector_model=face_detector_model,
+                arcface_model=arcface_model,
+                feature_dim=feature_dim,
+                face_conf_threshold=face_conf_threshold
+            )
+            logger.info("✓ Triton Face Recognition Pipeline loaded")
+            logger.info(f"  Server: {triton_url}")
+            logger.info(f"  Face Detector: {face_detector_model}")
+            logger.info(f"  ArcFace: {arcface_model}")
+
+        elif reid_backend == 'triton':
+            # Triton ArcFace backend only (DEPRECATED - no face detection)
+            triton_cfg = cfg.get('triton', {})
+            triton_url = triton_cfg.get('url', 'localhost:8101')
+            model_name = triton_cfg.get('arcface_model', triton_cfg.get('model_name', 'arcface_tensorrt'))
             feature_dim = triton_cfg.get('feature_dim', 512)
 
             self.extractor = ArcFaceTritonClient(
@@ -215,6 +239,8 @@ class PreloadedPipelineManager:
                 model_name=model_name,
                 feature_dim=feature_dim
             )
+            logger.warning("⚠️  Using Triton ArcFace without face detection (DEPRECATED)")
+            logger.warning("⚠️  Consider using 'triton_pipeline' backend for better accuracy")
             logger.info("✓ Triton ArcFace Extractor loaded")
             logger.info(f"  Server: {triton_url}")
             logger.info(f"  Model: {model_name}")
@@ -239,14 +265,12 @@ class PreloadedPipelineManager:
             embedding_dim=cfg['embedding_dim'],
             use_grpc=cfg.get('use_grpc', False)
         )
-        
-        # Load existing database
-        db_file = Path(__file__).parent.parent / "data" / "database" / "reid_database.pkl"
-        if db_file.exists():
-            logger.info(f"Loading database from {db_file}")
-            self.database.load_from_file(str(db_file))
-            logger.info(f"Database loaded: {self.database.get_person_count()} persons")
-        
+
+        # Sync metadata from Qdrant (if available)
+        if self.database.client:
+            person_count = self.database.sync_metadata_from_qdrant()
+            logger.info(f"✅ Synced metadata from Qdrant: {person_count} persons")
+
         logger.info("✓ Database loaded")
     
     def _cleanup_partial_init(self) -> None:

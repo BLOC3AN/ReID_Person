@@ -66,12 +66,36 @@ def preload_models():
         )
         logger.info("✅ YOLOX Detector loaded successfully")
 
-        # 2. Preload ArcFace Extractor (Triton or InsightFace)
-        if reid_backend == 'triton':
-            logger.info("\n📦 Preloading ArcFace Triton Client...")
+        # 2. Preload ArcFace Extractor (Triton Pipeline, Triton, or InsightFace)
+        if reid_backend == 'triton_pipeline':
+            logger.info("\n📦 Preloading Face Recognition Pipeline (SCRFD + ArcFace)...")
+            from core import FaceRecognitionTriton
+
             triton_cfg = config.get('reid', {}).get('triton', {})
             triton_url = triton_cfg.get('url', 'localhost:8101')
-            model_name = triton_cfg.get('model_name', 'arcface_tensorrt')
+            arcface_model = triton_cfg.get('arcface_model', 'arcface_tensorrt')
+            face_detector_model = triton_cfg.get('face_detector_model', 'scrfd_10g')
+            feature_dim = triton_cfg.get('feature_dim', 512)
+            face_conf_threshold = triton_cfg.get('face_conf_threshold', 0.5)
+
+            extractor = FaceRecognitionTriton(
+                triton_url=triton_url,
+                face_detector_model=face_detector_model,
+                arcface_model=arcface_model,
+                feature_dim=feature_dim,
+                face_conf_threshold=face_conf_threshold
+            )
+            logger.info(f"✅ Face Recognition Pipeline loaded ({triton_url})")
+            logger.info(f"   Face Detector: {face_detector_model}")
+            logger.info(f"   ArcFace: {arcface_model}")
+
+        elif reid_backend == 'triton':
+            logger.info("\n📦 Preloading ArcFace Triton Client...")
+            logger.warning("⚠️  Using Triton ArcFace without face detection (DEPRECATED)")
+
+            triton_cfg = config.get('reid', {}).get('triton', {})
+            triton_url = triton_cfg.get('url', 'localhost:8101')
+            model_name = triton_cfg.get('arcface_model', triton_cfg.get('model_name', 'arcface_tensorrt'))
             feature_dim = triton_cfg.get('feature_dim', 512)
 
             extractor = ArcFaceTritonClient(

@@ -44,22 +44,30 @@ tracking:
   min_box_area: 10        # Minimum box area for filtering
   mot20: false            # Use MOT20 settings
 reid:
-  # ArcFace backend selection: insightface or triton
-  # PRIORITY: triton (optimized for batch processing and multi-stream)
-  backend: triton  # Options: insightface, triton
+  # ArcFace backend selection: insightface, triton, or triton_pipeline
+  # - insightface: InsightFace with built-in face detection (slower, CPU/GPU)
+  # - triton: ArcFace only via Triton (fast, but no face detection - DEPRECATED)
+  # - triton_pipeline: SCRFD face detector + ArcFace via Triton (RECOMMENDED for production)
+  backend: triton_pipeline  # Options: insightface, triton, triton_pipeline
 
   # InsightFace settings (used when backend=insightface)
   arcface_model_name: buffalo_l  # Options: buffalo_l, buffalo_s, antelopev2
   feature_dim: 512
   use_cuda: true
 
-  # Triton ArcFace settings (used when backend=triton)
+  # Triton settings (used when backend=triton or triton_pipeline)
   triton:
     url: localhost:8101  # Triton gRPC endpoint (same as detection)
-    model_name: arcface_tensorrt  # Model name in Triton repository
+
+    # ArcFace model
+    arcface_model: arcface_onnx  # Model name in Triton repository (switched from TensorRT to ONNX due to TensorRT bug)
     model_version: ''  # Empty string = latest version
     timeout: 5.0  # Request timeout in seconds
     feature_dim: 512  # Embedding dimension
+
+    # Face detector model (only for triton_pipeline)
+    face_detector_model: scrfd_10g
+    face_conf_threshold: 0.5  # Confidence threshold for face detection
 database:
   use_qdrant: true
   qdrant_url: ''

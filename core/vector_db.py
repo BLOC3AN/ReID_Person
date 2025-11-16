@@ -177,12 +177,10 @@ class QdrantVectorDB:
         Returns:
             List of (global_id, similarity, name) tuples
         """
+        # Normalize embedding
         embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
 
-        if len(self.db) == 0:
-            return []
-
-        # Use Qdrant if available
+        # Use Qdrant if available (preferred)
         if self.client:
             try:
                 results = self.client.search(
@@ -192,21 +190,28 @@ class QdrantVectorDB:
                     score_threshold=threshold  # Qdrant uses similarity directly
                 )
 
+                logger.debug(f"Qdrant search returned {len(results)} results (threshold={threshold})")
+
                 # Group by global_id and get best score + name for each person
                 best_per_person = {}
                 for r in results:
                     global_id = r.payload.get('global_id', r.id)
                     name = r.payload.get('name', f'Person_{global_id}')
+                    logger.debug(f"  Result: GID={global_id}, name={name}, score={r.score:.4f}")
                     if global_id not in best_per_person or r.score > best_per_person[global_id][1]:
                         best_per_person[global_id] = (global_id, r.score, name)
 
                 # Return top K persons
                 matches = sorted(best_per_person.values(), key=lambda x: x[1], reverse=True)[:top_k]
+                logger.debug(f"Best matches: {[(gid, f'{score:.4f}', name) for gid, score, name in matches]}")
                 return matches
             except Exception as e:
-                logger.warning(f"Qdrant search failed: {e}. Using in-memory.")
+                logger.warning(f"Qdrant search failed: {e}. Falling back to in-memory.")
 
         # Fallback to in-memory search using cosine similarity
+        if len(self.db) == 0:
+            return []
+
         global_ids = list(self.db.keys())
         avg_embeddings = np.array([self.get_avg_embedding(gid) for gid in global_ids])
 
@@ -236,8 +241,89 @@ class QdrantVectorDB:
     
     def get_person_count(self) -> int:
         """Get number of persons in database"""
+        # If using Qdrant, get count from Qdrant
+        if self.client:
+            try:
+                # Get unique global_ids from Qdrant
+                results = self.client.scroll(
+                    collection_name=self.collection_name,
+                    limit=10000,  # Get all points
+                    with_payload=True,
+                    with_vectors=False
+                )[0]
+
+                unique_global_ids = set()
+                for point in results:
+                    gid = point.payload.get('global_id', point.id)
+                    unique_global_ids.add(gid)
+
+                return len(unique_global_ids)
+            except Exception as e:
+                logger.warning(f"Failed to get person count from Qdrant: {e}")
+
+        # Fallback to in-memory count
         return len(self.db)
-    
+
+    def sync_metadata_from_qdrant(self) -> int:
+        """
+        Sync person metadata from Qdrant to in-memory storage
+        This is used to populate self.person_metadata without loading embeddings
+
+        Returns:
+            Number of persons synced
+        """
+        if not self.client:
+            logger.warning("Qdrant client not available. Cannot sync metadata.")
+            return 0
+
+        try:
+            # Get all points from Qdrant
+            results = self.client.scroll(
+                collection_name=self.collection_name,
+                limit=10000,  # Get all points
+                with_payload=True,
+                with_vectors=False
+            )[0]
+
+            # Group by global_id and extract metadata
+            persons = {}
+            for point in results:
+                gid = point.payload.get('global_id')
+                if gid is None:
+                    continue
+
+                name = point.payload.get('name', f'Person_{gid}')
+
+                if gid not in persons:
+                    persons[gid] = {
+                        'name': name,
+                        'global_id': gid,
+                        'source': point.payload.get('source', 'unknown'),
+                        'num_embeddings': 0
+                    }
+
+                persons[gid]['num_embeddings'] += 1
+
+            # Update person_metadata
+            self.person_metadata.clear()
+            for gid, metadata in persons.items():
+                self.person_metadata[gid] = metadata
+
+            # Update next_global_id
+            if persons:
+                max_id = max(persons.keys())
+                self.next_global_id = max_id + 1
+
+            logger.info(f"✅ Synced {len(persons)} persons from Qdrant")
+            for gid, meta in sorted(persons.items()):
+                logger.info(f"   - GID {gid} ({meta['name']}): {meta['num_embeddings']} embeddings")
+
+            return len(persons)
+
+        except Exception as e:
+            logger.error(f"Failed to sync metadata from Qdrant: {e}")
+            return 0
+
     def get_stats(self) -> Dict:
         """Get database statistics"""
         total_embeddings = sum(len(embs) for embs in self.db.values())
