@@ -880,7 +880,12 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                 if zone_config_file:
                     logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (uploaded): {zone_config_file.name}")
                 else:
-                    logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {len(zones_data['zones'])} zones")
+                    # Count zones based on format (single camera or multi-camera)
+                    if 'cameras' in zones_data:
+                        total_zones = sum(len(cam_data['zones']) for cam_data in zones_data['cameras'].values())
+                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {total_zones} zones across {len(zones_data['cameras'])} cameras")
+                    else:
+                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {len(zones_data['zones'])} zones")
 
             spinner_text = "Uploading video and starting detection..." if input_method == "Upload Video File" else "Starting stream detection..."
             with st.spinner(spinner_text):
