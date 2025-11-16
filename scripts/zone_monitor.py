@@ -173,20 +173,14 @@ class ZoneMonitor:
                     # Create unique zone ID: camera_id + zone_id
                     unique_zone_id = f"{camera_id}_{zone_id}"
 
-                    # Convert polygon to bbox [x1, y1, x2, y2]
-                    polygon = np.array(zone_data['polygon'])
-                    x1, y1 = polygon.min(axis=0)
-                    x2, y2 = polygon.max(axis=0)
-
-                    zones[unique_zone_id] = {
-                        'name': zone_data['name'],
-                        'bbox': [x1, y1, x2, y2],
-                        'polygon': polygon,
-                        'authorized_ids': zone_data.get('authorized_ids', []),
-                        'camera_idx': camera_idx,  # Track which camera this zone belongs to
-                        'camera_id': camera_id,
-                        'camera_name': camera_name
-                    }
+                    # Create zone with camera metadata
+                    zone = self._create_zone_from_data(
+                        zone_data,
+                        camera_idx=camera_idx,
+                        camera_id=camera_id,
+                        camera_name=camera_name
+                    )
+                    zones[unique_zone_id] = zone
                     logger.info(f"      - {zone_data['name']} ({len(zone_data.get('authorized_ids', []))} authorized)")
 
         elif 'zones' in config:
@@ -194,22 +188,47 @@ class ZoneMonitor:
             logger.info("📹 Detected single-camera zone config")
 
             for zone_id, zone_data in config['zones'].items():
-                # Convert polygon to bbox [x1, y1, x2, y2]
-                polygon = np.array(zone_data['polygon'])
-                x1, y1 = polygon.min(axis=0)
-                x2, y2 = polygon.max(axis=0)
-
-                zones[zone_id] = {
-                    'name': zone_data['name'],
-                    'bbox': [x1, y1, x2, y2],
-                    'polygon': polygon,
-                    'authorized_ids': zone_data.get('authorized_ids', []),
-                    'camera_idx': 0  # Single camera = camera 0
-                }
+                # Create zone for camera 0 (single camera)
+                zone = self._create_zone_from_data(zone_data, camera_idx=0)
+                zones[zone_id] = zone
         else:
             raise ValueError("Invalid zone config: must contain 'zones' or 'cameras' key")
 
         return zones, is_multi_camera
+
+    def _create_zone_from_data(self, zone_data, camera_idx=0, camera_id=None, camera_name=None):
+        """
+        Create zone dict from zone data (DRY helper).
+
+        Args:
+            zone_data: Dict with 'name', 'polygon', 'authorized_ids'
+            camera_idx: Camera index (0-based)
+            camera_id: Camera ID string (optional, for multi-camera)
+            camera_name: Camera name (optional, for multi-camera)
+
+        Returns:
+            Zone dict with bbox, polygon, and metadata
+        """
+        # Convert polygon to bbox [x1, y1, x2, y2]
+        polygon = np.array(zone_data['polygon'])
+        x1, y1 = polygon.min(axis=0)
+        x2, y2 = polygon.max(axis=0)
+
+        zone = {
+            'name': zone_data['name'],
+            'bbox': [x1, y1, x2, y2],
+            'polygon': polygon,
+            'authorized_ids': zone_data.get('authorized_ids', []),
+            'camera_idx': camera_idx
+        }
+
+        # Add camera metadata if provided (multi-camera mode)
+        if camera_id is not None:
+            zone['camera_id'] = camera_id
+        if camera_name is not None:
+            zone['camera_name'] = camera_name
+
+        return zone
     
     def _build_rtree(self):
         """Build R-tree spatial index for zones"""
@@ -800,13 +819,14 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             # ZONE MONITORING: Check which zone person is in
             person_bbox = [x, y, w, h]
 
-            # For multi-camera: convert bbox to camera-relative coordinates
-            camera_idx = 0
+            # Convert bbox to camera-relative coordinates (single camera = no conversion)
             if num_cameras > 1:
                 relative_bbox, camera_idx = stream_reader.bbox_to_camera_relative(person_bbox)
-                zone_id = zone_monitor.find_zone(relative_bbox, camera_idx)
             else:
-                zone_id = zone_monitor.find_zone(person_bbox, camera_idx=0)
+                relative_bbox, camera_idx = person_bbox, 0
+
+            # Find zone (works for both single and multi-camera)
+            zone_id = zone_monitor.find_zone(relative_bbox, camera_idx)
 
             # Update zone presence
             if info['global_id'] > 0:
@@ -943,23 +963,18 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             cv2.putText(frame, label_text, (x, y-5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
-        # Draw zones (for multi-camera, draw zones for all cameras on combined frame)
-        if num_cameras > 1:
-            # Draw zones for each camera on the combined frame
-            for cam_idx in range(num_cameras):
-                # Create a view of the camera's portion of the frame
+        # Draw zones for all cameras (single camera = 1 iteration)
+        for cam_idx in range(num_cameras):
+            if num_cameras > 1:
+                # Multi-camera: draw zones on each camera's portion of the combined frame
                 cam_x_start = cam_idx * stream_reader.width
                 cam_x_end = (cam_idx + 1) * stream_reader.width
                 camera_frame = frame[:, cam_x_start:cam_x_end]
-
-                # Draw zones for this camera
                 camera_frame = zone_monitor.draw_zones(camera_frame, camera_idx=cam_idx)
-
-                # Put it back into the combined frame
                 frame[:, cam_x_start:cam_x_end] = camera_frame
-        else:
-            # Single camera - draw zones normally
-            frame = zone_monitor.draw_zones(frame, camera_idx=0)
+            else:
+                # Single camera: draw zones on entire frame
+                frame = zone_monitor.draw_zones(frame, camera_idx=cam_idx)
 
         # Write frame
         vid_writer.write(frame)

@@ -714,6 +714,19 @@ elif page == "Detect & Track":
                             # Show zone info
                             st.info(f"✅ {len(zone['polygon'])} points, Authorized: {zone['authorized_ids']}")
 
+            # Helper function to create zones dict from zone list (DRY)
+            def zones_list_to_dict(zones_list):
+                """Convert list of zones to dict format for YAML."""
+                zones_dict = {}
+                for idx, zone in enumerate(zones_list):
+                    zone_id = f"zone{idx+1}"
+                    zones_dict[zone_id] = {
+                        'name': zone['name'],
+                        'polygon': zone['polygon'],
+                        'authorized_ids': zone['authorized_ids']
+                    }
+                return zones_dict
+
             # Create YAML content from zones
             if num_cameras > 1 and 'camera_zones' in st.session_state:
                 # Multi-camera format
@@ -722,33 +735,15 @@ elif page == "Detect & Track":
                     camera_key = f'camera_{cam_idx+1}'
                     camera_zones = st.session_state.camera_zones.get(camera_key, [])
 
-                    zones_dict = {}
-                    for zone_idx, zone in enumerate(camera_zones):
-                        zone_id = f"zone{zone_idx+1}"
-                        zones_dict[zone_id] = {
-                            'name': zone['name'],
-                            'polygon': zone['polygon'],
-                            'authorized_ids': zone['authorized_ids']
-                        }
-
                     cameras_dict[camera_key] = {
                         'name': f'Camera {cam_idx+1}',
-                        'zones': zones_dict
+                        'zones': zones_list_to_dict(camera_zones)
                     }
 
                 zones_data = {'cameras': cameras_dict}
             else:
                 # Single camera format
-                zones_dict = {}
-                for i, zone in enumerate(st.session_state.zones_config):
-                    zone_id = f"zone{i+1}"
-                    zones_dict[zone_id] = {
-                        'name': zone['name'],
-                        'polygon': zone['polygon'],
-                        'authorized_ids': zone['authorized_ids']
-                    }
-
-                zones_data = {'zones': zones_dict}
+                zones_data = {'zones': zones_list_to_dict(st.session_state.zones_config)}
 
             # Preview YAML
             if zones_data and (zones_data.get('zones') or zones_data.get('cameras')):
