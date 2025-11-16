@@ -18,14 +18,9 @@ import uuid
 from loguru import logger
 from scripts.register_mot17 import register_person_mot17, register_person_from_images
 from services.preload_models import preload_models
+from core.preloaded_manager import preloaded_manager
 
 app = FastAPI(title="Register Service", version="1.0.0")
-
-# Global models storage
-preloaded_models = {
-    "detector": None,
-    "extractor": None
-}
 
 # Preload models at startup
 @app.on_event("startup")
@@ -33,9 +28,7 @@ async def startup_event():
     """Preload models when service starts"""
     try:
         logger.info("🚀 Starting Register Service...")
-        detector, extractor = preload_models()
-        preloaded_models["detector"] = detector
-        preloaded_models["extractor"] = extractor
+        preload_models()
         logger.info("✅ Register Service ready!")
     except Exception as e:
         logger.error(f"❌ Failed to start service: {e}")
@@ -71,8 +64,8 @@ def process_registration(job_id: str, video_path: str, person_name: str,
             global_id=global_id,
             sample_rate=sample_rate,
             delete_existing=delete_existing,
-            detector=preloaded_models["detector"],
-            extractor=preloaded_models["extractor"]
+            detector=preloaded_manager.detector,
+            extractor=preloaded_manager.extractor
         )
 
         jobs[job_id]["status"] = "completed"
@@ -97,8 +90,8 @@ def process_image_registration(job_id: str, image_paths: List[str], person_name:
             person_name=person_name,
             global_id=global_id,
             delete_existing=delete_existing,
-            detector=preloaded_models["detector"],
-            extractor=preloaded_models["extractor"]
+            detector=preloaded_manager.detector,
+            extractor=preloaded_manager.extractor
         )
 
         jobs[job_id]["status"] = "completed"
