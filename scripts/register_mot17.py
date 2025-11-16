@@ -12,7 +12,7 @@ import os
 import cv2
 import numpy as np
 from loguru import logger
-from core import YOLOXDetector, ArcFaceExtractor, ArcFaceTritonClient, QdrantVectorDB
+from core import YOLOXDetector, ArcFaceExtractor, QdrantVectorDB
 from qdrant_client.models import Distance, VectorParams
 from typing import List, Union
 

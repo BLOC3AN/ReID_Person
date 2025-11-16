@@ -44,18 +44,17 @@ tracking:
   min_box_area: 10        # Minimum box area for filtering
   mot20: false            # Use MOT20 settings
 reid:
-  # ArcFace backend selection: insightface, triton, or triton_pipeline
+  # ArcFace backend selection: insightface or triton_pipeline
   # - insightface: InsightFace with built-in face detection (slower, CPU/GPU)
-  # - triton: ArcFace only via Triton (fast, but no face detection - DEPRECATED)
   # - triton_pipeline: SCRFD face detector + ArcFace via Triton (RECOMMENDED for production)
-  backend: triton_pipeline  # Options: insightface, triton, triton_pipeline
+  backend: triton_pipeline  # Options: insightface, triton_pipeline
 
   # InsightFace settings (used when backend=insightface)
   arcface_model_name: buffalo_l  # Options: buffalo_l, buffalo_s, antelopev2
   feature_dim: 512
   use_cuda: true
 
-  # Triton settings (used when backend=triton or triton_pipeline)
+  # Triton settings (used when backend=triton_pipeline)
   triton:
     url: localhost:8101  # Triton gRPC endpoint (same as detection)
 

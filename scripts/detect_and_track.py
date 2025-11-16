@@ -19,7 +19,7 @@ from loguru import logger
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, ArcFaceTritonClient, QdrantVectorDB
+from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB
 from core.preloaded_manager import preloaded_manager
 from utils.stream_reader import StreamReader
 from utils.multi_stream_reader import MultiStreamReader, parse_stream_urls
@@ -28,18 +28,16 @@ from utils.multi_stream_reader import MultiStreamReader, parse_stream_urls
 class PersonReIDPipeline:
     """Main pipeline for person detection, tracking, and re-identification"""
 
-    def __init__(self, config_path=None, use_preloaded=True):
+    def __init__(self, config_path=None):
         """
         Initialize pipeline with configuration
+        Automatically uses preloaded components if available
 
         Args:
             config_path: Path to config file (optional)
-            use_preloaded: Use pre-loaded components if available (default: True)
         """
-        self.use_preloaded = use_preloaded
-
-        # Try to use pre-loaded components first
-        if use_preloaded and preloaded_manager.is_initialized():
+        # Try to use pre-loaded components first (if available)
+        if preloaded_manager.is_initialized():
             logger.info("🚀 Using pre-loaded components (instant ready)")
             self.detector, self.tracker, self.extractor, self.database, self.config = preloaded_manager.get_components()
             self._preloaded = True
@@ -85,7 +83,11 @@ class PersonReIDPipeline:
         logger.info(f"Logging to: {log_file}")
     
     def initialize_detector(self, model_type=None):
-        """Initialize YOLOX detector"""
+        """Initialize YOLOX detector (skip if already loaded)"""
+        if self.detector is not None:
+            logger.debug("Detector already initialized, skipping...")
+            return
+
         cfg = self.config['detection']
 
         # Use model_type from config if not provided
@@ -106,11 +108,15 @@ class PersonReIDPipeline:
             nms_thresh=cfg['nms_threshold'],
             test_size=tuple(cfg['test_size'])
         )
-    
+
     def initialize_tracker(self):
-        """Initialize ByteTrack tracker"""
+        """Initialize ByteTrack tracker (skip if already loaded)"""
+        if self.tracker is not None:
+            logger.debug("Tracker already initialized, skipping...")
+            return
+
         cfg = self.config['tracking']
-        
+
         self.tracker = ByteTrackWrapper(
             track_thresh=cfg['track_thresh'],
             track_buffer=cfg['track_buffer'],
@@ -118,9 +124,13 @@ class PersonReIDPipeline:
             frame_rate=30,
             mot20=cfg['mot20']
         )
-    
+
     def initialize_extractor(self):
-        """Initialize ArcFace feature extractor for face recognition"""
+        """Initialize ArcFace feature extractor (skip if already loaded)"""
+        if self.extractor is not None:
+            logger.debug("Extractor already initialized, skipping...")
+            return
+
         cfg = self.config['reid']
         reid_backend = cfg.get('backend', 'insightface')
         logger.info(f"ReID backend: {reid_backend}")
@@ -141,17 +151,6 @@ class PersonReIDPipeline:
             logger.info(f"   Face Detector: {triton_cfg.get('face_detector_model', 'scrfd_10g')}")
             logger.info(f"   ArcFace: {triton_cfg.get('arcface_model', 'arcface_tensorrt')}")
 
-        elif reid_backend == 'triton':
-            logger.info("Initializing ArcFace Triton Client for face recognition")
-            logger.warning("⚠️  Using Triton ArcFace without face detection (DEPRECATED)")
-
-            triton_cfg = cfg.get('triton', {})
-            self.extractor = ArcFaceTritonClient(
-                triton_url=triton_cfg.get('url', 'localhost:8101'),
-                model_name=triton_cfg.get('arcface_model', triton_cfg.get('model_name', 'arcface_tensorrt')),
-                feature_dim=triton_cfg.get('feature_dim', 512)
-            )
-            logger.info(f"✅ Using Triton ArcFace: {triton_cfg.get('url')}/{triton_cfg.get('model_name', 'arcface_tensorrt')}")
         else:
             logger.info("Initializing ArcFace extractor (InsightFace) for face recognition")
             self.extractor = ArcFaceExtractor(
@@ -160,9 +159,13 @@ class PersonReIDPipeline:
                 feature_dim=cfg.get('feature_dim', 512)
             )
             logger.info("✅ Using InsightFace ArcFace")
-    
+
     def initialize_database(self):
-        """Initialize Qdrant vector database"""
+        """Initialize Qdrant vector database (skip if already loaded)"""
+        if self.database is not None:
+            logger.debug("Database already initialized, skipping...")
+            return
+
         cfg = self.config['database']
 
         self.database = QdrantVectorDB(
@@ -172,7 +175,7 @@ class PersonReIDPipeline:
             embedding_dim=cfg['embedding_dim'],
             use_grpc=cfg.get('use_grpc', False)
         )
-        
+
         # Load existing database
         db_file = Path(__file__).parent.parent / "data" / "database" / "reid_database.pkl"
         if db_file.exists():
@@ -727,13 +730,24 @@ def main():
                        help="Maximum frames to process (for testing)")
     parser.add_argument("--max-duration", type=int, default=None,
                        help="Maximum duration in seconds to process (for streams)")
+    parser.add_argument("--preload", action="store_true",
+                       help="Force preload all components before processing")
 
     args = parser.parse_args()
 
-    # Initialize pipeline
+    # Force preload if requested
+    if args.preload and not preloaded_manager.is_initialized():
+        logger.info("🚀 Preloading components...")
+        try:
+            preloaded_manager.initialize(config_path=args.config)
+        except Exception as e:
+            logger.error(f"❌ Preloading failed: {e}")
+            logger.info("Falling back to lazy loading...")
+
+    # Initialize pipeline (automatically uses preloaded if available)
     pipeline = PersonReIDPipeline(config_path=args.config)
 
-    # Initialize components
+    # Initialize components (will skip if already preloaded)
     pipeline.initialize_detector(model_type=args.model)
     pipeline.initialize_tracker()
     pipeline.initialize_extractor()

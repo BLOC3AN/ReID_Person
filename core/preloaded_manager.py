@@ -16,7 +16,6 @@ from .detector_trt import TensorRTDetector
 from .detector_triton import TritonDetector
 from .tracker import ByteTrackWrapper
 from .feature_extractor import ArcFaceExtractor
-from .arcface_triton_client import ArcFaceTritonClient
 from .vector_db import QdrantVectorDB
 
 
@@ -74,24 +73,41 @@ class PreloadedPipelineManager:
             self._loading = True
             
             try:
-                logger.info("🚀 Pre-loading pipeline components...")
-                start_time = time.time()
-                
+                logger.info("=" * 80)
+                logger.info("🚀 PRE-LOADING PIPELINE COMPONENTS")
+                logger.info("=" * 80)
+                overall_start = time.time()
+
                 # Load config
+                config_start = time.time()
                 self._load_config(config_path)
-                
-                # Initialize components in order
+                logger.info(f"✓ Config loaded in {time.time() - config_start:.2f}s")
+
+                # Initialize components in order with timing
+                detector_start = time.time()
                 self._init_detector()
+                logger.info(f"✓ Detector loaded in {time.time() - detector_start:.2f}s")
+
+                tracker_start = time.time()
                 self._init_tracker()
+                logger.info(f"✓ Tracker loaded in {time.time() - tracker_start:.2f}s")
+
+                extractor_start = time.time()
                 self._init_extractor()
+                logger.info(f"✓ Extractor loaded in {time.time() - extractor_start:.2f}s")
+
+                database_start = time.time()
                 self._init_database()
-                
-                load_time = time.time() - start_time
-                logger.info(f"✅ All components loaded in {load_time:.2f}s")
-                logger.info("🎯 Pipeline ready for instant inference")
-                
+                logger.info(f"✓ Database loaded in {time.time() - database_start:.2f}s")
+
+                load_time = time.time() - overall_start
+                logger.info("=" * 80)
+                logger.info(f"✅ ALL COMPONENTS LOADED IN {load_time:.2f}s")
+                logger.info("🎯 Pipeline ready for instant inference!")
+                logger.info("=" * 80)
+
                 self._initialized = True
-                
+
             except Exception as e:
                 logger.error(f"❌ Failed to initialize components: {e}")
                 self._cleanup_partial_init()
@@ -227,23 +243,6 @@ class PreloadedPipelineManager:
             logger.info(f"  Face Detector: {face_detector_model}")
             logger.info(f"  ArcFace: {arcface_model}")
 
-        elif reid_backend == 'triton':
-            # Triton ArcFace backend only (DEPRECATED - no face detection)
-            triton_cfg = cfg.get('triton', {})
-            triton_url = triton_cfg.get('url', 'localhost:8101')
-            model_name = triton_cfg.get('arcface_model', triton_cfg.get('model_name', 'arcface_tensorrt'))
-            feature_dim = triton_cfg.get('feature_dim', 512)
-
-            self.extractor = ArcFaceTritonClient(
-                triton_url=triton_url,
-                model_name=model_name,
-                feature_dim=feature_dim
-            )
-            logger.warning("⚠️  Using Triton ArcFace without face detection (DEPRECATED)")
-            logger.warning("⚠️  Consider using 'triton_pipeline' backend for better accuracy")
-            logger.info("✓ Triton ArcFace Extractor loaded")
-            logger.info(f"  Server: {triton_url}")
-            logger.info(f"  Model: {model_name}")
         else:
             # InsightFace backend (default)
             self.extractor = ArcFaceExtractor(
