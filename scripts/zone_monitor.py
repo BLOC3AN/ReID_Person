@@ -97,7 +97,7 @@ def calculate_iop(person_bbox, zone_bbox):
 class ZoneMonitor:
     """Monitor person presence in working zones using IoP-based overlap"""
 
-    def __init__(self, zone_config_path, iou_threshold=0.6, zone_opacity=0.15):
+    def __init__(self, zone_config_path, iou_threshold=0.6, zone_opacity=0.15, num_cameras=1):
         """
         Args:
             zone_config_path: Path to zone configuration YAML
@@ -105,8 +105,10 @@ class ZoneMonitor:
                           Note: Parameter name kept as 'iou_threshold' for backward compatibility,
                           but it's actually used as IoP (Intersection over Person) threshold
             zone_opacity: Zone fill opacity (default: 0.15, range: 0.0-1.0)
+            num_cameras: Number of cameras (default: 1 for single camera)
         """
-        self.zones = self._load_zones(zone_config_path)
+        self.num_cameras = num_cameras
+        self.zones, self.is_multi_camera = self._load_zones(zone_config_path)
         self.iop_threshold = iou_threshold  # Actually IoP threshold
         self.zone_opacity = zone_opacity
         self.rtree_idx = self._build_rtree()
@@ -115,30 +117,99 @@ class ZoneMonitor:
         self.zone_presence = {}  # {global_id: {...}}
         self.zone_history = []   # Log of all zone events
 
-        logger.info(f"✅ ZoneMonitor initialized with {len(self.zones)} zones")
+        if self.is_multi_camera:
+            logger.info(f"✅ ZoneMonitor initialized for {self.num_cameras} cameras with {len(self.zones)} total zones")
+            for camera_idx in range(self.num_cameras):
+                camera_zones = [z for z in self.zones.values() if z.get('camera_idx') == camera_idx]
+                logger.info(f"   Camera {camera_idx+1}: {len(camera_zones)} zones")
+        else:
+            logger.info(f"✅ ZoneMonitor initialized with {len(self.zones)} zones")
         logger.info(f"   IoP threshold: {iou_threshold*100:.0f}% (percentage of person in zone)")
         logger.info(f"   Zone opacity: {zone_opacity*100:.0f}%")
-    
+
     def _load_zones(self, config_path):
-        """Load zone definitions from YAML"""
+        """
+        Load zone definitions from YAML
+
+        Supports two formats:
+        1. Single camera (old format):
+           zones:
+             zone1: {name, polygon, authorized_ids}
+             zone2: {...}
+
+        2. Multi-camera (new format):
+           cameras:
+             camera_1:
+               zones:
+                 zone1: {name, polygon, authorized_ids}
+             camera_2:
+               zones:
+                 zone1: {...}
+
+        Returns:
+            (zones_dict, is_multi_camera)
+        """
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        
+
         zones = {}
-        for zone_id, zone_data in config['zones'].items():
-            # Convert polygon to bbox [x1, y1, x2, y2]
-            polygon = np.array(zone_data['polygon'])
-            x1, y1 = polygon.min(axis=0)
-            x2, y2 = polygon.max(axis=0)
-            
-            zones[zone_id] = {
-                'name': zone_data['name'],
-                'bbox': [x1, y1, x2, y2],
-                'polygon': polygon,
-                'authorized_ids': zone_data.get('authorized_ids', [])
-            }
-        
-        return zones
+        is_multi_camera = False
+
+        # Check format: 'cameras' key = multi-camera, 'zones' key = single camera
+        if 'cameras' in config:
+            # Multi-camera format
+            is_multi_camera = True
+            logger.info("📹 Detected multi-camera zone config")
+
+            for camera_idx, (camera_id, camera_data) in enumerate(config['cameras'].items()):
+                camera_name = camera_data.get('name', f'Camera {camera_idx+1}')
+                logger.info(f"   Loading zones for {camera_name}")
+
+                if 'zones' not in camera_data:
+                    logger.warning(f"   No zones defined for {camera_name}")
+                    continue
+
+                for zone_id, zone_data in camera_data['zones'].items():
+                    # Create unique zone ID: camera_id + zone_id
+                    unique_zone_id = f"{camera_id}_{zone_id}"
+
+                    # Convert polygon to bbox [x1, y1, x2, y2]
+                    polygon = np.array(zone_data['polygon'])
+                    x1, y1 = polygon.min(axis=0)
+                    x2, y2 = polygon.max(axis=0)
+
+                    zones[unique_zone_id] = {
+                        'name': zone_data['name'],
+                        'bbox': [x1, y1, x2, y2],
+                        'polygon': polygon,
+                        'authorized_ids': zone_data.get('authorized_ids', []),
+                        'camera_idx': camera_idx,  # Track which camera this zone belongs to
+                        'camera_id': camera_id,
+                        'camera_name': camera_name
+                    }
+                    logger.info(f"      - {zone_data['name']} ({len(zone_data.get('authorized_ids', []))} authorized)")
+
+        elif 'zones' in config:
+            # Single camera format (backward compatible)
+            logger.info("📹 Detected single-camera zone config")
+
+            for zone_id, zone_data in config['zones'].items():
+                # Convert polygon to bbox [x1, y1, x2, y2]
+                polygon = np.array(zone_data['polygon'])
+                x1, y1 = polygon.min(axis=0)
+                x2, y2 = polygon.max(axis=0)
+
+                zones[zone_id] = {
+                    'name': zone_data['name'],
+                    'bbox': [x1, y1, x2, y2],
+                    'polygon': polygon,
+                    'authorized_ids': zone_data.get('authorized_ids', []),
+                    'camera_idx': 0  # Single camera = camera 0
+                }
+        else:
+            raise ValueError("Invalid zone config: must contain 'zones' or 'cameras' key")
+
+        return zones, is_multi_camera
     
     def _build_rtree(self):
         """Build R-tree spatial index for zones"""
@@ -151,7 +222,7 @@ class ZoneMonitor:
         logger.info(f"   R-tree index built for {len(self.zones)} zones")
         return idx
     
-    def find_zone(self, person_bbox):
+    def find_zone(self, person_bbox, camera_idx=0):
         """
         Find which zone contains the person using IoP >= threshold
 
@@ -161,6 +232,7 @@ class ZoneMonitor:
 
         Args:
             person_bbox: [x1, y1, x2, y2] or [x, y, w, h]
+            camera_idx: Camera index (0-based) for multi-camera setup
         Returns:
             zone_id or None
         """
@@ -174,13 +246,19 @@ class ZoneMonitor:
         # R-tree candidates (fast spatial query)
         candidates = list(self.rtree_idx.intersection(person_bbox_xyxy, objects=True))
 
-        # Find best IoP match
+        # Find best IoP match (only check zones for this camera)
         best_zone = None
         best_iop = 0.0
 
         for candidate in candidates:
             zone_id = candidate.object
-            zone_bbox = self.zones[zone_id]['bbox']
+            zone_data = self.zones[zone_id]
+
+            # Skip zones from other cameras
+            if zone_data.get('camera_idx', 0) != camera_idx:
+                continue
+
+            zone_bbox = zone_data['bbox']
 
             # Calculate IoP (Intersection over Person)
             iop = calculate_iop(person_bbox_xyxy, zone_bbox)
@@ -405,8 +483,14 @@ class ZoneMonitor:
 
         return frame
 
-    def draw_zones(self, frame):
-        """Draw zone boundaries on frame with different colors and transparency for overlaps"""
+    def draw_zones(self, frame, camera_idx=0):
+        """
+        Draw zone boundaries on frame with different colors and transparency for overlaps
+
+        Args:
+            frame: Frame to draw on
+            camera_idx: Camera index (0-based) for multi-camera setup
+        """
         # Draw ruler first (background layer)
         frame = self.draw_ruler(frame)
 
@@ -427,13 +511,19 @@ class ZoneMonitor:
         # Create overlay for transparent fill
         overlay = frame.copy()
 
-        # Draw zones with different colors
-        for idx, (zone_id, zone_data) in enumerate(self.zones.items()):
+        # Draw zones with different colors (only for this camera)
+        idx = 0
+        for zone_id, zone_data in self.zones.items():
+            # Skip zones from other cameras
+            if zone_data.get('camera_idx', 0) != camera_idx:
+                continue
+
             polygon = zone_data['polygon']
             pts = polygon.reshape((-1, 1, 2)).astype(np.int32)
 
             # Get color for this zone (cycle through colors if more than 10 zones)
             color = zone_colors[idx % len(zone_colors)]
+            idx += 1
 
             # Fill polygon with transparency (for overlap visibility)
             cv2.fillPoly(overlay, [pts], color)
@@ -444,6 +534,11 @@ class ZoneMonitor:
             # Draw zone name with background
             x, y = polygon[0]
             zone_name = zone_data['name']
+
+            # Add camera info for multi-camera
+            if self.is_multi_camera:
+                zone_name = f"[Cam{camera_idx+1}] {zone_name}"
+
             text_size = cv2.getTextSize(zone_name, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
 
             # Background rectangle for text
@@ -471,7 +566,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     Process video with zone monitoring integrated into ReID pipeline
 
     Args:
-        video_path: Path to input video
+        video_path: Path to input video or stream URL(s)
         zone_config_path: Path to zone configuration YAML
         reid_config_path: Path to ReID config (default: configs/config.yaml)
         similarity_threshold: ReID similarity threshold
@@ -489,6 +584,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
         progress_callback: Optional callback function(frame_id, tracks) for progress updates
     """
     from detect_and_track import PersonReIDPipeline
+    from utils.multi_stream_reader import MultiStreamReader, parse_stream_urls
 
     logger.info("="*80)
     logger.info("🎯 ZONE MONITORING WITH PERSON REID")
@@ -501,8 +597,12 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     pipeline.initialize_extractor()
     pipeline.initialize_database()
 
-    # Initialize zone monitor
-    zone_monitor = ZoneMonitor(zone_config_path, iou_threshold, zone_opacity)
+    # Parse video_path to check if it contains multiple URLs
+    urls = parse_stream_urls(video_path)
+    num_cameras = len(urls)
+
+    # Initialize zone monitor with camera count
+    zone_monitor = ZoneMonitor(zone_config_path, iou_threshold, zone_opacity, num_cameras=num_cameras)
 
     # Setup output paths
     if output_video_path and output_csv_path and output_json_path:
@@ -536,31 +636,46 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     # Track video writers for each person
     person_video_writers = {}  # {track_id: {'writer': VideoWriter, 'label': str, 'path': Path}}
 
-    # Open video
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        logger.error(f"Failed to open video: {video_path}")
+    # Open video/stream using appropriate reader
+    from utils.stream_reader import StreamReader
+
+    try:
+        if num_cameras > 1:
+            # Multiple cameras - use MultiStreamReader
+            logger.info(f"Opening {num_cameras} camera streams")
+            stream_reader = MultiStreamReader(urls, use_ffmpeg_for_udp=True)
+        else:
+            # Single camera - use StreamReader
+            stream_reader = StreamReader(video_path, use_ffmpeg_for_udp=True)
+
+        props = stream_reader.get_properties()
+        fps = props['fps']
+        width = props['width']
+        height = props['height']
+        total_frames = props.get('total_frames', 0)
+        is_stream = props['is_stream']
+
+        logger.info(f"Video: {video_path}")
+        logger.info(f"Resolution: {width}x{height} @ {fps:.1f} FPS")
+        if not is_stream:
+            logger.info(f"Total frames: {total_frames}")
+        else:
+            logger.info(f"Stream mode (unlimited frames)")
+
+    except Exception as e:
+        logger.error(f"Failed to open video/stream: {e}")
         return
-
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    logger.info(f"Video: {video_path}")
-    logger.info(f"Resolution: {width}x{height} @ {fps} FPS")
-    logger.info(f"Total frames: {total_frames}")
 
     # Video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    vid_writer = cv2.VideoWriter(str(output_video), fourcc, fps, (width, height))
+    vid_writer = cv2.VideoWriter(str(output_video), fourcc, int(fps), (width, height))
 
     # CSV writer
     csv_file = open(output_csv, 'w', newline='')
     csv_writer = csv.writer(csv_file)
     csv_writer.writerow([
         'frame_id', 'track_id', 'global_id', 'person_name', 'similarity',
-        'x', 'y', 'w', 'h', 'zone_id', 'zone_name', 'authorized', 'duration'
+        'x', 'y', 'w', 'h', 'zone_id', 'zone_name', 'authorized', 'duration', 'camera_idx'
     ])
 
     # Processing state
@@ -582,8 +697,8 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             logger.info("Processing cancelled by user")
             break
 
-        ret, frame = cap.read()
-        if not ret:
+        ret, frame = stream_reader.read()
+        if not ret or frame is None:
             break
 
         if max_frames and frame_id >= max_frames:
@@ -591,6 +706,9 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             break
 
         frame_time = frame_id / fps  # Time in seconds
+
+        # Get camera metadata if multi-stream
+        camera_metadata = getattr(stream_reader, 'camera_metadata', None)
 
         # Detect
         detections = pipeline.detector.detect(frame)
@@ -681,7 +799,14 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
 
             # ZONE MONITORING: Check which zone person is in
             person_bbox = [x, y, w, h]
-            zone_id = zone_monitor.find_zone(person_bbox)
+
+            # For multi-camera: convert bbox to camera-relative coordinates
+            camera_idx = 0
+            if num_cameras > 1:
+                relative_bbox, camera_idx = stream_reader.bbox_to_camera_relative(person_bbox)
+                zone_id = zone_monitor.find_zone(relative_bbox, camera_idx)
+            else:
+                zone_id = zone_monitor.find_zone(person_bbox, camera_idx=0)
 
             # Update zone presence
             if info['global_id'] > 0:
@@ -713,7 +838,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             csv_writer.writerow([
                 frame_id, track_id, info['global_id'], info['person_name'],
                 f"{info['similarity']:.4f}", x, y, w, h,
-                zone_id if zone_id else "", zone_name, authorized, f"{duration:.2f}"
+                zone_id if zone_id else "", zone_name, authorized, f"{duration:.2f}", camera_idx
             ])
 
             # Save person video clip
@@ -818,8 +943,23 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             cv2.putText(frame, label_text, (x, y-5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
-        # Draw zones
-        frame = zone_monitor.draw_zones(frame)
+        # Draw zones (for multi-camera, draw zones for all cameras on combined frame)
+        if num_cameras > 1:
+            # Draw zones for each camera on the combined frame
+            for cam_idx in range(num_cameras):
+                # Create a view of the camera's portion of the frame
+                cam_x_start = cam_idx * stream_reader.width
+                cam_x_end = (cam_idx + 1) * stream_reader.width
+                camera_frame = frame[:, cam_x_start:cam_x_end]
+
+                # Draw zones for this camera
+                camera_frame = zone_monitor.draw_zones(camera_frame, camera_idx=cam_idx)
+
+                # Put it back into the combined frame
+                frame[:, cam_x_start:cam_x_end] = camera_frame
+        else:
+            # Single camera - draw zones normally
+            frame = zone_monitor.draw_zones(frame, camera_idx=0)
 
         # Write frame
         vid_writer.write(frame)
@@ -850,7 +990,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
         frame_id += 1
 
     # Cleanup
-    cap.release()
+    stream_reader.release()
     vid_writer.release()
     csv_file.close()
 

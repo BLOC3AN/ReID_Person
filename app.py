@@ -527,95 +527,218 @@ elif page == "Detect & Track":
         else:  # Create Zones in UI
             st.markdown("#### Define Zones")
 
+            # Detect number of cameras from stream URL
+            num_cameras = 1
+            if input_method == "Stream URL" and stream_url:
+                # Parse stream URLs
+                urls = [u.strip() for u in stream_url.replace('\n', ',').split(',') if u.strip()]
+                num_cameras = len(urls)
+                if num_cameras > 1:
+                    st.info(f"📹 Detected {num_cameras} cameras. You can configure zones per camera.")
+
             # Initialize session state for zones
             if 'zones_config' not in st.session_state:
                 st.session_state.zones_config = []
 
-            # Number of zones
-            num_zones = st.number_input(
-                "Number of Zones",
-                min_value=0,
-                max_value=10,
-                value=len(st.session_state.zones_config) if st.session_state.zones_config else 0,
-                step=1
-            )
+            # Multi-camera mode: organize zones by camera
+            if num_cameras > 1:
+                st.markdown(f"**Configure zones for {num_cameras} cameras**")
 
-            # Adjust zones list
-            while len(st.session_state.zones_config) < num_zones:
-                st.session_state.zones_config.append({
-                    'name': f'Zone {len(st.session_state.zones_config) + 1}',
-                    'polygon': [[100, 100], [200, 100], [200, 200], [100, 200]],
-                    'authorized_ids': []
-                })
-            while len(st.session_state.zones_config) > num_zones:
-                st.session_state.zones_config.pop()
+                # Initialize camera zones structure
+                if 'camera_zones' not in st.session_state:
+                    st.session_state.camera_zones = {f'camera_{i+1}': [] for i in range(num_cameras)}
 
-            # Configure each zone
-            if num_zones > 0:
-                for i, zone in enumerate(st.session_state.zones_config):
-                    with st.expander(f"📍 {zone['name']}", expanded=True):
-                        col1, col2 = st.columns(2)
+                # Ensure we have entries for all cameras
+                for i in range(num_cameras):
+                    camera_key = f'camera_{i+1}'
+                    if camera_key not in st.session_state.camera_zones:
+                        st.session_state.camera_zones[camera_key] = []
 
-                        with col1:
-                            zone['name'] = st.text_input(
-                                "Zone Name",
-                                value=zone['name'],
-                                key=f"zone_name_{i}"
-                            )
+                # Configure zones for each camera
+                for cam_idx in range(num_cameras):
+                    camera_key = f'camera_{cam_idx+1}'
 
-                            # Authorized IDs
-                            auth_ids_str = st.text_input(
-                                "Authorized IDs (comma-separated)",
-                                value=','.join(map(str, zone['authorized_ids'])),
-                                key=f"zone_auth_{i}",
-                                help="Example: 1,2,3"
-                            )
+                    with st.expander(f"📹 Camera {cam_idx+1}", expanded=cam_idx==0):
+                        num_zones_cam = st.number_input(
+                            f"Number of Zones for Camera {cam_idx+1}",
+                            min_value=0,
+                            max_value=10,
+                            value=len(st.session_state.camera_zones[camera_key]),
+                            step=1,
+                            key=f"num_zones_cam_{cam_idx}"
+                        )
 
-                            # Parse authorized IDs
-                            if auth_ids_str.strip():
-                                try:
-                                    zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
-                                except:
-                                    st.warning("Invalid ID format. Use comma-separated numbers.")
-                                    zone['authorized_ids'] = []
-                            else:
-                                zone['authorized_ids'] = []
+                        # Adjust zones list for this camera
+                        while len(st.session_state.camera_zones[camera_key]) < num_zones_cam:
+                            st.session_state.camera_zones[camera_key].append({
+                                'name': f'Zone {len(st.session_state.camera_zones[camera_key]) + 1}',
+                                'polygon': [[100, 100], [200, 100], [200, 200], [100, 200]],
+                                'authorized_ids': []
+                            })
+                        while len(st.session_state.camera_zones[camera_key]) > num_zones_cam:
+                            st.session_state.camera_zones[camera_key].pop()
 
-                        with col2:
-                            st.markdown("**Polygon Coordinates (x,y)**")
-                            st.markdown("*Format: x1,y1; x2,y2; x3,y3; x4,y4*")
+                        # Configure each zone for this camera
+                        for zone_idx, zone in enumerate(st.session_state.camera_zones[camera_key]):
+                            st.markdown(f"**Zone {zone_idx+1}**")
+                            col1, col2 = st.columns(2)
 
-                            # Convert polygon to string
-                            polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                            with col1:
+                                zone['name'] = st.text_input(
+                                    "Zone Name",
+                                    value=zone['name'],
+                                    key=f"zone_name_cam{cam_idx}_z{zone_idx}"
+                                )
 
-                            polygon_input = st.text_area(
-                                "Polygon Points",
-                                value=polygon_str,
-                                key=f"zone_polygon_{i}",
-                                height=100,
-                                help="Enter coordinates as: x1,y1; x2,y2; x3,y3; ..."
-                            )
+                                auth_ids_str = st.text_input(
+                                    "Authorized IDs",
+                                    value=','.join(map(str, zone['authorized_ids'])),
+                                    key=f"zone_auth_cam{cam_idx}_z{zone_idx}",
+                                    help="Comma-separated: 1,2,3"
+                                )
 
-                            # Parse polygon
-                            try:
-                                points = []
-                                for point_str in polygon_input.split(';'):
-                                    point_str = point_str.strip()
-                                    if point_str:
-                                        x, y = map(float, point_str.split(','))
-                                        points.append([int(x), int(y)])
-
-                                if len(points) >= 3:
-                                    zone['polygon'] = points
+                                if auth_ids_str.strip():
+                                    try:
+                                        zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
+                                    except:
+                                        zone['authorized_ids'] = []
                                 else:
-                                    st.warning("Need at least 3 points for a polygon")
-                            except:
-                                st.warning("Invalid polygon format. Use: x1,y1; x2,y2; ...")
+                                    zone['authorized_ids'] = []
 
-                        # Show zone info
-                        st.info(f"✅ {len(zone['polygon'])} points, Authorized: {zone['authorized_ids']}")
+                            with col2:
+                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                                polygon_input = st.text_area(
+                                    "Polygon (x,y; x,y; ...)",
+                                    value=polygon_str,
+                                    key=f"zone_polygon_cam{cam_idx}_z{zone_idx}",
+                                    height=80
+                                )
 
-                # Create YAML content from zones
+                                try:
+                                    points = []
+                                    for point_str in polygon_input.split(';'):
+                                        point_str = point_str.strip()
+                                        if point_str:
+                                            x, y = map(float, point_str.split(','))
+                                            points.append([int(x), int(y)])
+                                    if len(points) >= 3:
+                                        zone['polygon'] = points
+                                except:
+                                    pass
+
+                            st.caption(f"✅ {len(zone['polygon'])} points, Auth: {zone['authorized_ids']}")
+                            st.divider()
+
+            else:
+                # Single camera mode (original logic)
+                num_zones = st.number_input(
+                    "Number of Zones",
+                    min_value=0,
+                    max_value=10,
+                    value=len(st.session_state.zones_config) if st.session_state.zones_config else 0,
+                    step=1
+                )
+
+                # Adjust zones list
+                while len(st.session_state.zones_config) < num_zones:
+                    st.session_state.zones_config.append({
+                        'name': f'Zone {len(st.session_state.zones_config) + 1}',
+                        'polygon': [[100, 100], [200, 100], [200, 200], [100, 200]],
+                        'authorized_ids': []
+                    })
+                while len(st.session_state.zones_config) > num_zones:
+                    st.session_state.zones_config.pop()
+
+                # Configure each zone (single camera)
+                if num_zones > 0:
+                    for i, zone in enumerate(st.session_state.zones_config):
+                        with st.expander(f"📍 {zone['name']}", expanded=True):
+                            col1, col2 = st.columns(2)
+
+                            with col1:
+                                zone['name'] = st.text_input(
+                                    "Zone Name",
+                                    value=zone['name'],
+                                    key=f"zone_name_{i}"
+                                )
+
+                                # Authorized IDs
+                                auth_ids_str = st.text_input(
+                                    "Authorized IDs (comma-separated)",
+                                    value=','.join(map(str, zone['authorized_ids'])),
+                                    key=f"zone_auth_{i}",
+                                    help="Example: 1,2,3"
+                                )
+
+                                # Parse authorized IDs
+                                if auth_ids_str.strip():
+                                    try:
+                                        zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
+                                    except:
+                                        st.warning("Invalid ID format. Use comma-separated numbers.")
+                                        zone['authorized_ids'] = []
+                                else:
+                                    zone['authorized_ids'] = []
+
+                            with col2:
+                                st.markdown("**Polygon Coordinates (x,y)**")
+                                st.markdown("*Format: x1,y1; x2,y2; x3,y3; x4,y4*")
+
+                                # Convert polygon to string
+                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+
+                                polygon_input = st.text_area(
+                                    "Polygon Points",
+                                    value=polygon_str,
+                                    key=f"zone_polygon_{i}",
+                                    height=100,
+                                    help="Enter coordinates as: x1,y1; x2,y2; x3,y3; ..."
+                                )
+
+                                # Parse polygon
+                                try:
+                                    points = []
+                                    for point_str in polygon_input.split(';'):
+                                        point_str = point_str.strip()
+                                        if point_str:
+                                            x, y = map(float, point_str.split(','))
+                                            points.append([int(x), int(y)])
+
+                                    if len(points) >= 3:
+                                        zone['polygon'] = points
+                                    else:
+                                        st.warning("Need at least 3 points for a polygon")
+                                except:
+                                    st.warning("Invalid polygon format. Use: x1,y1; x2,y2; ...")
+
+                            # Show zone info
+                            st.info(f"✅ {len(zone['polygon'])} points, Authorized: {zone['authorized_ids']}")
+
+            # Create YAML content from zones
+            if num_cameras > 1 and 'camera_zones' in st.session_state:
+                # Multi-camera format
+                cameras_dict = {}
+                for cam_idx in range(num_cameras):
+                    camera_key = f'camera_{cam_idx+1}'
+                    camera_zones = st.session_state.camera_zones.get(camera_key, [])
+
+                    zones_dict = {}
+                    for zone_idx, zone in enumerate(camera_zones):
+                        zone_id = f"zone{zone_idx+1}"
+                        zones_dict[zone_id] = {
+                            'name': zone['name'],
+                            'polygon': zone['polygon'],
+                            'authorized_ids': zone['authorized_ids']
+                        }
+
+                    cameras_dict[camera_key] = {
+                        'name': f'Camera {cam_idx+1}',
+                        'zones': zones_dict
+                    }
+
+                zones_data = {'cameras': cameras_dict}
+            else:
+                # Single camera format
                 zones_dict = {}
                 for i, zone in enumerate(st.session_state.zones_config):
                     zone_id = f"zone{i+1}"
@@ -627,7 +750,8 @@ elif page == "Detect & Track":
 
                 zones_data = {'zones': zones_dict}
 
-                # Preview YAML
+            # Preview YAML
+            if zones_data and (zones_data.get('zones') or zones_data.get('cameras')):
                 with st.expander("📄 Preview YAML Config", expanded=False):
                     yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
                     st.code(yaml_content, language='yaml')
@@ -636,7 +760,7 @@ elif page == "Detect & Track":
                     st.download_button(
                         label="💾 Download Zone Config",
                         data=yaml_content,
-                        file_name="zones.yaml",
+                        file_name="zones_multi_camera.yaml" if num_cameras > 1 else "zones.yaml",
                         mime="application/x-yaml"
                     )
 

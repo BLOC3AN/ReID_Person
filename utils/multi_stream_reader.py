@@ -200,7 +200,7 @@ class MultiStreamReader:
         """Get combined stream properties."""
         # Calculate combined width (sum of all stream widths)
         combined_width = self.width * self.num_streams
-        
+
         return {
             'width': combined_width,
             'height': self.height,
@@ -209,8 +209,79 @@ class MultiStreamReader:
             'sources': self.sources,
             'is_stream': self.is_stream,
             'using_ffmpeg': any(r.using_ffmpeg for r in self.readers),
-            'num_streams': self.num_streams
+            'num_streams': self.num_streams,
+            'single_camera_width': self.width  # Width of each individual camera
         }
+
+    def get_camera_index(self, x_coord: int) -> int:
+        """
+        Get camera index from x-coordinate in combined frame.
+
+        Args:
+            x_coord: X-coordinate in combined frame
+
+        Returns:
+            Camera index (0-based)
+        """
+        camera_idx = min(x_coord // self.width, self.num_streams - 1)
+        return camera_idx
+
+    def bbox_to_camera_relative(self, bbox: list) -> Tuple[list, int]:
+        """
+        Convert bbox from combined frame coordinates to camera-relative coordinates.
+
+        Args:
+            bbox: [x, y, w, h] or [x1, y1, x2, y2] in combined frame
+
+        Returns:
+            Tuple of (relative_bbox, camera_idx)
+            - relative_bbox: bbox with x-coordinates relative to camera frame
+            - camera_idx: which camera this bbox belongs to
+        """
+        # Detect format
+        if len(bbox) == 4:
+            x1, y1, x2_or_w, y2_or_h = bbox
+
+            # Check if it's xywh or xyxy
+            if x2_or_w < x1 or y2_or_h < y1:
+                # Likely xywh format (w/h are small)
+                is_xywh = True
+            elif x2_or_w > self.width * self.num_streams or y2_or_h > self.height:
+                # x2/y2 are beyond single camera, so it's xyxy
+                is_xywh = False
+            else:
+                # Ambiguous, assume xyxy if x2 > x1
+                is_xywh = x2_or_w <= self.width
+
+            if is_xywh:
+                x, y, w, h = bbox
+                x2 = x + w
+            else:
+                x, y, x2, y2_or_h = bbox
+                w = x2 - x
+                h = y2_or_h - y
+        else:
+            raise ValueError(f"Invalid bbox format: {bbox}")
+
+        # Determine camera index from x-coordinate
+        camera_idx = self.get_camera_index(x)
+
+        # Convert to camera-relative coordinates
+        camera_x_offset = camera_idx * self.width
+        relative_x = x - camera_x_offset
+        relative_x2 = x2 - camera_x_offset
+
+        # Clip to camera bounds
+        relative_x = max(0, min(relative_x, self.width))
+        relative_x2 = max(0, min(relative_x2, self.width))
+
+        # Return in same format as input
+        if is_xywh:
+            relative_bbox = [relative_x, y, relative_x2 - relative_x, h]
+        else:
+            relative_bbox = [relative_x, y, relative_x2, y2_or_h]
+
+        return relative_bbox, camera_idx
     
     def release(self):
         """Release all resources."""
