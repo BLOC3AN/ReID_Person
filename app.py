@@ -793,11 +793,11 @@ elif page == "Detect & Track":
         with col_zone2:
             zone_opacity = st.slider(
                 "Zone Opacity",
-                min_value=0.05,
-                max_value=0.5,
+                min_value=0.0,
+                max_value=1.0,
                 value=0.15,
                 step=0.05,
-                help="Transparency of zone fill (lower = more transparent). 15% recommended for better visibility."
+                help="Transparency of zone fill (0.0 = fully transparent, 1.0 = fully opaque). 0.15 recommended for better visibility."
             )
 
     # Advanced Parameters
@@ -834,7 +834,7 @@ elif page == "Detect & Track":
 
             face_conf_thresh = st.slider(
                 "Face Confidence",
-                min_value=0.1,
+                min_value=0.0,
                 max_value=1.0,
                 value=0.5,
                 step=0.05,
