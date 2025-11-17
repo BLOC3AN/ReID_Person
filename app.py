@@ -42,7 +42,7 @@ st.markdown("---")
 # Sidebar for navigation
 page = st.sidebar.selectbox(
     "Select Operation",
-    ["Extract Objects", "Register Person", "Detect & Track", "ℹ️ About"]
+    ["Detect & Track", "Register Person", "Extract Objects",  "ℹ️ About"]
 )
 
 # ============================================================================
@@ -290,6 +290,15 @@ elif page == "Register Person":
         else:
             sample_rate = None
 
+        face_conf_thresh = st.slider(
+            "Face Confidence",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.5,
+            step=0.05,
+            help="Face detection confidence threshold (higher = stricter face detection)"
+        )
+
         delete_existing = st.checkbox("Delete Existing Collection", value=False,
                                      help="⚠️ This will delete all registered persons!")
 
@@ -310,6 +319,7 @@ elif page == "Register Person":
                             "person_name": person_name,
                             "global_id": global_id,
                             "sample_rate": sample_rate,
+                            "face_conf_thresh": face_conf_thresh,
                             "delete_existing": delete_existing
                         }
 
@@ -384,6 +394,7 @@ elif page == "Register Person":
                         data = {
                             "person_name": person_name,
                             "global_id": global_id,
+                            "face_conf_thresh": face_conf_thresh,
                             "delete_existing": delete_existing
                         }
 

@@ -17,7 +17,7 @@ from qdrant_client.models import Distance, VectorParams
 from typing import List, Union
 
 
-def register_person_mot17(video_path: str, person_name: str, global_id: int, sample_rate: int = 5, delete_existing: bool = False, detector=None, extractor=None):
+def register_person_mot17(video_path: str, person_name: str, global_id: int, sample_rate: int = 5, delete_existing: bool = False, face_conf_thresh: float = 0.5, detector=None, extractor=None):
     """
     Register a person using MOT17 model
 
@@ -27,6 +27,7 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
         global_id: Global ID for the person (unique identifier)
         sample_rate: Extract 1 frame every N frames (default: 5)
         delete_existing: Delete existing collection before registering
+        face_conf_thresh: Face detection confidence threshold 0-1 (default: 0.5)
         detector: Pre-loaded YOLOX detector (optional, will create new if None)
         extractor: Pre-loaded ArcFace extractor (optional, will create new if None)
     """
@@ -54,9 +55,13 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
     # Use preloaded extractor or initialize new one
     if extractor is None:
         logger.info("Initializing ArcFace extractor (fallback to InsightFace)...")
-        extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True)
+        extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True, face_conf_thresh=face_conf_thresh)
     else:
         logger.info("✅ Using preloaded ArcFace extractor (Triton or InsightFace)")
+        # Update face_conf_thresh if extractor has this attribute
+        if hasattr(extractor, 'face_conf_thresh'):
+            extractor.face_conf_thresh = face_conf_thresh
+            logger.info(f"  Updated face_conf_thresh to {face_conf_thresh}")
     
     # Initialize database
     logger.info("Initializing database...")
@@ -187,7 +192,7 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
 
 
 def register_person_from_images(image_paths: Union[str, List[str]], person_name: str, global_id: int,
-                                 delete_existing: bool = False, detector=None, extractor=None):
+                                 delete_existing: bool = False, face_conf_thresh: float = 0.5, detector=None, extractor=None):
     """
     Register a person using images instead of video
 
@@ -196,6 +201,7 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
         person_name: Name of the person to register
         global_id: Global ID for the person (unique identifier)
         delete_existing: Delete existing collection before registering
+        face_conf_thresh: Face detection confidence threshold 0-1 (default: 0.5)
         detector: Pre-loaded YOLOX detector (optional, will create new if None)
         extractor: Pre-loaded ArcFace extractor (optional, will create new if None)
     """
@@ -247,9 +253,13 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
     # Use preloaded extractor or initialize new one
     if extractor is None:
         logger.info("Initializing ArcFace extractor (fallback to InsightFace)...")
-        extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True)
+        extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True, face_conf_thresh=face_conf_thresh)
     else:
         logger.info("✅ Using preloaded ArcFace extractor (Triton or InsightFace)")
+        # Update face_conf_thresh if extractor has this attribute
+        if hasattr(extractor, 'face_conf_thresh'):
+            extractor.face_conf_thresh = face_conf_thresh
+            logger.info(f"  Updated face_conf_thresh to {face_conf_thresh}")
 
     # Initialize database
     logger.info("Initializing database...")
@@ -395,8 +405,15 @@ if __name__ == "__main__":
         action='store_true',
         help="Delete existing collection before registering (default: False)"
     )
-    
+
+    parser.add_argument(
+        "--face-conf-thresh",
+        type=float,
+        default=0.5,
+        help="Face detection confidence threshold 0-1 (default: 0.5)"
+    )
+
     args = parser.parse_args()
 
-    register_person_mot17(args.video, args.name, args.global_id, args.sample_rate, args.delete_existing)
+    register_person_mot17(args.video, args.name, args.global_id, args.sample_rate, args.delete_existing, args.face_conf_thresh)
 

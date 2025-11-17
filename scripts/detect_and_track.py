@@ -156,7 +156,8 @@ class PersonReIDPipeline:
             self.extractor = ArcFaceExtractor(
                 model_name=cfg.get('arcface_model_name', 'buffalo_l'),
                 use_cuda=cfg.get('use_cuda', True),
-                feature_dim=cfg.get('feature_dim', 512)
+                feature_dim=cfg.get('feature_dim', 512),
+                face_conf_thresh=cfg.get('face_conf_threshold', 0.5)
             )
             logger.info("✅ Using InsightFace ArcFace")
 

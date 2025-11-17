@@ -245,10 +245,12 @@ class PreloadedPipelineManager:
 
         else:
             # InsightFace backend (default)
+            triton_cfg = cfg.get('triton', {})
             self.extractor = ArcFaceExtractor(
                 model_name=cfg.get('arcface_model_name', 'buffalo_l'),
                 use_cuda=cfg.get('use_cuda', True),
-                feature_dim=cfg.get('feature_dim', 512)
+                feature_dim=cfg.get('feature_dim', 512),
+                face_conf_thresh=triton_cfg.get('face_conf_threshold', 0.5)
             )
             logger.info("✓ InsightFace ArcFace Extractor loaded")
     

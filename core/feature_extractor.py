@@ -14,16 +14,18 @@ from loguru import logger
 class ArcFaceExtractor:
     """Extract face embeddings using ArcFace (InsightFace) model"""
 
-    def __init__(self, model_name='buffalo_l', use_cuda=True, feature_dim=512):
+    def __init__(self, model_name='buffalo_l', use_cuda=True, feature_dim=512, face_conf_thresh=0.5):
         """
         Args:
             model_name: InsightFace model name (default: 'buffalo_l' for high accuracy)
                        Options: 'buffalo_l', 'buffalo_s', 'antelopev2'
             use_cuda: Use GPU if available
             feature_dim: Feature embedding dimension (default: 512)
+            face_conf_thresh: Face detection confidence threshold 0-1 (default: 0.5)
         """
         self.feature_dim = feature_dim
         self.use_cuda = use_cuda
+        self.face_conf_thresh = face_conf_thresh
 
         # Initialize InsightFace
         try:
