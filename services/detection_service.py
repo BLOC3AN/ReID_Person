@@ -53,6 +53,12 @@ async def startup_event():
     """Initialize pre-loaded components at service startup"""
     logger.info("🚀 Detection Service starting up...")
     try:
+        # Ensure output directories exist (important for Docker volume mounts)
+        (OUTPUT_DIR / "videos").mkdir(parents=True, exist_ok=True)
+        (OUTPUT_DIR / "csv").mkdir(parents=True, exist_ok=True)
+        (OUTPUT_DIR / "logs").mkdir(parents=True, exist_ok=True)
+        logger.info(f"✅ Output directories ready: {OUTPUT_DIR}")
+
         # Initialize pre-loaded components
         preloaded_manager.initialize()
         logger.info("✅ Detection Service ready with pre-loaded components")
@@ -136,7 +142,8 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                 output_video_path=output_video,
                 output_csv_path=output_csv,
                 output_json_path=output_json,
-                max_frames=None,
+                max_frames=max_frames,
+                max_duration_seconds=max_duration_seconds,
                 progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks),
                 cancellation_flag=cancellation_flags.get(job_id)
             )
@@ -363,7 +370,11 @@ async def detect_and_track(
         # Save zone config if provided
         zone_config_path = None
         if zone_config is not None:
-            zone_config_filename = f"{job_id}_zones.yaml"
+            # Preserve original file extension (.yaml, .yml, or .json)
+            original_ext = Path(zone_config.filename).suffix
+            if original_ext not in ['.yaml', '.yml', '.json']:
+                original_ext = '.yaml'  # Default to .yaml if unknown
+            zone_config_filename = f"{job_id}_zones{original_ext}"
             zone_config_path = UPLOAD_DIR / zone_config_filename
 
             with open(zone_config_path, "wb") as buffer:
@@ -463,7 +474,11 @@ async def detect_and_track_stream(
         # Save zone config if provided
         zone_config_path = None
         if zone_config is not None:
-            zone_config_filename = f"{job_id}_zones.yaml"
+            # Preserve original file extension (.yaml, .yml, or .json)
+            original_ext = Path(zone_config.filename).suffix
+            if original_ext not in ['.yaml', '.yml', '.json']:
+                original_ext = '.yaml'  # Default to .yaml if unknown
+            zone_config_filename = f"{job_id}_zones{original_ext}"
             zone_config_path = UPLOAD_DIR / zone_config_filename
 
             with open(zone_config_path, "wb") as buffer:

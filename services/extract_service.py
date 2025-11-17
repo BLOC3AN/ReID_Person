@@ -32,6 +32,18 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 jobs = {}
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Ensure output directories exist at service startup"""
+    try:
+        # Ensure output directories exist (important for Docker volume mounts)
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        logger.info(f"✅ Extract Service directories ready: {OUTPUT_DIR}")
+    except Exception as e:
+        logger.error(f"❌ Failed to create directories: {e}")
+
+
 class JobStatus(BaseModel):
     job_id: str
     status: str  # pending, processing, completed, failed

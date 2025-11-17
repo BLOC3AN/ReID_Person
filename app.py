@@ -507,18 +507,18 @@ elif page == "Detect & Track":
         # Option to upload or create zones
         zone_input_method = st.radio(
             "Zone Configuration Method",
-            ["Create Zones in UI", "Upload YAML File"],
+            ["Create Zones in UI", "Upload Config File"],
             horizontal=True
         )
 
         zone_config_file = None
         zones_data = None
 
-        if zone_input_method == "Upload YAML File":
+        if zone_input_method == "Upload Config File":
             zone_config_file = st.file_uploader(
-                "Upload Zone Config (YAML)",
-                type=['yaml', 'yml'],
-                help="YAML file defining zones and authorized persons"
+                "Upload Zone Config (YAML/JSON)",
+                type=['yaml', 'yml', 'json'],
+                help="YAML or JSON file defining zones and authorized persons"
             )
 
             if zone_config_file:

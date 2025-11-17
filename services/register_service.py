@@ -22,21 +22,25 @@ from core.preloaded_manager import preloaded_manager
 
 app = FastAPI(title="Register Service", version="1.0.0")
 
+# Storage paths
+UPLOAD_DIR = Path("/app/data/uploads")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
 # Preload models at startup
 @app.on_event("startup")
 async def startup_event():
     """Preload models when service starts"""
     try:
         logger.info("🚀 Starting Register Service...")
+        # Ensure upload directory exists (important for Docker volume mounts)
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        logger.info(f"✅ Upload directory ready: {UPLOAD_DIR}")
         preload_models()
         logger.info("✅ Register Service ready!")
     except Exception as e:
         logger.error(f"❌ Failed to start service: {e}")
         raise
-
-# Storage paths
-UPLOAD_DIR = Path("/app/data/uploads")
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # Job storage
 jobs = {}
