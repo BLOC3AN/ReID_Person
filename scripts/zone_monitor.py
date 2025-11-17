@@ -129,7 +129,7 @@ class ZoneMonitor:
 
     def _load_zones(self, config_path):
         """
-        Load zone definitions from YAML
+        Load zone definitions from YAML or JSON
 
         Supports two formats:
         1. Single camera (old format):
@@ -149,8 +149,13 @@ class ZoneMonitor:
         Returns:
             (zones_dict, is_multi_camera)
         """
+        # Load config file (support both YAML and JSON)
+        config_path = Path(config_path)
         with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
+            if config_path.suffix.lower() == '.json':
+                config = json.load(f)
+            else:
+                config = yaml.safe_load(f)
 
         zones = {}
         is_multi_camera = False
@@ -209,8 +214,21 @@ class ZoneMonitor:
         Returns:
             Zone dict with bbox, polygon, and metadata
         """
+        # Validate required fields
+        if 'name' not in zone_data:
+            raise ValueError(f"Zone data missing required field 'name': {zone_data}")
+
+        if 'polygon' not in zone_data:
+            raise ValueError(f"Zone '{zone_data.get('name', 'Unknown')}' missing required field 'polygon'. "
+                           f"Make sure your zone config file contains polygon coordinates for each zone.")
+
         # Convert polygon to bbox [x1, y1, x2, y2]
         polygon = np.array(zone_data['polygon'])
+
+        # Validate polygon has at least 3 points
+        if len(polygon) < 3:
+            raise ValueError(f"Zone '{zone_data['name']}' polygon must have at least 3 points, got {len(polygon)}")
+
         x1, y1 = polygon.min(axis=0)
         x2, y2 = polygon.max(axis=0)
 
@@ -578,7 +596,7 @@ class ZoneMonitor:
 
 def process_video_with_zones(video_path, zone_config_path, reid_config_path=None,
                              similarity_threshold=0.8, iou_threshold=0.6, zone_opacity=0.15,
-                             output_dir=None, max_frames=None,
+                             output_dir=None, max_frames=None, max_duration_seconds=None,
                              output_video_path=None, output_csv_path=None, output_json_path=None,
                              progress_callback=None, cancellation_flag=None):
     """
@@ -597,6 +615,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
         zone_opacity: Zone fill opacity (default: 0.15 = 15%)
         output_dir: Output directory for results (used if specific paths not provided)
         max_frames: Maximum frames to process
+        max_duration_seconds: Maximum duration in seconds to process (converted to frames)
         output_video_path: Specific path for output video (optional)
         output_csv_path: Specific path for output CSV (optional)
         output_json_path: Specific path for output JSON (optional)
@@ -647,13 +666,13 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     output_json.parent.mkdir(parents=True, exist_ok=True)
 
-    # Create extracted_objects directory for person clips
+    # Create extracted_objects directory for person frames
     # Use outputs/extracted_objects/ which is mounted in Docker
     extracted_objects_dir = Path(__file__).parent.parent / "outputs" / "extracted_objects"
     extracted_objects_dir.mkdir(parents=True, exist_ok=True)
 
-    # Track video writers for each person
-    person_video_writers = {}  # {track_id: {'writer': VideoWriter, 'label': str, 'path': Path}}
+    # Track frame folders for each person (changed from video writers to frame folders)
+    person_video_writers = {}  # {track_id: {'folder': Path, 'label': str, 'path': Path, 'frame_count': int}}
 
     # Open video/stream using appropriate reader
     from utils.stream_reader import StreamReader
@@ -680,6 +699,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             logger.info(f"Total frames: {total_frames}")
         else:
             logger.info(f"Stream mode (unlimited frames)")
+
+        # Calculate max frames from duration if specified
+        if max_duration_seconds is not None and max_frames is None:
+            max_frames = int(max_duration_seconds * fps)
+            logger.info(f"Max duration: {max_duration_seconds}s → {max_frames} frames at {fps:.1f} FPS")
 
     except Exception as e:
         logger.error(f"Failed to open video/stream: {e}")
@@ -861,8 +885,8 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                 zone_id if zone_id else "", zone_name, authorized, f"{duration:.2f}", camera_idx
             ])
 
-            # Save person video clip
-            # Create video writer for this track if not exists
+            # Save person frames as images
+            # Create folder for this track if not exists
             if track_id not in person_video_writers:
                 # Get label for folder name
                 person_label = info['label']
@@ -871,73 +895,91 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                 person_folder = extracted_objects_dir / person_label
                 person_folder.mkdir(parents=True, exist_ok=True)
 
-                # Generate unique filename with timestamp
-                video_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds
-                clip_filename = f"{person_label}_{video_timestamp}_track{track_id}.mp4"
-                clip_path = person_folder / clip_filename
-
-                # Create video writer for this person's clip
-                fourcc_clip = cv2.VideoWriter_fourcc(*'mp4v')
-                clip_writer = cv2.VideoWriter(
-                    str(clip_path),
-                    fourcc_clip,
-                    fps,
-                    (w, h)  # Size of cropped person
-                )
+                # Generate unique folder name with timestamp
+                folder_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds
+                track_folder_name = f"{person_label}_{folder_timestamp}_track{track_id}"
+                track_folder_path = person_folder / track_folder_name
+                track_folder_path.mkdir(parents=True, exist_ok=True)
 
                 person_video_writers[track_id] = {
-                    'writer': clip_writer,
+                    'folder': track_folder_path,
                     'label': person_label,
-                    'path': clip_path,
+                    'path': track_folder_path,
                     'frame_count': 0
                 }
 
-                logger.info(f"  📹 Created video clip for {person_label} (Track {track_id}): {clip_path.name}")
+                logger.info(f"  📁 Created frames folder for {person_label} (Track {track_id}): {track_folder_name}")
 
-            # Write cropped person frame to their video clip
+            # Save cropped person frame to folder
             if track_id in person_video_writers:
-                # Crop person from frame
-                person_crop = frame[y:y+h, x:x+w].copy()
+                try:
+                    # Validate bounding box first
+                    if x < 0 or y < 0 or w <= 0 or h <= 0:
+                        logger.warning(f"⚠️ Invalid bbox for track {track_id} at frame {frame_id}: ({x},{y},{w},{h})")
+                        continue
 
-                # Check if label changed (re-verification updated it)
-                current_label = info['label']
-                saved_label = person_video_writers[track_id]['label']
+                    # Clip to frame boundaries
+                    frame_h, frame_w = frame.shape[:2]
+                    x_clipped = max(0, x)
+                    y_clipped = max(0, y)
+                    w_clipped = min(w, frame_w - x_clipped)
+                    h_clipped = min(h, frame_h - y_clipped)
 
-                if current_label != saved_label:
-                    # Label changed - close old writer and create new one
-                    logger.info(f"  🔄 Track {track_id} label changed: {saved_label} → {current_label}")
+                    if w_clipped <= 0 or h_clipped <= 0:
+                        logger.warning(f"⚠️ Bbox outside frame for track {track_id}: ({x},{y},{w},{h}), frame_shape=({frame_h},{frame_w})")
+                        continue
 
-                    # Close old writer
-                    person_video_writers[track_id]['writer'].release()
+                    # Crop person from frame
+                    person_crop = frame[y_clipped:y_clipped+h_clipped, x_clipped:x_clipped+w_clipped].copy()
 
-                    # Create new folder and writer
-                    person_folder = extracted_objects_dir / current_label
-                    person_folder.mkdir(parents=True, exist_ok=True)
+                    # Validate crop is not empty
+                    if person_crop.size == 0 or person_crop.shape[0] == 0 or person_crop.shape[1] == 0:
+                        logger.warning(f"⚠️ Empty crop for track {track_id} at frame {frame_id}")
+                        continue
 
-                    video_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-                    clip_filename = f"{current_label}_{video_timestamp}_track{track_id}.mp4"
-                    clip_path = person_folder / clip_filename
+                    # Check if label changed (re-verification updated it)
+                    current_label = info['label']
+                    saved_label = person_video_writers[track_id]['label']
 
-                    fourcc_clip = cv2.VideoWriter_fourcc(*'mp4v')
-                    clip_writer = cv2.VideoWriter(
-                        str(clip_path),
-                        fourcc_clip,
-                        fps,
-                        (w, h)
-                    )
+                    if current_label != saved_label:
+                        # Label changed - create new folder
+                        logger.info(f"  🔄 Track {track_id} label changed: {saved_label} → {current_label}")
 
-                    person_video_writers[track_id] = {
-                        'writer': clip_writer,
-                        'label': current_label,
-                        'path': clip_path,
-                        'frame_count': 0
-                    }
+                        # Create new folder
+                        person_folder = extracted_objects_dir / current_label
+                        person_folder.mkdir(parents=True, exist_ok=True)
 
-                    logger.info(f"  📹 Created new video clip: {clip_path.name}")
+                        folder_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                        track_folder_name = f"{current_label}_{folder_timestamp}_track{track_id}"
+                        track_folder_path = person_folder / track_folder_name
+                        track_folder_path.mkdir(parents=True, exist_ok=True)
 
-                # Write frame to clip
-                person_video_writers[track_id]['writer'].write(person_crop)
-                person_video_writers[track_id]['frame_count'] += 1
+                        person_video_writers[track_id] = {
+                            'folder': track_folder_path,
+                            'label': current_label,
+                            'path': track_folder_path,
+                            'frame_count': 0
+                        }
+
+                        logger.info(f"  📁 Created new frames folder: {track_folder_name}")
+
+                    # Save frame as image
+                    frame_count = person_video_writers[track_id]['frame_count']
+                    frame_filename = f"frame_{frame_count:06d}.jpg"
+                    frame_path = person_video_writers[track_id]['folder'] / frame_filename
+
+                    # Try to write image
+                    success = cv2.imwrite(str(frame_path), person_crop)
+                    if not success:
+                        logger.error(f"❌ Failed to write image: {frame_path}")
+                    else:
+                        person_video_writers[track_id]['frame_count'] += 1
+
+                except Exception as e:
+                    logger.error(f"❌ Error saving crop for track {track_id} at frame {frame_id}: {e}")
+                    logger.error(f"   Bbox: ({x},{y},{w},{h}), Frame shape: {frame.shape}")
+                    # Continue processing other tracks
+                    continue
 
             # Draw on frame
             # Color: Green=in zone, Red=outside zone
@@ -1009,19 +1051,18 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     vid_writer.release()
     csv_file.close()
 
-    # Close all person video writers
+    # Summary of person frame folders
     logger.info("")
-    logger.info("📹 Closing person video clips...")
+    logger.info("� Person frame folders summary...")
     for track_id, writer_info in person_video_writers.items():
-        writer_info['writer'].release()
         logger.info(f"  ✅ Track {track_id} ({writer_info['label']}): {writer_info['frame_count']} frames → {writer_info['path'].name}")
 
     elapsed = time.time() - start_time
     logger.info("="*80)
     logger.info(f"✅ Processing completed in {elapsed:.1f}s")
     logger.info(f"   Processed {frame_id} frames @ {frame_id/elapsed:.1f} FPS")
-    logger.info(f"   Person clips saved to: {extracted_objects_dir}")
-    logger.info(f"   Total person clips: {len(person_video_writers)}")
+    logger.info(f"   Person frames saved to: {extracted_objects_dir}")
+    logger.info(f"   Total person frame folders: {len(person_video_writers)}")
     logger.info("="*80)
 
     # Print zone summary
