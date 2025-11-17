@@ -319,19 +319,27 @@ class ZoneMonitor:
         """
         # Initialize if new person
         if global_id not in self.zone_presence:
+            # Find which zone this person is authorized for
+            authorized_zone_id = None
+            for zid, zone_info in self.zones.items():
+                if global_id in zone_info['authorized_ids']:
+                    authorized_zone_id = zid
+                    break
+
             self.zone_presence[global_id] = {
                 'name': person_name,
                 'current_zone': None,
                 'enter_time': None,
                 'total_duration': 0,
                 'authorized': False,
+                'authorized_zone_id': authorized_zone_id,  # Store which zone they should be in
                 'violations': [],
                 'outside_zone_time': 0,  # Time spent outside any zone
                 'outside_zone_start': frame_time  # Start tracking outside time
             }
-        
+
         person = self.zone_presence[global_id]
-        
+
         # Zone transition
         if person['current_zone'] != zone_id:
             # Exit old zone
@@ -354,18 +362,36 @@ class ZoneMonitor:
 
                 self._log_zone_event('enter', global_id, zone_id, frame_time, 0)
 
-                # Check authorization
-                if not person['authorized']:
+                # NEW LOGIC: Check if person is NOT in their authorized zone
+                # Violation = person has authorized zone BUT is in different zone
+                if person.get('authorized_zone_id') and zone_id != person['authorized_zone_id']:
                     violation = {
                         'zone': zone_id,
                         'zone_name': self.zones[zone_id]['name'],
+                        'authorized_zone': person['authorized_zone_id'],
+                        'authorized_zone_name': self.zones[person['authorized_zone_id']]['name'],
                         'time': frame_time,
-                        'type': 'unauthorized_entry'
+                        'type': 'not_in_authorized_zone'
                     }
                     person['violations'].append(violation)
-                    logger.warning(f"⚠️  VIOLATION: {person_name} (ID:{global_id}) "
-                                 f"entered unauthorized zone '{self.zones[zone_id]['name']}'")
+                    logger.warning(f"🚨 VIOLATION: {person_name} (ID:{global_id}) "
+                                 f"is in zone '{self.zones[zone_id]['name']}' but should be in "
+                                 f"'{self.zones[person['authorized_zone_id']]['name']}'")
             else:
+                # Left all zones - CHECK VIOLATION if person has authorized zone
+                if person.get('authorized_zone_id'):
+                    violation = {
+                        'zone': None,
+                        'zone_name': 'Outside all zones',
+                        'authorized_zone': person['authorized_zone_id'],
+                        'authorized_zone_name': self.zones[person['authorized_zone_id']]['name'],
+                        'time': frame_time,
+                        'type': 'outside_authorized_zone'
+                    }
+                    person['violations'].append(violation)
+                    logger.warning(f"🚨 VIOLATION: {person_name} (ID:{global_id}) "
+                                 f"left their authorized zone '{self.zones[person['authorized_zone_id']]['name']}'")
+
                 # Left all zones - start tracking outside time
                 person['current_zone'] = None
                 person['enter_time'] = None
@@ -526,6 +552,10 @@ class ZoneMonitor:
         """
         Draw zone boundaries on frame with border only (no background fill)
 
+        Zone border color logic:
+        - Green (0, 255, 0): All persons in zone are in their authorized zone (correct)
+        - Red (0, 0, 255): At least one person in zone is NOT in their authorized zone (violation/alert)
+
         Args:
             frame: Frame to draw on
             camera_idx: Camera index (0-based) for multi-camera setup
@@ -533,22 +563,7 @@ class ZoneMonitor:
         # Draw ruler first (background layer)
         frame = self.draw_ruler(frame)
 
-        # Define distinct colors for zones (BGR format)
-        zone_colors = [
-            (255, 0, 0),      # Blue
-            (0, 255, 0),      # Green
-            (0, 0, 255),      # Red
-            (255, 255, 0),    # Cyan
-            (255, 0, 255),    # Magenta
-            (0, 255, 255),    # Yellow
-            (128, 0, 255),    # Purple
-            (0, 128, 255),    # Orange
-            (255, 128, 0),    # Sky Blue
-            (128, 255, 0),    # Spring Green
-        ]
-
-        # Draw zones with different colors (only for this camera)
-        idx = 0
+        # Draw zones with status-based colors (only for this camera)
         for zone_id, zone_data in self.zones.items():
             # Skip zones from other cameras
             if zone_data.get('camera_idx', 0) != camera_idx:
@@ -557,16 +572,30 @@ class ZoneMonitor:
             polygon = zone_data['polygon']
             pts = polygon.reshape((-1, 1, 2)).astype(np.int32)
 
-            # Get color for this zone (cycle through colors if more than 10 zones)
-            color = zone_colors[idx % len(zone_colors)]
-            idx += 1
+            # Determine zone color based on persons in this zone
+            # Default: Green (all persons authorized or no persons)
+            color = (0, 255, 0)  # Green
+
+            # Check if any person in this zone has violation
+            has_violation = False
+            for global_id, person_data in self.zone_presence.items():
+                # Check if person is currently in this zone
+                if person_data.get('current_zone') == zone_id:
+                    # Check if person is NOT authorized for this zone (violation)
+                    if not person_data.get('authorized', False):
+                        has_violation = True
+                        break
+
+            # Set color based on violation status
+            if has_violation:
+                color = (0, 0, 255)  # Red - violation/alert
 
             # Draw polygon border only (no background fill)
             # Use zone_opacity to control line thickness (convert 0.0-1.0 to 1-10 pixels)
             thickness = max(1, int(self.zone_opacity * 10)) if self.zone_opacity > 0 else 3
             cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=thickness)
 
-            # Draw zone name with background
+            # Draw zone name with background (same color as border)
             x, y = polygon[0]
             zone_name = zone_data['name']
 
@@ -576,7 +605,7 @@ class ZoneMonitor:
 
             text_size = cv2.getTextSize(zone_name, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
 
-            # Background rectangle for text
+            # Background rectangle for text (same color as border)
             cv2.rectangle(frame,
                          (int(x), int(y)-text_size[1]-15),
                          (int(x)+text_size[0]+10, int(y)-5),
