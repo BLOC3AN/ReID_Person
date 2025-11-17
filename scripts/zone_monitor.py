@@ -96,7 +96,15 @@ def calculate_iop(person_bbox, zone_bbox):
 
 
 class ZoneMonitor:
-    """Monitor person presence in working zones using IoP-based overlap"""
+    """
+    Monitor person presence in working zones using IoP-based overlap
+
+    NEW LOGIC (Zone-Centric):
+    - Each zone tracks which required persons are present/missing
+    - Zone is COMPLETE when all required persons are present
+    - Zone is INCOMPLETE when any required person is missing
+    - Zones are independent - person can only be in one zone at a time
+    """
 
     def __init__(self, zone_config_path, iou_threshold=0.6, zone_opacity=0.3, num_cameras=1):
         """
@@ -115,10 +123,11 @@ class ZoneMonitor:
         self.zone_opacity = zone_opacity  # Actually border thickness factor
         self.rtree_idx = self._build_rtree()
 
-        # State tracking
-        self.zone_presence = {}  # {global_id: {...}}
-        self.zone_history = []   # Log of all zone events
-        self.last_violation_table_print = 0  # Track last time we printed violation table
+        # NEW: Zone-centric state tracking
+        self.zone_status = self._initialize_zone_status()  # Track each zone's completeness
+        self.person_locations = {}  # Track where each person is currently located
+        self.zone_violations = []   # List of zone violations (zone incomplete events)
+        self.last_violation_table_print = 0
 
         if self.is_multi_camera:
             logger.info(f"✅ ZoneMonitor initialized for {self.num_cameras} cameras with {len(self.zones)} total zones")
@@ -130,6 +139,7 @@ class ZoneMonitor:
         logger.info(f"   IoP threshold: {iou_threshold*100:.0f}% (percentage of person in zone)")
         thickness_px = max(1, int(zone_opacity * 10)) if zone_opacity > 0 else 3
         logger.info(f"   Zone border thickness: {thickness_px}px")
+        logger.info(f"   📊 Logic: Zone-centric (each zone checks for required persons)")
 
     def _load_zones(self, config_path):
         """
@@ -251,7 +261,35 @@ class ZoneMonitor:
             zone['camera_name'] = camera_name
 
         return zone
-    
+
+    def _initialize_zone_status(self):
+        """
+        Initialize zone status tracking (ZONE-CENTRIC LOGIC)
+
+        Each zone tracks:
+        - required_persons: List of person IDs that should be in this zone (authorized_ids)
+        - present_persons: Dict of persons currently in this zone {person_id: {name, enter_time, duration}}
+        - missing_persons: List of person IDs missing from this zone
+        - is_complete: Boolean - True if all required persons are present
+        - violation_start_time: Timestamp when zone became incomplete (None if complete)
+
+        Returns:
+            Dict[zone_id, zone_state]
+        """
+        status = {}
+        for zone_id, zone_data in self.zones.items():
+            required = zone_data.get('authorized_ids', [])
+            status[zone_id] = {
+                'name': zone_data['name'],
+                'required_persons': required,
+                'present_persons': {},  # Will be populated as persons are detected
+                'missing_persons': required.copy(),  # Initially all are missing
+                'is_complete': False,  # All zones start as incomplete (even empty zones)
+                'violation_start_time': None,
+                'camera_idx': zone_data.get('camera_idx', 0)
+            }
+        return status
+
     def _build_rtree(self):
         """Build R-tree spatial index for zones"""
         idx = index.Index()
@@ -312,243 +350,286 @@ class ZoneMonitor:
     
     def update_presence(self, global_id, zone_id, frame_time, person_name):
         """
-        Update zone presence for person
+        Update person location and recalculate zone status (ZONE-CENTRIC LOGIC)
+
+        NEW LOGIC:
+        1. Update person's current location
+        2. Recalculate affected zones to check completeness
+        3. Generate violations for incomplete zones
+
         Args:
             global_id: Person's global ID
-            zone_id: Current zone ID (or None)
+            zone_id: Current zone ID (or None if outside all zones)
             frame_time: Current timestamp (seconds)
             person_name: Person's name
         """
-        # Initialize if new person
-        if global_id not in self.zone_presence:
-            # Find ALL zones this person is authorized for (support multi-camera)
-            authorized_zone_ids = []
-            for zid, zone_info in self.zones.items():
-                if global_id in zone_info['authorized_ids']:
-                    authorized_zone_ids.append(zid)
+        # Get old location
+        old_zone = self.person_locations.get(global_id, {}).get('current_zone')
 
-            self.zone_presence[global_id] = {
+        # Check if person moved
+        if old_zone != zone_id:
+            # Update person location
+            self.person_locations[global_id] = {
                 'name': person_name,
-                'current_zone': None,
-                'enter_time': None,
-                'total_duration': 0,
-                'authorized': False,
-                'authorized_zone_ids': authorized_zone_ids,  # List of zones they're authorized for
-                'violations': [],
-                'outside_zone_time': 0,  # Time spent outside any zone
-                'outside_zone_start': frame_time,  # Start tracking outside time
-                'violation_start_time': None  # Track when violation started
+                'current_zone': zone_id,
+                'enter_time': frame_time if zone_id else None,
+                'camera_idx': 0  # Will be updated by caller if needed
             }
 
-        person = self.zone_presence[global_id]
+            # Log movement
+            if old_zone and zone_id:
+                logger.info(f"🚶 {person_name} (ID:{global_id}) moved: "
+                           f"{self.zones[old_zone]['name']} → {self.zones[zone_id]['name']}")
+            elif zone_id:
+                logger.info(f"➡️  {person_name} (ID:{global_id}) entered "
+                           f"{self.zones[zone_id]['name']}")
+            elif old_zone:
+                logger.info(f"⬅️  {person_name} (ID:{global_id}) left "
+                           f"{self.zones[old_zone]['name']}")
 
-        # Zone transition
-        if person['current_zone'] != zone_id:
-            # Exit old zone
-            if person['current_zone']:
-                duration = frame_time - person['enter_time']
-                self._log_zone_event('exit', global_id, person['current_zone'],
-                                    frame_time, duration)
-                person['total_duration'] = 0  # Reset for new zone
-
-            # Enter new zone
+            # Recalculate affected zones
+            affected_zones = set()
+            if old_zone:
+                affected_zones.add(old_zone)
             if zone_id:
-                # Update outside zone time before entering
-                if 'outside_zone_start' in person and person['outside_zone_start'] is not None:
-                    person['outside_zone_time'] += frame_time - person['outside_zone_start']
-                    person['outside_zone_start'] = None
+                affected_zones.add(zone_id)
 
-                person['current_zone'] = zone_id
-                person['enter_time'] = frame_time
+            # Also check all zones that require this person
+            for zid, zone_data in self.zones.items():
+                if global_id in zone_data.get('authorized_ids', []):
+                    affected_zones.add(zid)
 
-                # NEW LOGIC: authorized = True if person is in ANY of their authorized zones
-                authorized_zone_ids = person.get('authorized_zone_ids', [])
-                person['authorized'] = (zone_id in authorized_zone_ids)
-
-                self._log_zone_event('enter', global_id, zone_id, frame_time, 0)
-
-                # NEW LOGIC: Check if person is NOT in any of their authorized zones
-                # Violation = person has authorized zones BUT is in different zone
-                if authorized_zone_ids and zone_id not in authorized_zone_ids:
-                    # Start tracking violation time
-                    if person.get('violation_start_time') is None:
-                        person['violation_start_time'] = frame_time
-
-                    violation = {
-                        'zone': zone_id,
-                        'zone_name': self.zones[zone_id]['name'],
-                        'authorized_zones': authorized_zone_ids,
-                        'authorized_zone_names': [self.zones[zid]['name'] for zid in authorized_zone_ids],
-                        'time': frame_time,
-                        'duration': frame_time - person['violation_start_time'],
-                        'type': 'not_in_authorized_zone'
-                    }
-                    person['violations'].append(violation)
-                else:
-                    # Person is in authorized zone - reset violation timer
-                    person['violation_start_time'] = None
-            else:
-                # Left all zones - CHECK VIOLATION if person has authorized zones
-                authorized_zone_ids = person.get('authorized_zone_ids', [])
-                if authorized_zone_ids:
-                    # Start tracking violation time
-                    if person.get('violation_start_time') is None:
-                        person['violation_start_time'] = frame_time
-
-                    violation = {
-                        'zone': None,
-                        'zone_name': 'Outside all zones',
-                        'authorized_zones': authorized_zone_ids,
-                        'authorized_zone_names': [self.zones[zid]['name'] for zid in authorized_zone_ids],
-                        'time': frame_time,
-                        'duration': frame_time - person['violation_start_time'],
-                        'type': 'outside_authorized_zone'
-                    }
-                    person['violations'].append(violation)
-                else:
-                    # Person has no authorized zones - reset violation timer
-                    person['violation_start_time'] = None
-
-                # Left all zones - start tracking outside time
-                person['current_zone'] = None
-                person['enter_time'] = None
-                person['authorized'] = False
-                person['outside_zone_start'] = frame_time
-
-        # Update duration if in zone
-        if zone_id and person['enter_time']:
-            person['total_duration'] = frame_time - person['enter_time']
-
-        # Update outside zone duration if outside
-        if not zone_id and 'outside_zone_start' in person and person['outside_zone_start'] is not None:
-            current_outside_duration = frame_time - person['outside_zone_start']
-            # Don't accumulate yet, just track current session
-    
-    def _log_zone_event(self, event_type, global_id, zone_id, time, duration):
-        """Log zone entry/exit events"""
-        event = {
-            'type': event_type,
-            'global_id': global_id,
-            'name': self.zone_presence[global_id]['name'],
-            'zone': zone_id,
-            'zone_name': self.zones[zone_id]['name'],
-            'time': time,
-            'duration': duration
-        }
-        self.zone_history.append(event)
-
-        if event_type == 'enter':
-            auth_status = "✅" if self.zone_presence[global_id]['authorized'] else "🚫"
-            logger.info(f"{auth_status} {event['name']} (ID:{global_id}) entered "
-                       f"'{event['zone_name']}'")
+            # Update all affected zones
+            for affected_zone_id in affected_zones:
+                self._update_zone_status(affected_zone_id, frame_time)
         else:
-            logger.info(f"⬅️  {event['name']} (ID:{global_id}) exited "
-                       f"'{event['zone_name']}' (duration: {duration:.1f}s)")
+            # Person still in same zone - just update duration
+            if zone_id and global_id in self.person_locations:
+                enter_time = self.person_locations[global_id].get('enter_time')
+                if enter_time:
+                    # Update duration in zone_status
+                    zone_state = self.zone_status.get(zone_id)
+                    if zone_state and global_id in zone_state['present_persons']:
+                        zone_state['present_persons'][global_id]['duration'] = frame_time - enter_time
+
+    def _update_zone_status(self, zone_id, frame_time):
+        """
+        Update status for a specific zone (ZONE-CENTRIC LOGIC)
+
+        Check which required persons are present in this zone:
+        - Update present_persons dict
+        - Update missing_persons list
+        - Update is_complete flag
+        - Track violation timing
+
+        Args:
+            zone_id: Zone to update
+            frame_time: Current timestamp
+        """
+        zone_state = self.zone_status[zone_id]
+        required = zone_state['required_persons']
+        present = {}
+        missing = []
+
+        # Check each required person
+        for person_id in required:
+            if person_id in self.person_locations:
+                person_loc = self.person_locations[person_id]
+                if person_loc['current_zone'] == zone_id:
+                    # Person is in this zone
+                    enter_time = person_loc.get('enter_time', frame_time)
+                    present[person_id] = {
+                        'name': person_loc['name'],
+                        'enter_time': enter_time,
+                        'duration': frame_time - enter_time
+                    }
+                else:
+                    # Person is elsewhere
+                    missing.append(person_id)
+            else:
+                # Person not detected yet
+                missing.append(person_id)
+
+        # Check if missing persons changed
+        old_missing = zone_state.get('missing_persons', [])
+        missing_changed = set(old_missing) != set(missing)
+
+        # Update zone state
+        zone_state['present_persons'] = present
+        zone_state['missing_persons'] = missing
+        was_complete = zone_state['is_complete']
+        # Zone is complete only if:
+        # 1. Has required persons (not empty) - empty zones are always incomplete
+        # 2. All required persons are present (no missing)
+        zone_state['is_complete'] = (len(required) > 0 and len(missing) == 0)
+
+        # Track violation timing and log state changes
+        if not zone_state['is_complete']:
+            if zone_state['violation_start_time'] is None:
+                # Zone just became incomplete - LOG
+                zone_state['violation_start_time'] = frame_time
+                self._log_zone_violation(zone_id, missing, frame_time)
+            elif missing_changed:
+                # Zone still incomplete but missing persons changed - LOG
+                self._log_zone_violation(zone_id, missing, frame_time)
+        else:
+            # Zone is complete
+            if not was_complete and zone_state['violation_start_time'] is not None:
+                # Zone just became complete - LOG resolution
+                duration = frame_time - zone_state['violation_start_time']
+                logger.info(f"✅ Zone '{zone_state['name']}' now complete (was incomplete for {duration:.1f}s)")
+            zone_state['violation_start_time'] = None
+
+    def _log_zone_violation(self, zone_id, missing_person_ids, frame_time):
+        """Log zone violation when zone becomes incomplete"""
+        zone_state = self.zone_status[zone_id]
+        missing_names = []
+        for pid in missing_person_ids:
+            if pid in self.person_locations:
+                missing_names.append(self.person_locations[pid]['name'])
+            else:
+                missing_names.append(f"Person {pid}")
+
+        # Add to violations list
+        violation = {
+            'zone_id': zone_id,
+            'zone_name': zone_state['name'],
+            'missing_persons': missing_person_ids,
+            'missing_names': missing_names,
+            'time': frame_time,
+            'type': 'zone_incomplete'
+        }
+        self.zone_violations.append(violation)
+
+        # Log to console
+        missing_str = ", ".join([f"{name} (ID:{pid})"
+                                for pid, name in zip(missing_person_ids, missing_names)])
+        logger.warning(f"🚨 Zone '{zone_state['name']}' incomplete: Missing {missing_str}")
+
+    def _log_zone_event(self, event_type, global_id, zone_id, time, duration):
+        """
+        Log zone entry/exit events (DEPRECATED - kept for backward compatibility)
+
+        Note: This method is no longer used in zone-centric logic but kept
+        in case external code calls it.
+        """
+        pass  # No-op in new logic
 
     def print_violation_table(self, current_time, alert_threshold=0):
         """
-        Print violation status table for all tracked persons
+        Print zone status table (ZONE-CENTRIC LOGIC)
+
+        Shows status of each zone:
+        - Which persons are required
+        - Which persons are present
+        - Which persons are missing
+        - Zone completeness status
 
         Args:
             current_time: Current frame time in seconds
             alert_threshold: Time threshold (seconds) before showing alert
         """
         table_data = []
-        headers = ["User", "Current Zone", "Authorized Zones", "Status", "Duration (s)"]
+        headers = ["Zone", "Required", "Present", "Missing", "Status", "Duration (s)"]
 
-        for global_id, person in self.zone_presence.items():
-            name = person['name']
-            current_zone = person.get('current_zone')
-            authorized_zone_ids = person.get('authorized_zone_ids', [])
+        for zone_id, zone_state in self.zone_status.items():
+            # Build required persons string
+            required_str = ", ".join([str(pid) for pid in zone_state['required_persons']])
+            if not required_str:
+                required_str = "None"
 
-            # Get current zone name
-            if current_zone:
-                current_zone_name = self.zones[current_zone]['name']
-            else:
-                current_zone_name = "Outside all zones"
+            # Build present persons string
+            present_ids = list(zone_state['present_persons'].keys())
+            present_str = ", ".join([str(pid) for pid in present_ids])
+            if not present_str:
+                present_str = "None"
 
-            # Get authorized zone names
-            if authorized_zone_ids:
-                auth_zone_names = ", ".join([self.zones[zid]['name'] for zid in authorized_zone_ids])
-            else:
-                auth_zone_names = "None"
+            # Build missing persons string
+            missing_str = ", ".join([str(pid) for pid in zone_state['missing_persons']])
+            if not missing_str:
+                missing_str = "None"
 
             # Determine status
-            is_authorized = person.get('authorized', False)
-            violation_start = person.get('violation_start_time')
-
-            if is_authorized:
-                status = "✅ OK"
+            if zone_state['is_complete']:
+                status = "✅ Complete"
                 duration = 0
-            elif violation_start is not None:
-                duration = current_time - violation_start
-                if duration >= alert_threshold:
-                    status = f"🚨 ALERT"
-                else:
-                    status = f"⚠️  Warning"
             else:
-                status = "⚠️  Warning"
-                duration = 0
+                violation_start = zone_state['violation_start_time']
+                if violation_start is not None:
+                    duration = current_time - violation_start
+                    if duration >= alert_threshold:
+                        status = "🚨 ALERT"
+                    else:
+                        status = "⚠️  Incomplete"
+                else:
+                    status = "⚠️  Incomplete"
+                    duration = 0
 
             table_data.append([
-                f"{name} (ID:{global_id})",
-                current_zone_name,
-                auth_zone_names,
+                zone_state['name'],
+                required_str,
+                present_str,
+                missing_str,
                 status,
                 f"{duration:.1f}"
             ])
 
         if table_data:
             logger.info("\n" + "="*80)
-            logger.info("📊 ZONE MONITORING STATUS")
+            logger.info("📊 ZONE STATUS MONITORING")
             logger.info("="*80)
             logger.info("\n" + tabulate(table_data, headers=headers, tablefmt="grid"))
             logger.info("="*80 + "\n")
     
     def get_zone_summary(self):
-        """Get summary of zone presence"""
+        """
+        Get summary of zone status (ZONE-CENTRIC LOGIC)
+
+        Returns:
+            Dict with zone status information
+        """
         summary = {}
-        for zone_id, zone_data in self.zones.items():
-            persons_in_zone = [
+        for zone_id, zone_state in self.zone_status.items():
+            # Build list of present persons with details
+            present_list = [
                 {
-                    'id': gid, 
-                    'name': p['name'], 
-                    'duration': p['total_duration'],
-                    'authorized': p['authorized']
+                    'id': pid,
+                    'name': pdata['name'],
+                    'duration': pdata['duration']
                 }
-                for gid, p in self.zone_presence.items()
-                if p['current_zone'] == zone_id
+                for pid, pdata in zone_state['present_persons'].items()
             ]
+
             summary[zone_id] = {
-                'name': zone_data['name'],
-                'authorized_ids': zone_data['authorized_ids'],
-                'current_persons': persons_in_zone,
-                'count': len(persons_in_zone)
+                'name': zone_state['name'],
+                'required_persons': zone_state['required_persons'],
+                'present_persons': present_list,
+                'missing_persons': zone_state['missing_persons'],
+                'is_complete': zone_state['is_complete'],
+                'status': '✅ Complete' if zone_state['is_complete'] else '🚫 Incomplete',
+                'count': len(present_list)
             }
         return summary
-    
+
     def get_violations(self):
-        """Get all violations"""
-        violations = []
-        for global_id, person in self.zone_presence.items():
-            for v in person['violations']:
-                violations.append({
-                    'global_id': global_id,
-                    'name': person['name'],
-                    **v
-                })
-        return violations
+        """
+        Get all zone violations (ZONE-CENTRIC LOGIC)
+
+        Returns:
+            List of zone violation events
+        """
+        return self.zone_violations.copy()
     
     def save_report(self, output_path):
-        """Save zone monitoring report to JSON"""
+        """Save zone monitoring report to JSON (ZONE-CENTRIC LOGIC)"""
         report = {
             'summary': self.get_zone_summary(),
-            'history': self.zone_history,
             'violations': self.get_violations(),
             'zones': {
                 zone_id: {
                     'name': data['name'],
-                    'authorized_ids': data['authorized_ids']
+                    'required_persons': data.get('authorized_ids', []),
+                    'camera_idx': data.get('camera_idx', 0)
                 }
                 for zone_id, data in self.zones.items()
             }
@@ -627,11 +708,11 @@ class ZoneMonitor:
 
     def draw_zones(self, frame, camera_idx=0):
         """
-        Draw zone boundaries on frame with border only (no background fill)
+        Draw zone boundaries on frame (ZONE-CENTRIC LOGIC)
 
         Zone border color logic:
-        - Green (0, 255, 0): All persons in zone are in their authorized zone (correct)
-        - Red (0, 0, 255): At least one person in zone is NOT in their authorized zone (violation/alert)
+        - Green (0, 255, 0): Zone is COMPLETE (all required persons present)
+        - Red (0, 0, 255): Zone is INCOMPLETE (missing required persons)
 
         Args:
             frame: Frame to draw on
@@ -649,23 +730,12 @@ class ZoneMonitor:
             polygon = zone_data['polygon']
             pts = polygon.reshape((-1, 1, 2)).astype(np.int32)
 
-            # Determine zone color based on persons in this zone
-            # Default: Green (all persons authorized or no persons)
-            color = (0, 255, 0)  # Green
-
-            # Check if any person in this zone has violation
-            has_violation = False
-            for global_id, person_data in self.zone_presence.items():
-                # Check if person is currently in this zone
-                if person_data.get('current_zone') == zone_id:
-                    # Check if person is NOT authorized for this zone (violation)
-                    if not person_data.get('authorized', False):
-                        has_violation = True
-                        break
-
-            # Set color based on violation status
-            if has_violation:
-                color = (0, 0, 255)  # Red - violation/alert
+            # Determine zone color based on completeness
+            zone_state = self.zone_status[zone_id]
+            if zone_state['is_complete']:
+                color = (0, 255, 0)  # Green - zone complete
+            else:
+                color = (0, 0, 255)  # Red - zone incomplete
 
             # Draw polygon border only (no background fill)
             # Use zone_opacity to control line thickness (convert 0.0-1.0 to 1-10 pixels)
@@ -679,6 +749,10 @@ class ZoneMonitor:
             # Add camera info for multi-camera
             if self.is_multi_camera:
                 zone_name = f"[Cam{camera_idx+1}] {zone_name}"
+
+            # Add status indicator
+            status_icon = "✅" if zone_state['is_complete'] else "🚫"
+            zone_name = f"{status_icon} {zone_name}"
 
             text_size = cv2.getTextSize(zone_name, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
 
@@ -818,12 +892,12 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     vid_writer = cv2.VideoWriter(str(output_video), fourcc, int(fps), (width, height))
 
-    # CSV writer
+    # CSV writer (ZONE-CENTRIC LOGIC)
     csv_file = open(output_csv, 'w', newline='')
     csv_writer = csv.writer(csv_file)
     csv_writer.writerow([
         'frame_id', 'track_id', 'global_id', 'person_name', 'similarity',
-        'x', 'y', 'w', 'h', 'zone_id', 'zone_name', 'authorized', 'duration', 'camera_idx'
+        'x', 'y', 'w', 'h', 'zone_id', 'zone_name', 'duration_in_zone', 'camera_idx'
     ])
 
     # Processing state
@@ -831,6 +905,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     track_labels = {}
     track_frame_count = {}
     track_embeddings = {}
+
+    # FPS tracking
+    fps_history = []
+    fps_window_size = 30  # Average over last 30 frames
+    last_frame_time = None
 
     logger.info("="*80)
     logger.info("🚀 Starting Processing...")
@@ -854,6 +933,17 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             break
 
         frame_time = frame_id / fps  # Time in seconds
+
+        # Calculate FPS
+        current_time = time.time()
+        if last_frame_time is not None:
+            frame_fps = 1.0 / (current_time - last_frame_time)
+            fps_history.append(frame_fps)
+            if len(fps_history) > fps_window_size:
+                fps_history.pop(0)
+        last_frame_time = current_time
+
+        avg_fps = sum(fps_history) / len(fps_history) if fps_history else 0
 
         # Get camera metadata if multi-stream
         camera_metadata = getattr(stream_reader, 'camera_metadata', None)
@@ -957,10 +1047,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             # Find zone (works for both single and multi-camera)
             zone_id = zone_monitor.find_zone(relative_bbox, camera_idx)
 
-            # Update zone presence
+            # Update zone presence (ZONE-CENTRIC LOGIC)
+            # Only update if we have a valid global_id (person has been identified)
             if info['global_id'] > 0:
                 # Store violations count before update
-                old_violations_count = len(zone_monitor.zone_presence.get(info['global_id'], {}).get('violations', []))
+                old_violations_count = len(zone_monitor.zone_violations)
 
                 zone_monitor.update_presence(
                     info['global_id'],
@@ -969,17 +1060,14 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                     info['person_name']
                 )
 
-                # Check if new violation occurred and trigger callback
-                if violation_callback and info['global_id'] in zone_monitor.zone_presence:
-                    person_data = zone_monitor.zone_presence[info['global_id']]
-                    new_violations_count = len(person_data.get('violations', []))
+                # Check if new zone violation occurred and trigger callback
+                if violation_callback:
+                    new_violations_count = len(zone_monitor.zone_violations)
 
                     if new_violations_count > old_violations_count:
-                        # New violation occurred
-                        latest_violation = person_data['violations'][-1]
+                        # New zone violation occurred
+                        latest_violation = zone_monitor.zone_violations[-1]
                         violation_callback({
-                            'global_id': info['global_id'],
-                            'person_name': info['person_name'],
                             'frame_id': frame_id,
                             'frame_time': frame_time,
                             **latest_violation
@@ -990,28 +1078,21 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                 zone_monitor.print_violation_table(frame_time, alert_threshold=alert_threshold)
                 zone_monitor.last_violation_table_print = frame_time
 
-            # Get zone info
+            # Get zone info (ZONE-CENTRIC LOGIC)
             zone_name = zone_monitor.zones[zone_id]['name'] if zone_id else "None"
-            authorized = False
             duration = 0.0
 
-            # Get person data for time tracking
-            outside_time = 0.0
-            if info['global_id'] > 0 and info['global_id'] in zone_monitor.zone_presence:
-                person_data = zone_monitor.zone_presence[info['global_id']]
-                authorized = person_data.get('authorized', False)
-                duration = person_data.get('total_duration', 0.0)
-                outside_time = person_data.get('outside_zone_time', 0.0)
+            # Get person location data for duration tracking
+            if info['global_id'] > 0 and info['global_id'] in zone_monitor.person_locations:
+                person_loc = zone_monitor.person_locations[info['global_id']]
+                if zone_id and person_loc.get('enter_time'):
+                    duration = frame_time - person_loc['enter_time']
 
-                # Add current outside session if currently outside
-                if not zone_id and person_data.get('outside_zone_start'):
-                    outside_time += frame_time - person_data['outside_zone_start']
-
-            # Write to CSV
+            # Write to CSV (ZONE-CENTRIC LOGIC)
             csv_writer.writerow([
                 frame_id, track_id, info['global_id'], info['person_name'],
                 f"{info['similarity']:.4f}", x, y, w, h,
-                zone_id if zone_id else "", zone_name, authorized, f"{duration:.2f}", camera_idx
+                zone_id if zone_id else "", zone_name, f"{duration:.2f}", camera_idx
             ])
 
             # Save person frames as images
@@ -1110,31 +1191,36 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                     # Continue processing other tracks
                     continue
 
-            # Draw on frame
+            # Draw on frame (ZONE-CENTRIC LOGIC)
             # Color logic:
-            # Green: Person is IN their authorized zone
-            # Red: Person is NOT in their authorized zone (unauthorized or outside)
-            if zone_id and authorized:
-                color = (0, 255, 0)  # Green - in authorized zone
+            # Green: Person is in a zone
+            # Blue: Person is outside all zones
+            if zone_id:
+                color = (0, 255, 0)  # Green - in a zone
             else:
-                color = (0, 0, 255)  # Red - not in authorized zone or outside
+                color = (255, 0, 0)  # Blue - outside zones
 
             cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
 
             # Build label with time information
             label_text = f"{info['label']} (ID:{track_id})"
 
-            # Add zone info and time
+            # Add zone info and time (ZONE-CENTRIC LOGIC)
             if zone_id:
                 label_text += f" | {zone_name} ({duration:.1f}s)"
             else:
-                label_text += f" | Outside ({outside_time:.1f}s)"
+                label_text += f" | Outside"
 
             # Draw label background for better visibility
             text_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
             cv2.rectangle(frame, (x, y-text_size[1]-10), (x+text_size[0], y), color, -1)
             cv2.putText(frame, label_text, (x, y-5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+        # After processing all tracks, update all zones to check completeness
+        # This ensures zones turn red immediately when all persons leave
+        for zone_id in zone_monitor.zones.keys():
+            zone_monitor._update_zone_status(zone_id, frame_time)
 
         # Draw zones for all cameras (single camera = 1 iteration)
         for cam_idx in range(num_cameras):
@@ -1144,10 +1230,37 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                 cam_x_end = (cam_idx + 1) * stream_reader.width
                 camera_frame = frame[:, cam_x_start:cam_x_end]
                 camera_frame = zone_monitor.draw_zones(camera_frame, camera_idx=cam_idx)
+
+                # Draw FPS for this camera (top-left corner)
+                fps_text = f"Cam{cam_idx+1} FPS: {avg_fps:.1f}"
+                cv2.putText(camera_frame, fps_text, (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+                # Draw frame counter (below FPS)
+                if is_stream:
+                    frame_text = f"Frame: {frame_id}"
+                else:
+                    frame_text = f"Frame: {frame_id}/{total_frames}"
+                cv2.putText(camera_frame, frame_text, (10, 65),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
                 frame[:, cam_x_start:cam_x_end] = camera_frame
             else:
                 # Single camera: draw zones on entire frame
                 frame = zone_monitor.draw_zones(frame, camera_idx=cam_idx)
+
+                # Draw FPS (top-left corner)
+                fps_text = f"FPS: {avg_fps:.1f}"
+                cv2.putText(frame, fps_text, (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+                # Draw frame counter (below FPS)
+                if is_stream:
+                    frame_text = f"Frame: {frame_id}"
+                else:
+                    frame_text = f"Frame: {frame_id}/{total_frames}"
+                cv2.putText(frame, frame_text, (10, 65),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         # Write frame
         vid_writer.write(frame)
@@ -1203,22 +1316,25 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     logger.info("="*80)
     for zone_id, data in summary.items():
         logger.info(f"\n{data['name']} ({zone_id}):")
-        logger.info(f"  Authorized IDs: {data['authorized_ids']}")
-        logger.info(f"  Current persons: {data['count']}")
-        for person in data['current_persons']:
-            auth_icon = "✅" if person['authorized'] else "🚫"
-            logger.info(f"    {auth_icon} {person['name']} (ID:{person['id']}) "
+        logger.info(f"  Required persons: {data['required_persons']}")
+        logger.info(f"  Present persons: {data['count']}")
+        logger.info(f"  Status: {data['status']}")
+        for person in data['present_persons']:
+            logger.info(f"    ✅ {person['name']} (ID:{person['id']}) "
                        f"- {person['duration']:.1f}s")
+        if data['missing_persons']:
+            logger.info(f"  Missing: {data['missing_persons']}")
 
-    # Print violations
+    # Print violations (ZONE-CENTRIC LOGIC)
     violations = zone_monitor.get_violations()
     if violations:
         logger.info("\n" + "="*80)
-        logger.info("⚠️  VIOLATIONS DETECTED")
+        logger.info("⚠️  ZONE VIOLATIONS DETECTED")
         logger.info("="*80)
         for v in violations:
-            logger.info(f"  {v['name']} (ID:{v['global_id']}) entered "
-                       f"unauthorized zone '{v['zone_name']}' at {v['time']:.1f}s")
+            missing_str = ", ".join([f"{name} (ID:{pid})"
+                                    for pid, name in zip(v['missing_persons'], v['missing_names'])])
+            logger.info(f"  Zone '{v['zone_name']}' incomplete: Missing {missing_str} at {v['time']:.1f}s")
 
     # Save report
     zone_monitor.save_report(output_json)

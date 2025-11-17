@@ -1139,12 +1139,19 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                         status_text = st.empty()
                         progress_text = st.empty()
                         tracks_container = st.empty()
-                        violations_container = st.empty()  # Real-time violations
+
+                        # Violation logs viewer (scrollable container)
+                        st.markdown("### 🚨 Zone Violation Logs")
+                        violations_container = st.container()
+                        with violations_container:
+                            violation_logs = st.empty()
+
                         stop_button_container = st.empty()
 
                         poll_count = 0
                         user_cancelled = False
-                        displayed_violations = set()  # Track which violations we've already shown
+                        violation_log_lines = []  # Store log lines for display
+                        last_violation_count = 0  # Track how many violations we've processed
 
                         while True:
                             # Show stop button while processing
@@ -1200,24 +1207,44 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                             tracks_info += f"{color} Track {track['track_id']}: **{track['label']}** (sim: {track['similarity']:.3f})\n"
                                         tracks_container.markdown(tracks_info)
 
-                                    # Display real-time violations (zone monitoring)
+                                    # Display real-time violations as log lines (ZONE-CENTRIC LOGIC)
                                     if progress.get('violations'):
-                                        violations_info = "### 🚨 Real-Time Violations:\n"
-                                        for violation in progress['violations']:
-                                            # Create unique key for this violation
-                                            v_key = f"{violation['global_id']}_{violation['zone']}_{violation['frame_id']}"
+                                        violations = progress['violations']
 
-                                            # Only show new violations
-                                            if v_key not in displayed_violations:
-                                                displayed_violations.add(v_key)
-                                                logger.warning(f"🚨 [Detect & Track] VIOLATION: {violation['person_name']} "
-                                                             f"entered unauthorized zone '{violation['zone_name']}' at frame {violation['frame_id']}")
+                                        # Process only new violations
+                                        if len(violations) > last_violation_count:
+                                            new_violations = violations[last_violation_count:]
 
-                                            violations_info += (f"🔴 **{violation['person_name']}** (ID:{violation['global_id']}) "
-                                                              f"entered unauthorized zone **{violation['zone_name']}** "
-                                                              f"at frame {violation['frame_id']}\n")
+                                            for violation in new_violations:
+                                                # Format timestamp
+                                                timestamp = datetime.now().strftime("%H:%M:%S")
 
-                                        violations_container.markdown(violations_info)
+                                                # Handle both zone-centric and legacy person-centric violations
+                                                if violation.get('type') == 'zone_incomplete':
+                                                    # Zone-centric violation
+                                                    missing_str = ", ".join(violation['missing_names'])
+                                                    log_line = f"[{timestamp}] 🔴 Frame {violation['frame_id']:4d} | Zone **{violation['zone_name']}** incomplete: Missing {missing_str}"
+
+                                                    logger.warning(f"🚨 [Detect & Track] ZONE VIOLATION: Zone '{violation['zone_name']}' "
+                                                                 f"incomplete - Missing: {missing_str} at frame {violation['frame_id']}")
+                                                else:
+                                                    # Legacy person-centric violation (backward compatibility)
+                                                    log_line = f"[{timestamp}] 🔴 Frame {violation['frame_id']:4d} | {violation.get('person_name', 'Unknown')} entered unauthorized zone **{violation['zone_name']}**"
+
+                                                    logger.warning(f"🚨 [Detect & Track] VIOLATION: {violation.get('person_name', 'Unknown')} "
+                                                                 f"entered unauthorized zone '{violation['zone_name']}' at frame {violation['frame_id']}")
+
+                                                # Add to log lines (keep last 50 lines)
+                                                violation_log_lines.append(log_line)
+                                                if len(violation_log_lines) > 50:
+                                                    violation_log_lines.pop(0)
+
+                                            last_violation_count = len(violations)
+
+                                        # Display log lines in reverse order (newest first)
+                                        if violation_log_lines:
+                                            log_text = "\n\n".join(reversed(violation_log_lines))
+                                            violation_logs.markdown(log_text)
                             except Exception as e:
                                 logger.warning(f"⚠️ [Detect & Track] Progress fetch error: {e}")
                                 pass

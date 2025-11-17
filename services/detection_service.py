@@ -17,14 +17,16 @@ sys.path.insert(0, str(scripts_dir))
 
 import os
 import shutil
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 import uuid
 from loguru import logger
 import threading
 import time
+import asyncio
+import json
 
 # Import modules
 from scripts.detect_and_track import PersonReIDPipeline
@@ -46,6 +48,8 @@ jobs = {}
 progress_data = {}  # {job_id: {"current_frame": int, "total_frames": int, "tracks": [...]}}
 # Cancellation flags
 cancellation_flags = {}  # {job_id: threading.Event()}
+# WebSocket connections for real-time violation logs
+websocket_connections: Dict[str, List[WebSocket]] = {}  # {job_id: [websocket1, websocket2, ...]}
 
 
 @app.on_event("startup")
@@ -260,11 +264,67 @@ def _update_progress(job_id: str, frame_id: int, tracks: List[dict]):
 
 
 def _add_violation(job_id: str, violation: dict):
-    """Add violation to progress data for real-time alerts"""
+    """Add violation to progress data for real-time alerts (ZONE-CENTRIC LOGIC)"""
     if job_id in progress_data:
         progress_data[job_id]["violations"].append(violation)
-        logger.warning(f"🚨 [Job {job_id}] VIOLATION: {violation['person_name']} "
-                      f"entered unauthorized zone '{violation['zone_name']}' at frame {violation['frame_id']}")
+
+        # Format violation message based on type
+        if violation.get('type') == 'zone_incomplete':
+            # Zone-centric violation
+            missing_str = ", ".join([f"{name} (ID:{pid})"
+                                    for pid, name in zip(violation['missing_persons'], violation['missing_names'])])
+            logger.warning(f"🚨 [Job {job_id}] ZONE VIOLATION: Zone '{violation['zone_name']}' "
+                          f"incomplete - Missing: {missing_str} at frame {violation['frame_id']}")
+        else:
+            # Legacy person-centric violation (backward compatibility)
+            logger.warning(f"🚨 [Job {job_id}] VIOLATION: {violation.get('person_name', 'Unknown')} "
+                          f"entered unauthorized zone '{violation['zone_name']}' at frame {violation['frame_id']}")
+
+        # Broadcast to WebSocket clients (schedule in event loop)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.run_coroutine_threadsafe(_broadcast_violation(job_id, violation), loop)
+        except Exception as e:
+            logger.debug(f"Could not broadcast violation to WebSocket: {e}")
+
+
+async def _broadcast_violation(job_id: str, violation: dict):
+    """Broadcast violation to all connected WebSocket clients for this job"""
+    if job_id in websocket_connections:
+        # Format log message
+        timestamp = time.strftime("%H:%M:%S")
+
+        if violation.get('type') == 'zone_incomplete':
+            missing_str = ", ".join(violation['missing_names'])
+            log_msg = {
+                "timestamp": timestamp,
+                "level": "error",
+                "zone": violation['zone_name'],
+                "message": f"Zone incomplete: Missing {missing_str}",
+                "frame": violation['frame_id']
+            }
+        else:
+            log_msg = {
+                "timestamp": timestamp,
+                "level": "error",
+                "zone": violation['zone_name'],
+                "message": f"{violation.get('person_name', 'Unknown')} entered unauthorized zone",
+                "frame": violation['frame_id']
+            }
+
+        # Send to all connected clients
+        disconnected = []
+        for ws in websocket_connections[job_id]:
+            try:
+                await ws.send_json(log_msg)
+            except Exception as e:
+                logger.debug(f"Failed to send to WebSocket: {e}")
+                disconnected.append(ws)
+
+        # Remove disconnected clients
+        for ws in disconnected:
+            websocket_connections[job_id].remove(ws)
 
 
 @app.get("/")
@@ -275,6 +335,74 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.websocket("/ws/violations/{job_id}")
+async def websocket_violations(websocket: WebSocket, job_id: str):
+    """
+    WebSocket endpoint for real-time violation logs
+
+    Clients connect to this endpoint to receive violation events as they occur.
+    Messages are sent in JSON format:
+    {
+        "timestamp": "HH:MM:SS",
+        "level": "error" | "info",
+        "zone": "Zone_A",
+        "message": "Zone incomplete: Missing Khiem",
+        "frame": 123
+    }
+    """
+    await websocket.accept()
+
+    # Add to connections list
+    if job_id not in websocket_connections:
+        websocket_connections[job_id] = []
+    websocket_connections[job_id].append(websocket)
+
+    logger.info(f"WebSocket client connected for job {job_id}")
+
+    try:
+        # Send initial connection message
+        await websocket.send_json({
+            "timestamp": time.strftime("%H:%M:%S"),
+            "level": "info",
+            "zone": "System",
+            "message": f"Connected to violation logs for job {job_id}",
+            "frame": 0
+        })
+
+        # Keep connection alive and listen for client messages (e.g., ping)
+        while True:
+            try:
+                # Wait for messages from client (or just keep alive)
+                data = await websocket.receive_text()
+
+                # Handle ping/pong or other client messages
+                if data == "ping":
+                    await websocket.send_json({
+                        "timestamp": time.strftime("%H:%M:%S"),
+                        "level": "info",
+                        "zone": "System",
+                        "message": "pong",
+                        "frame": 0
+                    })
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                logger.debug(f"WebSocket error: {e}")
+                break
+
+    finally:
+        # Remove from connections list
+        if job_id in websocket_connections:
+            if websocket in websocket_connections[job_id]:
+                websocket_connections[job_id].remove(websocket)
+
+            # Clean up empty lists
+            if not websocket_connections[job_id]:
+                del websocket_connections[job_id]
+
+        logger.info(f"WebSocket client disconnected for job {job_id}")
 
 
 @app.post("/test_stream")
