@@ -95,7 +95,7 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                       conf_thresh: Optional[float] = None, track_thresh: Optional[float] = None,
                       face_conf_thresh: Optional[float] = None,
                       zone_config_path: Optional[str] = None, iou_threshold: float = 0.6,
-                      zone_opacity: float = 0.15, max_frames: Optional[int] = None,
+                      zone_opacity: float = 0.3, max_frames: Optional[int] = None,
                       max_duration_seconds: Optional[int] = None):
     """Background task to process detection and tracking with optional zone monitoring"""
     try:
@@ -336,7 +336,7 @@ async def detect_and_track(
     face_conf_thresh: Optional[float] = Form(None),
     zone_config: Optional[UploadFile] = File(None),
     iou_threshold: float = Form(0.6),
-    zone_opacity: float = Form(0.15)
+    zone_opacity: float = Form(0.3)
 ):
     """
     Detect, track, and re-identify persons in video with optional zone monitoring
@@ -351,7 +351,7 @@ async def detect_and_track(
         face_conf_thresh: Face detection confidence threshold 0-1 (default: from config)
         zone_config: Optional zone configuration YAML file
         iou_threshold: Zone IoP threshold 0-1 (default: 0.6 = 60%)
-        zone_opacity: Zone fill opacity 0-1 (default: 0.15 = 15%)
+        zone_opacity: Zone border thickness factor 0-1 (default: 0.3 = 3px)
 
     Returns:
         Job ID for tracking the detection process
@@ -443,7 +443,7 @@ async def detect_and_track_stream(
     face_conf_thresh: Optional[float] = Form(None),
     zone_config: Optional[UploadFile] = File(None),
     iou_threshold: float = Form(0.6),
-    zone_opacity: float = Form(0.15),
+    zone_opacity: float = Form(0.3),
     max_frames: Optional[int] = Form(None),
     max_duration_seconds: Optional[int] = Form(None)
 ):
@@ -460,7 +460,7 @@ async def detect_and_track_stream(
         face_conf_thresh: Face detection confidence threshold 0-1 (default: from config)
         zone_config: Optional zone configuration YAML file
         iou_threshold: Zone IoP threshold 0-1 (default: 0.6 = 60%)
-        zone_opacity: Zone fill opacity 0-1 (default: 0.15 = 15%)
+        zone_opacity: Zone border thickness factor 0-1 (default: 0.3 = 3px)
         max_frames: Maximum frames to process (None for unlimited)
         max_duration_seconds: Maximum duration in seconds (None for unlimited)
 

@@ -13,6 +13,13 @@ pandas>=1.3.0
 # Image Processing (lightweight - only for display)
 Pillow>=9.0.0
 
+# Database
+psycopg2-binary>=2.9.0
+pydantic>=1.10.0
+
+# Visualization
+plotly>=5.14.0
+
 # Utilities
 loguru>=0.6.0
 pyyaml>=6.0

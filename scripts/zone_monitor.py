@@ -97,20 +97,21 @@ def calculate_iop(person_bbox, zone_bbox):
 class ZoneMonitor:
     """Monitor person presence in working zones using IoP-based overlap"""
 
-    def __init__(self, zone_config_path, iou_threshold=0.6, zone_opacity=0.15, num_cameras=1):
+    def __init__(self, zone_config_path, iou_threshold=0.6, zone_opacity=0.3, num_cameras=1):
         """
         Args:
             zone_config_path: Path to zone configuration YAML
             iou_threshold: IoP threshold for zone overlap (default: 0.6 = 60% of person in zone)
                           Note: Parameter name kept as 'iou_threshold' for backward compatibility,
                           but it's actually used as IoP (Intersection over Person) threshold
-            zone_opacity: Zone fill opacity (default: 0.15, range: 0.0-1.0)
+            zone_opacity: Zone border thickness factor (default: 0.3, range: 0.0-1.0)
+                         Converts to pixel thickness: 0.0-1.0 → 1-10 pixels
             num_cameras: Number of cameras (default: 1 for single camera)
         """
         self.num_cameras = num_cameras
         self.zones, self.is_multi_camera = self._load_zones(zone_config_path)
         self.iop_threshold = iou_threshold  # Actually IoP threshold
-        self.zone_opacity = zone_opacity
+        self.zone_opacity = zone_opacity  # Actually border thickness factor
         self.rtree_idx = self._build_rtree()
 
         # State tracking
@@ -125,7 +126,8 @@ class ZoneMonitor:
         else:
             logger.info(f"✅ ZoneMonitor initialized with {len(self.zones)} zones")
         logger.info(f"   IoP threshold: {iou_threshold*100:.0f}% (percentage of person in zone)")
-        logger.info(f"   Zone opacity: {zone_opacity*100:.0f}%")
+        thickness_px = max(1, int(zone_opacity * 10)) if zone_opacity > 0 else 3
+        logger.info(f"   Zone border thickness: {thickness_px}px")
 
     def _load_zones(self, config_path):
         """
@@ -522,7 +524,7 @@ class ZoneMonitor:
 
     def draw_zones(self, frame, camera_idx=0):
         """
-        Draw zone boundaries on frame with different colors and transparency for overlaps
+        Draw zone boundaries on frame with border only (no background fill)
 
         Args:
             frame: Frame to draw on
@@ -545,9 +547,6 @@ class ZoneMonitor:
             (128, 255, 0),    # Spring Green
         ]
 
-        # Create overlay for transparent fill
-        overlay = frame.copy()
-
         # Draw zones with different colors (only for this camera)
         idx = 0
         for zone_id, zone_data in self.zones.items():
@@ -562,11 +561,10 @@ class ZoneMonitor:
             color = zone_colors[idx % len(zone_colors)]
             idx += 1
 
-            # Fill polygon with transparency (for overlap visibility)
-            cv2.fillPoly(overlay, [pts], color)
-
-            # Draw polygon border (thicker, opaque)
-            cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=3)
+            # Draw polygon border only (no background fill)
+            # Use zone_opacity to control line thickness (convert 0.0-1.0 to 1-10 pixels)
+            thickness = max(1, int(self.zone_opacity * 10)) if self.zone_opacity > 0 else 3
+            cv2.polylines(frame, [pts], isClosed=True, color=color, thickness=thickness)
 
             # Draw zone name with background
             x, y = polygon[0]
@@ -588,14 +586,11 @@ class ZoneMonitor:
             cv2.putText(frame, zone_name, (int(x)+5, int(y)-10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-        # Blend overlay with original frame (use configurable opacity)
-        cv2.addWeighted(overlay, self.zone_opacity, frame, 1.0 - self.zone_opacity, 0, frame)
-
         return frame
 
 
 def process_video_with_zones(video_path, zone_config_path, reid_config_path=None,
-                             similarity_threshold=0.8, iou_threshold=0.6, zone_opacity=0.15,
+                             similarity_threshold=0.8, iou_threshold=0.6, zone_opacity=0.3,
                              output_dir=None, max_frames=None, max_duration_seconds=None,
                              output_video_path=None, output_csv_path=None, output_json_path=None,
                              progress_callback=None, cancellation_flag=None):
@@ -612,7 +607,8 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                       but it's actually IoP (Intersection over Person) threshold.
                       IoP = 0.6 means 60% of person's body is inside the zone.
         cancellation_flag: Optional threading.Event() to signal cancellation
-        zone_opacity: Zone fill opacity (default: 0.15 = 15%)
+        zone_opacity: Zone border thickness factor (default: 0.3, range: 0.0-1.0)
+                     Converts to pixel thickness: 0.0-1.0 → 1-10 pixels
         output_dir: Output directory for results (used if specific paths not provided)
         max_frames: Maximum frames to process
         max_duration_seconds: Maximum duration in seconds to process (converted to frames)

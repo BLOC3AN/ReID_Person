@@ -9,6 +9,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Install system dependencies (minimal)
 RUN apt-get update && apt-get install -y \
     curl \
+    libpq-dev \ 
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -25,6 +26,8 @@ RUN pip install --upgrade pip && \
 COPY app.py .
 COPY configs/ configs/
 COPY utils/ utils/
+COPY services/database/ services/database/
+COPY services/__init__.py services/__init__.py
 
 # Create necessary directories
 RUN mkdir -p /app/outputs/videos \

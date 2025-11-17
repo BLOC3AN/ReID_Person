@@ -28,6 +28,66 @@ DETECTION_API_URL = os.getenv("DETECTION_API_URL", "http://localhost:8003")
 
 logger.info(f"🚀 Starting Person ReID UI - Extract: {EXTRACT_API_URL}, Register: {REGISTER_API_URL}, Detection: {DETECTION_API_URL}")
 
+
+# ============================================================================
+# DATABASE CONNECTION
+# ============================================================================
+
+# Import database manager
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from services.database import PostgresManager
+
+# Initialize database manager (singleton pattern)
+@st.cache_resource
+def get_db_manager():
+    """Get or create database manager instance"""
+    try:
+        db_manager = PostgresManager()
+        db_manager.connect()
+        logger.info("✅ Connected to PostgreSQL database")
+        return db_manager
+    except Exception as e:
+        logger.error(f"❌ Failed to connect to database: {e}")
+        return None
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def fetch_users_from_db():
+    """
+    Fetch all users from PostgreSQL database
+    Returns list of users or empty list on error
+    """
+    try:
+        db_manager = get_db_manager()
+        if db_manager:
+            users = db_manager.get_all_users()
+            return [user.dict() for user in users]
+        return []
+    except Exception as e:
+        logger.error(f"Error fetching users from database: {e}")
+        return []
+
+
+def fetch_users_dict():
+    """
+    Fetch users as dictionary mapping global_id to name
+    Returns dict or empty dict on error
+    """
+    try:
+        db_manager = get_db_manager()
+        if db_manager:
+            return db_manager.get_users_dict()
+        return {}
+    except Exception as e:
+        logger.error(f"Error fetching users dict from database: {e}")
+        return {}
+
 # Page config
 st.set_page_config(
     page_title="Person ReID System",
@@ -42,7 +102,7 @@ st.markdown("---")
 # Sidebar for navigation
 page = st.sidebar.selectbox(
     "Select Operation",
-    ["Detect & Track", "Register Person", "Extract Objects",  "ℹ️ About"]
+    ["Detect & Track", "Register Person", "Extract Objects", "👥 User Management", "ℹ️ About"]
 )
 
 # ============================================================================
@@ -282,8 +342,34 @@ elif page == "Register Person":
 
     with col2:
         st.markdown("### Parameters")
-        person_name = st.text_input("Person Name", placeholder="e.g., John Doe")
-        global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique ID for this person")
+
+        # Fetch users from database
+        users_dict = fetch_users_dict()
+
+        if users_dict:
+            # Create options for selectbox: "Name (ID: global_id)"
+            user_options = {f"{name} (ID: {gid})": (gid, name) for gid, name in users_dict.items()}
+            user_options_list = ["➕ Create New User"] + list(user_options.keys())
+
+            selected_option = st.selectbox(
+                "Select User",
+                options=user_options_list,
+                help="Select existing user or create new one"
+            )
+
+            if selected_option == "➕ Create New User":
+                # Manual input for new user
+                person_name = st.text_input("Person Name", placeholder="e.g., John Doe")
+                global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique ID for this person")
+            else:
+                # Use selected user
+                global_id, person_name = user_options[selected_option]
+                st.info(f"✅ Selected: **{person_name}** (Global ID: **{global_id}**)")
+        else:
+            # Fallback to manual input if database is not available
+            st.warning("⚠️ Database not available. Using manual input.")
+            person_name = st.text_input("Person Name", placeholder="e.g., John Doe")
+            global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique ID for this person")
 
         if input_type == "📹 Video":
             sample_rate = st.number_input("Sample Rate", min_value=1, value=5, help="Extract 1 frame every N frames")
@@ -606,20 +692,46 @@ elif page == "Detect & Track":
                                     key=f"zone_name_cam{cam_idx}_z{zone_idx}"
                                 )
 
-                                auth_ids_str = st.text_input(
-                                    "Authorized IDs",
-                                    value=','.join(map(str, zone['authorized_ids'])),
-                                    key=f"zone_auth_cam{cam_idx}_z{zone_idx}",
-                                    help="Comma-separated: 1,2,3"
-                                )
+                                # Fetch users from database for dropdown
+                                users_dict = fetch_users_dict()
 
-                                if auth_ids_str.strip():
-                                    try:
-                                        zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
-                                    except:
-                                        zone['authorized_ids'] = []
+                                if users_dict:
+                                    # Create options for multiselect: "Name (ID: global_id)"
+                                    user_options = {f"{name} (ID: {gid})": gid for gid, name in users_dict.items()}
+
+                                    # Get current selected options
+                                    current_selections = []
+                                    for auth_id in zone['authorized_ids']:
+                                        if auth_id in users_dict:
+                                            current_selections.append(f"{users_dict[auth_id]} (ID: {auth_id})")
+
+                                    selected_users = st.multiselect(
+                                        "Authorized Users",
+                                        options=list(user_options.keys()),
+                                        default=current_selections,
+                                        key=f"zone_auth_cam{cam_idx}_z{zone_idx}",
+                                        help="Select authorized users from database"
+                                    )
+
+                                    # Update authorized_ids based on selection
+                                    zone['authorized_ids'] = [user_options[user] for user in selected_users]
                                 else:
-                                    zone['authorized_ids'] = []
+                                    # Fallback to text input if database is not available
+                                    st.warning("⚠️ Database not available. Using manual input.")
+                                    auth_ids_str = st.text_input(
+                                        "Authorized IDs",
+                                        value=','.join(map(str, zone['authorized_ids'])),
+                                        key=f"zone_auth_cam{cam_idx}_z{zone_idx}",
+                                        help="Comma-separated: 1,2,3"
+                                    )
+
+                                    if auth_ids_str.strip():
+                                        try:
+                                            zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
+                                        except:
+                                            zone['authorized_ids'] = []
+                                    else:
+                                        zone['authorized_ids'] = []
 
                             with col2:
                                 polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
@@ -678,23 +790,48 @@ elif page == "Detect & Track":
                                     key=f"zone_name_{i}"
                                 )
 
-                                # Authorized IDs
-                                auth_ids_str = st.text_input(
-                                    "Authorized IDs (comma-separated)",
-                                    value=','.join(map(str, zone['authorized_ids'])),
-                                    key=f"zone_auth_{i}",
-                                    help="Example: 1,2,3"
-                                )
+                                # Fetch users from database for dropdown
+                                users_dict = fetch_users_dict()
 
-                                # Parse authorized IDs
-                                if auth_ids_str.strip():
-                                    try:
-                                        zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
-                                    except:
-                                        st.warning("Invalid ID format. Use comma-separated numbers.")
-                                        zone['authorized_ids'] = []
+                                if users_dict:
+                                    # Create options for multiselect: "Name (ID: global_id)"
+                                    user_options = {f"{name} (ID: {gid})": gid for gid, name in users_dict.items()}
+
+                                    # Get current selected options
+                                    current_selections = []
+                                    for auth_id in zone['authorized_ids']:
+                                        if auth_id in users_dict:
+                                            current_selections.append(f"{users_dict[auth_id]} (ID: {auth_id})")
+
+                                    selected_users = st.multiselect(
+                                        "Authorized Users",
+                                        options=list(user_options.keys()),
+                                        default=current_selections,
+                                        key=f"zone_auth_{i}",
+                                        help="Select authorized users from database"
+                                    )
+
+                                    # Update authorized_ids based on selection
+                                    zone['authorized_ids'] = [user_options[user] for user in selected_users]
                                 else:
-                                    zone['authorized_ids'] = []
+                                    # Fallback to text input if database is not available
+                                    st.warning("⚠️ Database not available. Using manual input.")
+                                    auth_ids_str = st.text_input(
+                                        "Authorized IDs (comma-separated)",
+                                        value=','.join(map(str, zone['authorized_ids'])),
+                                        key=f"zone_auth_{i}",
+                                        help="Example: 1,2,3"
+                                    )
+
+                                    # Parse authorized IDs
+                                    if auth_ids_str.strip():
+                                        try:
+                                            zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
+                                        except:
+                                            st.warning("Invalid ID format. Use comma-separated numbers.")
+                                            zone['authorized_ids'] = []
+                                    else:
+                                        zone['authorized_ids'] = []
 
                             with col2:
                                 st.markdown("**Polygon Coordinates (x,y)**")
@@ -792,12 +929,12 @@ elif page == "Detect & Track":
 
         with col_zone2:
             zone_opacity = st.slider(
-                "Zone Opacity",
+                "Zone Border Thickness",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.15,
+                value=0.3,
                 step=0.05,
-                help="Transparency of zone fill (0.0 = fully transparent, 1.0 = fully opaque). 0.15 recommended for better visibility."
+                help="Zone border line thickness (0.0 = thin, 1.0 = thick). Controls border width from 1-10 pixels. 0.3 (3px) recommended."
             )
 
     # Advanced Parameters
@@ -860,7 +997,7 @@ Face Detection: {face_conf_thresh}
 Tracking: {track_thresh}
 Zone Monitoring: {'Enabled' if zone_config_file else 'Disabled'}
 IoP Threshold: {iou_threshold} ({iou_threshold*100:.0f}% of person in zone)
-Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
+Zone Border Thickness: {int(zone_opacity*10)}px
             """)
 
     if st.button("🚀 Start Detection", type="primary"):
@@ -1147,35 +1284,194 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
 
         logger.info(f"📊 [Detect & Track] Cache status - Video: {bool(video_data)}, CSV: {bool(csv_data)}, JSON: {bool(json_data)}")
 
-        # Zone Report Preview (if available)
-        if json_data:
-            st.markdown("### 🗺️ Zone Monitoring Report")
+        # Real-Time Zone Monitoring Dashboard (if zone monitoring was enabled)
+        if json_data and csv_data:
+            st.markdown("### 📊 Real-Time Zone Monitoring Dashboard")
             import json
+            import pandas as pd
             import io
+            from collections import defaultdict
+
             try:
-                logger.info(f"🗺️ [Detect & Track] Parsing zone report...")
+                logger.info(f"📊 [Detect & Track] Parsing zone monitoring data...")
                 zone_report = json.loads(json_data)
+                df = pd.read_csv(io.BytesIO(csv_data))
 
-                # Display summary
-                if "summary" in zone_report:
-                    st.markdown("#### Zone Summary")
-                    for zone_id, zone_info in zone_report["summary"].items():
-                        with st.expander(f"📍 {zone_info['name']} ({zone_id})", expanded=True):
-                            st.markdown(f"**Authorized IDs:** {zone_info['authorized_ids']}")
-                            st.markdown(f"**Current Persons:** {zone_info['count']}")
+                # Tab layout for monitoring
+                tab1, tab2, tab3 = st.tabs(["🗺️ Zone Status", "📈 Statistics", "📋 Raw Data"])
 
-                            if zone_info['current_persons']:
-                                for person in zone_info['current_persons']:
-                                    status_icon = "✅" if person['authorized'] else "⚠️"
-                                    st.markdown(f"{status_icon} **{person['name']}** (ID: {person['id']}) - {person['duration']:.1f}s")
+                # Tab 1: Zone Status (Real-time)
+                with tab1:
+                    st.subheader("Current Zone Status")
 
-                logger.info(f"✅ [Detect & Track] Zone report displayed")
+                    if "summary" in zone_report:
+                        # Metrics row
+                        total_zones = len(zone_report["summary"])
+                        total_persons_in_zones = sum(z['count'] for z in zone_report["summary"].values())
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Total Zones", total_zones)
+                        with col2:
+                            st.metric("Persons in Zones", total_persons_in_zones)
+
+                        st.divider()
+
+                        # Display each zone
+                        for zone_id, zone_info in zone_report["summary"].items():
+                            # Zone color logic:
+                            # Green: Person is IN their authorized zone
+                            # Red: Person is NOT in their authorized zone (but should be)
+                            authorized_ids = zone_info.get('authorized_ids', [])
+                            current_persons = zone_info.get('current_persons', [])
+
+                            # Determine zone status
+                            all_authorized = all(p.get('authorized', False) for p in current_persons) if current_persons else True
+                            zone_color = "🟢" if all_authorized else "🔴"
+
+                            with st.expander(f"{zone_color} **{zone_info['name']}** ({zone_id}) - {zone_info['count']} person(s)", expanded=True):
+                                st.markdown(f"**Authorized IDs:** {', '.join(map(str, authorized_ids)) if authorized_ids else 'None'}")
+
+                                if current_persons:
+                                    st.markdown("**Current Persons:**")
+                                    for person in current_persons:
+                                        # Person status icon
+                                        # Green: Authorized and in correct zone
+                                        # Red: Not authorized for this zone
+                                        person_icon = "🟢" if person.get('authorized', False) else "🔴"
+                                        st.markdown(f"{person_icon} **{person['name']}** (ID: {person['id']}) - Duration: {person['duration']:.1f}s")
+                                else:
+                                    st.info("No persons currently in this zone")
+
+                # Tab 2: Historical Statistics
+                with tab2:
+                    st.subheader("Historical Statistics")
+
+                    # Calculate statistics per person
+                    stats_data = []
+                    persons = df[df['global_id'] > 0].groupby('global_id')
+
+                    for global_id, person_df in persons:
+                        person_name = person_df['person_name'].iloc[0]
+
+                        # Get zones this person was registered in
+                        zones_registered = person_df[person_df['zone_name'].notna() & (person_df['zone_name'] != '')]['zone_name'].unique()
+                        zone_registered = ', '.join(zones_registered) if len(zones_registered) > 0 else "None"
+
+                        # Count zone transitions
+                        person_df_sorted = person_df.sort_values('frame_id')
+                        prev_zone = None
+                        total_in = 0
+                        total_out = 0
+
+                        for _, row in person_df_sorted.iterrows():
+                            current_zone = row['zone_name'] if pd.notna(row['zone_name']) and row['zone_name'] != '' else None
+
+                            if current_zone != prev_zone:
+                                if current_zone is not None and prev_zone is None:
+                                    total_in += 1
+                                elif current_zone is None and prev_zone is not None:
+                                    total_out += 1
+
+                            prev_zone = current_zone
+
+                        # Get current status
+                        latest_person_df = person_df[person_df['frame_id'] == person_df['frame_id'].max()]
+                        if len(latest_person_df) > 0:
+                            latest_row = latest_person_df.iloc[0]
+                            current_zone = latest_row['zone_name'] if pd.notna(latest_row['zone_name']) and latest_row['zone_name'] != '' else None
+                            status = 'in' if current_zone else 'out'
+                        else:
+                            status = 'Null'
+
+                        stats_data.append({
+                            'Name': person_name,
+                            'Zone Registered': zone_registered,
+                            'Status': status,
+                            'Total In': total_in,
+                            'Total Out': total_out
+                        })
+
+                    if stats_data:
+                        stats_df = pd.DataFrame(stats_data)
+                        st.dataframe(stats_df, use_container_width=True, hide_index=True)
+
+                        # Visualizations
+                        st.divider()
+                        st.markdown("#### 📊 Visualizations")
+
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            import plotly.graph_objects as go
+                            fig = go.Figure(data=[
+                                go.Bar(name='Total In', x=stats_df['Name'], y=stats_df['Total In'], marker_color='green'),
+                                go.Bar(name='Total Out', x=stats_df['Name'], y=stats_df['Total Out'], marker_color='red')
+                            ])
+                            fig.update_layout(
+                                title="Zone Entry/Exit Counts",
+                                xaxis_title="Person",
+                                yaxis_title="Count",
+                                barmode='group'
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+                        with col2:
+                            status_counts = stats_df['Status'].value_counts()
+                            fig = go.Figure(data=[go.Pie(labels=status_counts.index, values=status_counts.values)])
+                            fig.update_layout(title="Current Status Distribution")
+                            st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No person statistics available")
+
+                # Tab 3: Raw Data
+                with tab3:
+                    st.subheader("Raw Tracking Data")
+
+                    # Filters
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        filter_person = st.multiselect(
+                            "Filter by Person",
+                            options=df[df['global_id'] > 0]['person_name'].unique().tolist(),
+                            default=[]
+                        )
+
+                    with col2:
+                        filter_zone = st.multiselect(
+                            "Filter by Zone",
+                            options=df[df['zone_name'].notna() & (df['zone_name'] != '')]['zone_name'].unique().tolist(),
+                            default=[]
+                        )
+
+                    with col3:
+                        show_unknown = st.checkbox("Show Unknown Persons", value=False)
+
+                    # Apply filters
+                    filtered_df = df.copy()
+
+                    if not show_unknown:
+                        filtered_df = filtered_df[filtered_df['global_id'] > 0]
+
+                    if filter_person:
+                        filtered_df = filtered_df[filtered_df['person_name'].isin(filter_person)]
+
+                    if filter_zone:
+                        filtered_df = filtered_df[filtered_df['zone_name'].isin(filter_zone)]
+
+                    st.dataframe(filtered_df.head(100), use_container_width=True, hide_index=True)
+                    st.info(f"Showing first 100 of {len(filtered_df)} filtered records (Total: {len(df)} records)")
+
+                logger.info(f"✅ [Detect & Track] Zone monitoring dashboard displayed")
             except Exception as e:
-                logger.error(f"❌ [Detect & Track] Failed to parse zone report: {e}")
-                st.error(f"Failed to parse zone report: {e}")
+                logger.error(f"❌ [Detect & Track] Failed to parse zone monitoring data: {e}")
+                st.error(f"Failed to parse zone monitoring data: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
-        # CSV Preview
-        if csv_data:
+        elif csv_data:
+            # Show CSV preview if no zone monitoring
             st.markdown("### 📊 Tracking Data Preview")
             import pandas as pd
             import io
@@ -1253,7 +1549,161 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
             st.rerun()
 
 # ============================================================================
-# PAGE 4: ABOUT
+# PAGE 4: USER MANAGEMENT
+# ============================================================================
+elif page == "👥 User Management":
+    st.header("👥 User Management")
+    st.markdown("Manage users in PostgreSQL database")
+
+    # Tabs for different operations
+    tab1, tab2, tab3 = st.tabs(["📋 View Users", "➕ Create User", "✏️ Edit/Delete User"])
+
+    # Tab 1: View Users
+    with tab1:
+        st.subheader("All Users")
+
+        if st.button("🔄 Refresh", key="refresh_users"):
+            st.rerun()
+
+        try:
+            db_manager = get_db_manager()
+            if db_manager:
+                users = db_manager.get_all_users()
+
+                if users:
+                    # Display as table
+                    import pandas as pd
+                    users_data = [user.dict() for user in users]
+                    df = pd.DataFrame(users_data)
+
+                    # Select columns to display
+                    display_cols = ['id', 'global_id', 'name', 'created_at', 'updated_at']
+                    df_display = df[display_cols]
+
+                    st.dataframe(df_display, use_container_width=True, hide_index=True)
+                    st.success(f"✅ Total users: {len(users)}")
+                else:
+                    st.info("No users found in database")
+            else:
+                st.error("Failed to connect to database")
+                st.info("Check PostgreSQL connection settings in configs/.env")
+        except Exception as e:
+            st.error(f"Error connecting to database: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+    # Tab 2: Create User
+    with tab2:
+        st.subheader("Create New User")
+
+        with st.form("create_user_form"):
+            new_global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique global ID for this user")
+            new_name = st.text_input("Name", placeholder="e.g., John Doe")
+
+            submitted = st.form_submit_button("➕ Create User", type="primary")
+
+            if submitted:
+                if not new_name:
+                    st.error("Please enter a name")
+                else:
+                    try:
+                        db_manager = get_db_manager()
+                        if db_manager:
+                            # Check if global_id already exists
+                            existing_user = db_manager.get_user_by_global_id(new_global_id)
+                            if existing_user:
+                                st.error(f"User with global_id {new_global_id} already exists: {existing_user.name}")
+                            else:
+                                from services.database.models import UserCreate
+                                user_data = UserCreate(global_id=new_global_id, name=new_name)
+                                user = db_manager.create_user(user_data)
+
+                                if user:
+                                    st.success(f"✅ User created successfully!")
+                                    st.json(user.dict())
+                                    st.balloons()
+                                else:
+                                    st.error("Failed to create user")
+                        else:
+                            st.error("Database connection not available")
+                    except Exception as e:
+                        st.error(f"Error creating user: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
+    # Tab 3: Edit/Delete User
+    with tab3:
+        st.subheader("Edit or Delete User")
+
+        try:
+            db_manager = get_db_manager()
+            if db_manager:
+                users = db_manager.get_all_users()
+
+                if users:
+                    # Create selection dropdown
+                    user_options = {f"{u.name} (ID: {u.global_id})": u for u in users}
+                    selected_user_str = st.selectbox(
+                        "Select User",
+                        options=list(user_options.keys())
+                    )
+
+                    selected_user = user_options[selected_user_str]
+
+                    st.divider()
+
+                    # Edit section
+                    st.markdown("### ✏️ Edit User")
+                    with st.form("edit_user_form"):
+                        edit_name = st.text_input("Name", value=selected_user.name)
+
+                        submitted_edit = st.form_submit_button("💾 Update User", type="primary")
+
+                        if submitted_edit:
+                            try:
+                                from services.database.models import UserUpdate
+                                user_data = UserUpdate(name=edit_name)
+                                updated_user = db_manager.update_user(selected_user.id, user_data)
+
+                                if updated_user:
+                                    st.success("✅ User updated successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error("Failed to update user")
+                            except Exception as e:
+                                st.error(f"Error updating user: {e}")
+
+                    st.divider()
+
+                    # Delete section
+                    st.markdown("### 🗑️ Delete User")
+                    st.warning(f"⚠️ You are about to delete: **{selected_user.name}** (Global ID: {selected_user.global_id})")
+
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        if st.button("🗑️ Delete User", type="secondary"):
+                            try:
+                                success = db_manager.delete_user(selected_user.id)
+
+                                if success:
+                                    st.success("✅ User deleted successfully!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error("Failed to delete user")
+                            except Exception as e:
+                                st.error(f"Error deleting user: {e}")
+                else:
+                    st.info("No users found in database")
+            else:
+                st.error("Database connection not available")
+        except Exception as e:
+            st.error(f"Error connecting to database: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+# ============================================================================
+# PAGE 5: ABOUT
 # ============================================================================
 elif page == "ℹ️ About":
     st.header("ℹ️ About Person ReID System")
