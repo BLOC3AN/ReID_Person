@@ -86,6 +86,7 @@ class ProgressStatus(BaseModel):
     total_frames: int = 0
     progress_percent: float = 0.0
     tracks: List[dict] = []
+    violations: List[dict] = []  # Real-time violations
     message: Optional[str] = None
 
 
@@ -110,6 +111,7 @@ def process_detection(job_id: str, video_path: str, output_video: str,
             "current_frame": 0,
             "total_frames": 0,
             "tracks": [],
+            "violations": [],  # Real-time violations
             "last_update": time.time()
         }
 
@@ -145,6 +147,7 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                 max_frames=max_frames,
                 max_duration_seconds=max_duration_seconds,
                 progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks),
+                violation_callback=lambda violation: _add_violation(job_id, violation),
                 cancellation_flag=cancellation_flags.get(job_id)
             )
 
@@ -253,6 +256,14 @@ def _update_progress(job_id: str, frame_id: int, tracks: List[dict]):
         progress_data[job_id]["current_frame"] = frame_id
         progress_data[job_id]["tracks"] = tracks
         progress_data[job_id]["last_update"] = time.time()
+
+
+def _add_violation(job_id: str, violation: dict):
+    """Add violation to progress data for real-time alerts"""
+    if job_id in progress_data:
+        progress_data[job_id]["violations"].append(violation)
+        logger.warning(f"🚨 [Job {job_id}] VIOLATION: {violation['person_name']} "
+                      f"entered unauthorized zone '{violation['zone_name']}' at frame {violation['frame_id']}")
 
 
 @app.get("/")
@@ -565,7 +576,8 @@ async def get_progress(job_id: str):
             current_frame=0,
             total_frames=0,
             progress_percent=0.0,
-            tracks=[]
+            tracks=[],
+            violations=[]
         )
 
     prog = progress_data[job_id]
@@ -580,6 +592,7 @@ async def get_progress(job_id: str):
         total_frames=total_frames,
         progress_percent=progress_percent,
         tracks=prog.get("tracks", []),
+        violations=prog.get("violations", []),
         message=f"Processing frame {current_frame}/{total_frames}"
     )
 

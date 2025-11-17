@@ -1126,10 +1126,12 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                         status_text = st.empty()
                         progress_text = st.empty()
                         tracks_container = st.empty()
+                        violations_container = st.empty()  # Real-time violations
                         stop_button_container = st.empty()
 
                         poll_count = 0
                         user_cancelled = False
+                        displayed_violations = set()  # Track which violations we've already shown
 
                         while True:
                             # Show stop button while processing
@@ -1184,6 +1186,25 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                             color = "🟢" if track['label'] != "Unknown" else "🔴"
                                             tracks_info += f"{color} Track {track['track_id']}: **{track['label']}** (sim: {track['similarity']:.3f})\n"
                                         tracks_container.markdown(tracks_info)
+
+                                    # Display real-time violations (zone monitoring)
+                                    if progress.get('violations'):
+                                        violations_info = "### 🚨 Real-Time Violations:\n"
+                                        for violation in progress['violations']:
+                                            # Create unique key for this violation
+                                            v_key = f"{violation['global_id']}_{violation['zone']}_{violation['frame_id']}"
+
+                                            # Only show new violations
+                                            if v_key not in displayed_violations:
+                                                displayed_violations.add(v_key)
+                                                logger.warning(f"🚨 [Detect & Track] VIOLATION: {violation['person_name']} "
+                                                             f"entered unauthorized zone '{violation['zone_name']}' at frame {violation['frame_id']}")
+
+                                            violations_info += (f"🔴 **{violation['person_name']}** (ID:{violation['global_id']}) "
+                                                              f"entered unauthorized zone **{violation['zone_name']}** "
+                                                              f"at frame {violation['frame_id']}\n")
+
+                                        violations_container.markdown(violations_info)
                             except Exception as e:
                                 logger.warning(f"⚠️ [Detect & Track] Progress fetch error: {e}")
                                 pass

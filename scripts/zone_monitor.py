@@ -593,9 +593,13 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                              similarity_threshold=0.8, iou_threshold=0.6, zone_opacity=0.3,
                              output_dir=None, max_frames=None, max_duration_seconds=None,
                              output_video_path=None, output_csv_path=None, output_json_path=None,
-                             progress_callback=None, cancellation_flag=None):
+                             progress_callback=None, cancellation_flag=None,
+                             violation_callback=None):
     """
     Process video with zone monitoring integrated into ReID pipeline
+
+    Args:
+        violation_callback: Optional callback(violation_dict) called when violation occurs
 
     Args:
         video_path: Path to input video or stream URL(s)
@@ -850,12 +854,31 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
 
             # Update zone presence
             if info['global_id'] > 0:
+                # Store violations count before update
+                old_violations_count = len(zone_monitor.zone_presence.get(info['global_id'], {}).get('violations', []))
+
                 zone_monitor.update_presence(
                     info['global_id'],
                     zone_id,
                     frame_time,
                     info['person_name']
                 )
+
+                # Check if new violation occurred and trigger callback
+                if violation_callback and info['global_id'] in zone_monitor.zone_presence:
+                    person_data = zone_monitor.zone_presence[info['global_id']]
+                    new_violations_count = len(person_data.get('violations', []))
+
+                    if new_violations_count > old_violations_count:
+                        # New violation occurred
+                        latest_violation = person_data['violations'][-1]
+                        violation_callback({
+                            'global_id': info['global_id'],
+                            'person_name': info['person_name'],
+                            'frame_id': frame_id,
+                            'frame_time': frame_time,
+                            **latest_violation
+                        })
 
             # Get zone info
             zone_name = zone_monitor.zones[zone_id]['name'] if zone_id else "None"
@@ -978,11 +1001,13 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                     continue
 
             # Draw on frame
-            # Color: Green=in zone, Red=outside zone
-            if zone_id:
-                color = (0, 255, 0)  # Green - in zone
+            # Color logic:
+            # Green: Person is IN their authorized zone
+            # Red: Person is NOT in their authorized zone (unauthorized or outside)
+            if zone_id and authorized:
+                color = (0, 255, 0)  # Green - in authorized zone
             else:
-                color = (0, 0, 255)  # Red - outside zone
+                color = (0, 0, 255)  # Red - not in authorized zone or outside
 
             cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
 
