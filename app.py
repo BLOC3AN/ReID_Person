@@ -937,6 +937,17 @@ elif page == "Detect & Track":
                 help="Zone border line thickness (0.0 = thin, 1.0 = thick). Controls border width from 1-10 pixels. 0.3 (3px) recommended."
             )
 
+        # Alert threshold setting
+        st.markdown("### 🚨 Violation Alert Settings")
+        alert_threshold = st.number_input(
+            "Alert Threshold (seconds)",
+            min_value=0,
+            max_value=300,
+            value=0,
+            step=5,
+            help="Time (in seconds) a person must be outside their authorized zone before triggering an alert. 0 = immediate alert."
+        )
+
     # Advanced Parameters
     with st.expander("⚙️ Advanced Parameters", expanded=False):
         st.markdown("### Detection & Tracking Parameters")
@@ -1058,7 +1069,8 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                             "track_thresh": track_thresh,
                             "face_conf_thresh": face_conf_thresh,
                             "iou_threshold": iou_threshold,
-                            "zone_opacity": zone_opacity
+                            "zone_opacity": zone_opacity,
+                            "alert_threshold": alert_threshold
                         }
 
                         # Call Detection API
@@ -1082,7 +1094,8 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                             "stream_url": stream_url,
                             "similarity_threshold": str(similarity_threshold),
                             "iou_threshold": str(iou_threshold),
-                            "zone_opacity": str(zone_opacity)
+                            "zone_opacity": str(zone_opacity),
+                            "alert_threshold": str(alert_threshold)
                         }
 
                         # Add optional parameters only if they have values

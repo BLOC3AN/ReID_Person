@@ -24,6 +24,7 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB
+from tabulate import tabulate
 
 
 def calculate_iop(person_bbox, zone_bbox):
@@ -117,6 +118,7 @@ class ZoneMonitor:
         # State tracking
         self.zone_presence = {}  # {global_id: {...}}
         self.zone_history = []   # Log of all zone events
+        self.last_violation_table_print = 0  # Track last time we printed violation table
 
         if self.is_multi_camera:
             logger.info(f"✅ ZoneMonitor initialized for {self.num_cameras} cameras with {len(self.zones)} total zones")
@@ -319,12 +321,11 @@ class ZoneMonitor:
         """
         # Initialize if new person
         if global_id not in self.zone_presence:
-            # Find which zone this person is authorized for
-            authorized_zone_id = None
+            # Find ALL zones this person is authorized for (support multi-camera)
+            authorized_zone_ids = []
             for zid, zone_info in self.zones.items():
                 if global_id in zone_info['authorized_ids']:
-                    authorized_zone_id = zid
-                    break
+                    authorized_zone_ids.append(zid)
 
             self.zone_presence[global_id] = {
                 'name': person_name,
@@ -332,10 +333,11 @@ class ZoneMonitor:
                 'enter_time': None,
                 'total_duration': 0,
                 'authorized': False,
-                'authorized_zone_id': authorized_zone_id,  # Store which zone they should be in
+                'authorized_zone_ids': authorized_zone_ids,  # List of zones they're authorized for
                 'violations': [],
                 'outside_zone_time': 0,  # Time spent outside any zone
-                'outside_zone_start': frame_time  # Start tracking outside time
+                'outside_zone_start': frame_time,  # Start tracking outside time
+                'violation_start_time': None  # Track when violation started
             }
 
         person = self.zone_presence[global_id]
@@ -359,41 +361,53 @@ class ZoneMonitor:
                 person['current_zone'] = zone_id
                 person['enter_time'] = frame_time
 
-                # NEW LOGIC: authorized = True only if person is in THEIR authorized zone
-                # Not just any zone they're allowed in
-                person['authorized'] = (person.get('authorized_zone_id') == zone_id)
+                # NEW LOGIC: authorized = True if person is in ANY of their authorized zones
+                authorized_zone_ids = person.get('authorized_zone_ids', [])
+                person['authorized'] = (zone_id in authorized_zone_ids)
 
                 self._log_zone_event('enter', global_id, zone_id, frame_time, 0)
 
-                # NEW LOGIC: Check if person is NOT in their authorized zone
-                # Violation = person has authorized zone BUT is in different zone
-                if person.get('authorized_zone_id') and zone_id != person['authorized_zone_id']:
+                # NEW LOGIC: Check if person is NOT in any of their authorized zones
+                # Violation = person has authorized zones BUT is in different zone
+                if authorized_zone_ids and zone_id not in authorized_zone_ids:
+                    # Start tracking violation time
+                    if person.get('violation_start_time') is None:
+                        person['violation_start_time'] = frame_time
+
                     violation = {
                         'zone': zone_id,
                         'zone_name': self.zones[zone_id]['name'],
-                        'authorized_zone': person['authorized_zone_id'],
-                        'authorized_zone_name': self.zones[person['authorized_zone_id']]['name'],
+                        'authorized_zones': authorized_zone_ids,
+                        'authorized_zone_names': [self.zones[zid]['name'] for zid in authorized_zone_ids],
                         'time': frame_time,
+                        'duration': frame_time - person['violation_start_time'],
                         'type': 'not_in_authorized_zone'
                     }
                     person['violations'].append(violation)
-                    logger.warning(f"🚨 VIOLATION: {person_name} (ID:{global_id}) "
-                                 f"is in zone '{self.zones[zone_id]['name']}' but should be in "
-                                 f"'{self.zones[person['authorized_zone_id']]['name']}'")
+                else:
+                    # Person is in authorized zone - reset violation timer
+                    person['violation_start_time'] = None
             else:
-                # Left all zones - CHECK VIOLATION if person has authorized zone
-                if person.get('authorized_zone_id'):
+                # Left all zones - CHECK VIOLATION if person has authorized zones
+                authorized_zone_ids = person.get('authorized_zone_ids', [])
+                if authorized_zone_ids:
+                    # Start tracking violation time
+                    if person.get('violation_start_time') is None:
+                        person['violation_start_time'] = frame_time
+
                     violation = {
                         'zone': None,
                         'zone_name': 'Outside all zones',
-                        'authorized_zone': person['authorized_zone_id'],
-                        'authorized_zone_name': self.zones[person['authorized_zone_id']]['name'],
+                        'authorized_zones': authorized_zone_ids,
+                        'authorized_zone_names': [self.zones[zid]['name'] for zid in authorized_zone_ids],
                         'time': frame_time,
+                        'duration': frame_time - person['violation_start_time'],
                         'type': 'outside_authorized_zone'
                     }
                     person['violations'].append(violation)
-                    logger.warning(f"🚨 VIOLATION: {person_name} (ID:{global_id}) "
-                                 f"left their authorized zone '{self.zones[person['authorized_zone_id']]['name']}'")
+                else:
+                    # Person has no authorized zones - reset violation timer
+                    person['violation_start_time'] = None
 
                 # Left all zones - start tracking outside time
                 person['current_zone'] = None
@@ -422,7 +436,7 @@ class ZoneMonitor:
             'duration': duration
         }
         self.zone_history.append(event)
-        
+
         if event_type == 'enter':
             auth_status = "✅" if self.zone_presence[global_id]['authorized'] else "🚫"
             logger.info(f"{auth_status} {event['name']} (ID:{global_id}) entered "
@@ -430,6 +444,66 @@ class ZoneMonitor:
         else:
             logger.info(f"⬅️  {event['name']} (ID:{global_id}) exited "
                        f"'{event['zone_name']}' (duration: {duration:.1f}s)")
+
+    def print_violation_table(self, current_time, alert_threshold=0):
+        """
+        Print violation status table for all tracked persons
+
+        Args:
+            current_time: Current frame time in seconds
+            alert_threshold: Time threshold (seconds) before showing alert
+        """
+        table_data = []
+        headers = ["User", "Current Zone", "Authorized Zones", "Status", "Duration (s)"]
+
+        for global_id, person in self.zone_presence.items():
+            name = person['name']
+            current_zone = person.get('current_zone')
+            authorized_zone_ids = person.get('authorized_zone_ids', [])
+
+            # Get current zone name
+            if current_zone:
+                current_zone_name = self.zones[current_zone]['name']
+            else:
+                current_zone_name = "Outside all zones"
+
+            # Get authorized zone names
+            if authorized_zone_ids:
+                auth_zone_names = ", ".join([self.zones[zid]['name'] for zid in authorized_zone_ids])
+            else:
+                auth_zone_names = "None"
+
+            # Determine status
+            is_authorized = person.get('authorized', False)
+            violation_start = person.get('violation_start_time')
+
+            if is_authorized:
+                status = "✅ OK"
+                duration = 0
+            elif violation_start is not None:
+                duration = current_time - violation_start
+                if duration >= alert_threshold:
+                    status = f"🚨 ALERT"
+                else:
+                    status = f"⚠️  Warning"
+            else:
+                status = "⚠️  Warning"
+                duration = 0
+
+            table_data.append([
+                f"{name} (ID:{global_id})",
+                current_zone_name,
+                auth_zone_names,
+                status,
+                f"{duration:.1f}"
+            ])
+
+        if table_data:
+            logger.info("\n" + "="*80)
+            logger.info("📊 ZONE MONITORING STATUS")
+            logger.info("="*80)
+            logger.info("\n" + tabulate(table_data, headers=headers, tablefmt="grid"))
+            logger.info("="*80 + "\n")
     
     def get_zone_summary(self):
         """Get summary of zone presence"""
@@ -626,12 +700,9 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                              output_dir=None, max_frames=None, max_duration_seconds=None,
                              output_video_path=None, output_csv_path=None, output_json_path=None,
                              progress_callback=None, cancellation_flag=None,
-                             violation_callback=None):
+                             violation_callback=None, alert_threshold=0):
     """
     Process video with zone monitoring integrated into ReID pipeline
-
-    Args:
-        violation_callback: Optional callback(violation_dict) called when violation occurs
 
     Args:
         video_path: Path to input video or stream URL(s)
@@ -642,7 +713,6 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                       Note: Parameter name is 'iou_threshold' for backward compatibility,
                       but it's actually IoP (Intersection over Person) threshold.
                       IoP = 0.6 means 60% of person's body is inside the zone.
-        cancellation_flag: Optional threading.Event() to signal cancellation
         zone_opacity: Zone border thickness factor (default: 0.3, range: 0.0-1.0)
                      Converts to pixel thickness: 0.0-1.0 → 1-10 pixels
         output_dir: Output directory for results (used if specific paths not provided)
@@ -652,6 +722,9 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
         output_csv_path: Specific path for output CSV (optional)
         output_json_path: Specific path for output JSON (optional)
         progress_callback: Optional callback function(frame_id, tracks) for progress updates
+        cancellation_flag: Optional threading.Event() to signal cancellation
+        violation_callback: Optional callback(violation_dict) called when violation occurs
+        alert_threshold: Time threshold (seconds) before showing alert (default: 0)
     """
     from detect_and_track import PersonReIDPipeline
     from utils.multi_stream_reader import MultiStreamReader, parse_stream_urls
@@ -911,6 +984,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                             'frame_time': frame_time,
                             **latest_violation
                         })
+
+            # Print violation table every 5 seconds
+            if frame_time - zone_monitor.last_violation_table_print >= 5.0:
+                zone_monitor.print_violation_table(frame_time, alert_threshold=alert_threshold)
+                zone_monitor.last_violation_table_print = frame_time
 
             # Get zone info
             zone_name = zone_monitor.zones[zone_id]['name'] if zone_id else "None"
