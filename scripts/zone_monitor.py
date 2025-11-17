@@ -358,7 +358,10 @@ class ZoneMonitor:
 
                 person['current_zone'] = zone_id
                 person['enter_time'] = frame_time
-                person['authorized'] = global_id in self.zones[zone_id]['authorized_ids']
+
+                # NEW LOGIC: authorized = True only if person is in THEIR authorized zone
+                # Not just any zone they're allowed in
+                person['authorized'] = (person.get('authorized_zone_id') == zone_id)
 
                 self._log_zone_event('enter', global_id, zone_id, frame_time, 0)
 
