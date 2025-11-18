@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import (
     YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB,
-    ZoneMonitoringService, ZoneTask, ZoneResult
+    ZoneMonitoringService, ZoneTask, ZoneResult, RedisTrackManager
 )
 from tabulate import tabulate
 
@@ -772,6 +772,96 @@ class ZoneMonitor:
         return frame
 
 
+def _process_reid_logic_zone(track_id, frame_id, current_frame_count, embedding,
+                             database, similarity_threshold, redis_manager,
+                             track_labels, logger):
+    """
+    Process ReID logic with Redis storage for zone monitoring
+
+    Decision Logic:
+    - Frame 1: Extract → Assign (first time)
+    - Frame 60+: Extract → Compare with old
+    - Update only if new_sim > old_sim AND passes threshold
+    - Reset when track lost (TTL expires)
+
+    Returns:
+        Updated track_data dict or None
+    """
+    matches = database.find_best_match(embedding, threshold=0.0, top_k=1)
+
+    if not matches:
+        return None
+
+    new_global_id, new_similarity, new_person_name = matches[0]
+
+    # Get old data from Redis or in-memory
+    old_data = None
+    if redis_manager:
+        old_data = redis_manager.get_track(track_id)
+    if old_data is None:
+        old_data = track_labels.get(track_id)
+
+    # Decision logic
+    if new_similarity >= similarity_threshold:
+        if old_data is None:
+            # New track (first time or recovered after TTL)
+            new_data = {
+                'global_id': new_global_id,
+                'similarity': new_similarity,
+                'best_similarity': new_similarity,
+                'person_name': new_person_name,
+                'label': new_person_name,
+                'first_assignment_frame': frame_id,
+                'last_update_frame': frame_id,
+                'timestamp': time.time(),
+                'camera_idx': 0,
+                'status': 'active'
+            }
+            logger.info(f"✅ Track {track_id}: ASSIGN {new_person_name} (ID:{new_global_id}, sim={new_similarity:.4f})")
+
+        else:
+            # Existing track
+            old_similarity = old_data.get('similarity', 0.0)
+            old_person_name = old_data.get('person_name', 'Unknown')
+
+            if new_similarity > old_similarity:
+                # UPDATE: Better match found
+                new_data = old_data.copy()
+                new_data['global_id'] = new_global_id
+                new_data['similarity'] = new_similarity
+                new_data['best_similarity'] = max(new_similarity, old_data.get('best_similarity', 0.0))
+                new_data['person_name'] = new_person_name
+                new_data['label'] = new_person_name
+                new_data['last_update_frame'] = frame_id
+                new_data['timestamp'] = time.time()
+                logger.info(f"✅ Track {track_id}: UPDATE {old_person_name} → {new_person_name} (sim {old_similarity:.4f} → {new_similarity:.4f})")
+
+            else:
+                # REJECT: Same or worse match
+                new_data = old_data.copy()
+                new_data['last_update_frame'] = frame_id
+                new_data['timestamp'] = time.time()
+                logger.debug(f"❌ Track {track_id}: REJECT {new_person_name} (sim {new_similarity:.4f} < {old_similarity:.4f})")
+
+    else:
+        # FAIL_THRESHOLD: Below threshold
+        if old_data is None:
+            logger.debug(f"❌ Track {track_id}: FAIL_THRESHOLD {new_person_name} (sim {new_similarity:.4f} < {similarity_threshold:.4f})")
+            return None
+        else:
+            new_data = old_data.copy()
+            new_data['last_update_frame'] = frame_id
+            new_data['timestamp'] = time.time()
+            logger.debug(f"❌ Track {track_id}: FAIL_THRESHOLD {new_person_name} (sim {new_similarity:.4f} < {similarity_threshold:.4f})")
+
+    # Save to Redis and in-memory
+    if redis_manager:
+        redis_manager.set_track(track_id, new_data)
+    track_labels[track_id] = new_data
+
+    return new_data
+
+
 def process_video_with_zones(video_path, zone_config_path, reid_config_path=None,
                              similarity_threshold=0.8, iou_threshold=0.6, zone_opacity=0.3,
                              output_dir=None, max_frames=None, max_duration_seconds=None,
@@ -827,6 +917,18 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     # Initialize zone monitoring service (separate thread)
     zone_service = ZoneMonitoringService(zone_monitor, max_queue_size=100)
     zone_service.start()
+
+    # Initialize Redis Track Manager
+    redis_host = os.getenv('REDIS_HOST', 'localhost')
+    redis_port = int(os.getenv('REDIS_PORT', 6379))
+    redis_ttl = int(os.getenv('REDIS_TTL', 300))
+
+    try:
+        redis_manager = RedisTrackManager(host=redis_host, port=redis_port, ttl=redis_ttl)
+        logger.info(f"✅ Redis Track Manager initialized")
+    except Exception as e:
+        logger.warning(f"⚠️  Redis not available: {e}. Using in-memory storage only.")
+        redis_manager = None
 
     # Setup output paths
     if output_video_path and output_csv_path and output_json_path:
@@ -987,23 +1089,17 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             if should_extract:
                 bbox = [x, y, w, h]
                 embedding = pipeline.extractor.extract(frame, bbox)
-                matches = pipeline.database.find_best_match(embedding, threshold=0.0, top_k=1)
-
-                if matches:
-                    global_id, similarity, person_name = matches[0]
-                    label = person_name if similarity >= similarity_threshold else "Unknown"
-
-                    track_labels[track_id] = {
-                        'global_id': global_id,
-                        'similarity': similarity,
-                        'label': label,
-                        'person_name': person_name
-                    }
-
-                    if current_frame_count == 1:
-                        logger.info(f"  Track {track_id}: {label} (sim={similarity:.4f}, gid={global_id})")
-                    else:
-                        logger.debug(f"  Track {track_id}: Re-verified as {label} (sim={similarity:.4f})")
+                _process_reid_logic_zone(
+                    track_id=track_id,
+                    frame_id=frame_id,
+                    current_frame_count=current_frame_count,
+                    embedding=embedding,
+                    database=pipeline.database,
+                    similarity_threshold=similarity_threshold,
+                    redis_manager=redis_manager,
+                    track_labels=track_labels,
+                    logger=logger
+                )
 
             # Get track info
             info = track_labels.get(track_id, {
@@ -1168,6 +1264,24 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             cv2.putText(frame, label_text, (x, y-5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
+        # Detect lost tracks (tracks not in current frame)
+        current_track_ids = set(int(track[4]) for track in tracks)
+        old_track_ids = set(track_labels.keys())
+        lost_tracks = old_track_ids - current_track_ids
+
+        for lost_track_id in lost_tracks:
+            old_info = track_labels[lost_track_id]
+            logger.info(f"🗑️  Track {lost_track_id}: RESET (was {old_info.get('person_name', 'Unknown')}, best_sim={old_info.get('best_similarity', 0):.4f})")
+
+            # Delete from Redis (TTL will auto-expire)
+            if redis_manager:
+                redis_manager.delete_track(lost_track_id)
+
+            # Delete from in-memory
+            del track_labels[lost_track_id]
+            if lost_track_id in track_frame_count:
+                del track_frame_count[lost_track_id]
+
         # Submit zone monitoring task to service thread
         # Zone service will update zone status and detect violations
         zone_task = ZoneTask(
@@ -1324,6 +1438,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
 
     # Save report
     zone_monitor.save_report(output_json)
+
+    # Log Redis stats before cleanup
+    if redis_manager:
+        stats = redis_manager.get_stats()
+        logger.info(f"\n📊 Redis Stats: {stats['total_tracks']} tracks, {stats['redis_memory_used']} memory used")
 
     logger.info("\n" + "="*80)
     logger.info("📁 OUTPUT FILES")

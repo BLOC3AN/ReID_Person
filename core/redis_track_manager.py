@@ -8,6 +8,7 @@ import json
 import time
 from typing import Dict, Optional, List
 from loguru import logger
+import os
 
 
 class RedisTrackManager:
@@ -41,8 +42,8 @@ class RedisTrackManager:
             ttl: Time-to-live for track keys in seconds (default: 300s = 5 min)
             db: Redis database number
         """
-        self.host = host
-        self.port = port
+        self.host = os.getenv('REDIS_HOST', host)
+        self.port = os.getenv('REDIS_PORT', port)
         self.ttl = ttl
         self.db = db
         
