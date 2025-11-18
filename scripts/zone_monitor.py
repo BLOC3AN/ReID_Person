@@ -23,7 +23,10 @@ from collections import defaultdict
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB
+from core import (
+    YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB,
+    ZoneMonitoringService, ZoneTask, ZoneResult
+)
 from tabulate import tabulate
 
 
@@ -821,6 +824,10 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     # Initialize zone monitor with camera count
     zone_monitor = ZoneMonitor(zone_config_path, iou_threshold, zone_opacity, num_cameras=num_cameras)
 
+    # Initialize zone monitoring service (separate thread)
+    zone_service = ZoneMonitoringService(zone_monitor, max_queue_size=100)
+    zone_service.start()
+
     # Setup output paths
     if output_video_path and output_csv_path and output_json_path:
         # Use provided paths
@@ -904,7 +911,6 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     frame_id = 0
     track_labels = {}
     track_frame_count = {}
-    track_embeddings = {}
 
     # FPS tracking
     fps_history = []
@@ -957,6 +963,9 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
         if frame_id % 30 == 0:
             logger.info(f"Frame {frame_id}/{total_frames}: {len(tracks)} tracks")
 
+        # Initialize zone_ids for this frame (will be filled during track processing)
+        zone_ids_for_service = {}
+
         # Process each track
         for track in tracks:
             x1, y1, x2, y2, track_id, conf = track
@@ -968,64 +977,33 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             # Initialize track
             if track_id not in track_frame_count:
                 track_frame_count[track_id] = 0
-                track_embeddings[track_id] = []
 
             track_frame_count[track_id] += 1
             current_frame_count = track_frame_count[track_id]
 
-            # ReID extraction (same logic as detect_and_track.py)
-            should_extract = False
-            if current_frame_count <= 3:
-                should_extract = True
-            elif current_frame_count % 30 == 0:
-                should_extract = True
+            # ReID extraction: Frame 1 + re-verify every 60 frames
+            should_extract = (current_frame_count == 1) or (current_frame_count % 60 == 0)
 
             if should_extract:
                 bbox = [x, y, w, h]
                 embedding = pipeline.extractor.extract(frame, bbox)
+                matches = pipeline.database.find_best_match(embedding, threshold=0.0, top_k=1)
 
-                if current_frame_count <= 3:
-                    track_embeddings[track_id].append(embedding)
+                if matches:
+                    global_id, similarity, person_name = matches[0]
+                    label = person_name if similarity >= similarity_threshold else "Unknown"
 
-                    if current_frame_count == 3:
-                        # Voting
-                        votes = {}
-                        similarities = {}
+                    track_labels[track_id] = {
+                        'global_id': global_id,
+                        'similarity': similarity,
+                        'label': label,
+                        'person_name': person_name
+                    }
 
-                        for emb in track_embeddings[track_id]:
-                            matches = pipeline.database.find_best_match(emb, threshold=0.0, top_k=1)
-                            if matches:
-                                gid, sim, name = matches[0]
-                                key = (gid, name)
-                                votes[key] = votes.get(key, 0) + 1
-                                similarities[key] = max(similarities.get(key, 0), sim)
-
-                        if votes:
-                            best_key = max(votes.items(), key=lambda x: (x[1], similarities[x[0]]))[0]
-                            global_id, person_name = best_key
-                            similarity = similarities[best_key]
-
-                            label = person_name if similarity >= similarity_threshold else "Unknown"
-
-                            track_labels[track_id] = {
-                                'global_id': global_id,
-                                'similarity': similarity,
-                                'label': label,
-                                'person_name': person_name
-                            }
-                else:
-                    # Re-verification
-                    matches = pipeline.database.find_best_match(embedding, threshold=0.0, top_k=1)
-                    if matches:
-                        global_id, similarity, person_name = matches[0]
-                        label = person_name if similarity >= similarity_threshold else "Unknown"
-
-                        track_labels[track_id] = {
-                            'global_id': global_id,
-                            'similarity': similarity,
-                            'label': label,
-                            'person_name': person_name
-                        }
+                    if current_frame_count == 1:
+                        logger.info(f"  Track {track_id}: {label} (sim={similarity:.4f}, gid={global_id})")
+                    else:
+                        logger.debug(f"  Track {track_id}: Re-verified as {label} (sim={similarity:.4f})")
 
             # Get track info
             info = track_labels.get(track_id, {
@@ -1035,7 +1013,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                 'person_name': 'Unknown'
             })
 
-            # ZONE MONITORING: Check which zone person is in
+            # ZONE MONITORING: Check which zone person is in (Main thread only)
             person_bbox = [x, y, w, h]
 
             # Convert bbox to camera-relative coordinates (single camera = no conversion)
@@ -1045,44 +1023,17 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                 relative_bbox, camera_idx = person_bbox, 0
 
             # Find zone (works for both single and multi-camera)
+            # This is done in main thread for immediate use in drawing
             zone_id = zone_monitor.find_zone(relative_bbox, camera_idx)
 
-            # Update zone presence (ZONE-CENTRIC LOGIC)
-            # Only update if we have a valid global_id (person has been identified)
-            if info['global_id'] > 0:
-                # Store violations count before update
-                old_violations_count = len(zone_monitor.zone_violations)
-
-                zone_monitor.update_presence(
-                    info['global_id'],
-                    zone_id,
-                    frame_time,
-                    info['person_name']
-                )
-
-                # Check if new zone violation occurred and trigger callback
-                if violation_callback:
-                    new_violations_count = len(zone_monitor.zone_violations)
-
-                    if new_violations_count > old_violations_count:
-                        # New zone violation occurred
-                        latest_violation = zone_monitor.zone_violations[-1]
-                        violation_callback({
-                            'frame_id': frame_id,
-                            'frame_time': frame_time,
-                            **latest_violation
-                        })
-
-            # Print violation table every 5 seconds
-            if frame_time - zone_monitor.last_violation_table_print >= 5.0:
-                zone_monitor.print_violation_table(frame_time, alert_threshold=alert_threshold)
-                zone_monitor.last_violation_table_print = frame_time
+            # Store zone_id for zone service
+            zone_ids_for_service[track_id] = zone_id
 
             # Get zone info (ZONE-CENTRIC LOGIC)
             zone_name = zone_monitor.zones[zone_id]['name'] if zone_id else "None"
             duration = 0.0
 
-            # Get person location data for duration tracking
+            # Get person location data for duration tracking (from cached results)
             if info['global_id'] > 0 and info['global_id'] in zone_monitor.person_locations:
                 person_loc = zone_monitor.person_locations[info['global_id']]
                 if zone_id and person_loc.get('enter_time'):
@@ -1217,10 +1168,35 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             cv2.putText(frame, label_text, (x, y-5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
-        # After processing all tracks, update all zones to check completeness
-        # This ensures zones turn red immediately when all persons leave
-        for zone_id in zone_monitor.zones.keys():
-            zone_monitor._update_zone_status(zone_id, frame_time)
+        # Submit zone monitoring task to service thread
+        # Zone service will update zone status and detect violations
+        zone_task = ZoneTask(
+            frame_id=frame_id,
+            frame_time=frame_time,
+            tracks=tracks,
+            reid_results=track_labels.copy(),
+            zone_ids=zone_ids_for_service.copy(),
+            camera_idx=0
+        )
+        zone_service.submit_task(zone_task)
+
+        # Get zone results from service (non-blocking)
+        # May be from previous frame if service is still processing
+        zone_result = zone_service.get_result(timeout=0.001)
+
+        # Process violations from zone service
+        if zone_result and zone_result.violations and violation_callback:
+            for violation in zone_result.violations:
+                violation_callback({
+                    'frame_id': zone_result.frame_id,
+                    'frame_time': zone_result.frame_time,
+                    **violation
+                })
+
+        # Print violation table every 5 seconds
+        if frame_time - zone_monitor.last_violation_table_print >= 5.0:
+            zone_monitor.print_violation_table(frame_time, alert_threshold=alert_threshold)
+            zone_monitor.last_violation_table_print = frame_time
 
         # Draw zones for all cameras (single camera = 1 iteration)
         for cam_idx in range(num_cameras):
@@ -1303,6 +1279,16 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
 
     elapsed = time.time() - start_time
     logger.info("="*80)
+    # Stop zone monitoring service
+    zone_service.stop()
+
+    # Print zone service metrics
+    metrics = zone_service.get_metrics()
+    logger.info(f"\n📊 Zone Service Metrics:")
+    logger.info(f"   Processed frames: {metrics['processed_frames']}")
+    logger.info(f"   Dropped frames: {metrics['dropped_frames']}")
+    logger.info(f"   Avg process time: {metrics['avg_process_time_ms']:.2f}ms")
+
     logger.info(f"✅ Processing completed in {elapsed:.1f}s")
     logger.info(f"   Processed {frame_id} frames @ {frame_id/elapsed:.1f} FPS")
     logger.info(f"   Person frames saved to: {extracted_objects_dir}")

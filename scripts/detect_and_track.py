@@ -338,9 +338,8 @@ class PersonReIDPipeline:
         
         # Processing loop
         frame_id = 0
-        track_labels = {}  # Cache labels for each track
-        track_frame_count = {}  # Count frames for each track
-        track_embeddings = {}  # Store first 3 embeddings for voting
+        track_labels = {}
+        track_frame_count = {}
 
         # FPS tracking
         fps_history = []
@@ -413,100 +412,44 @@ class PersonReIDPipeline:
                 # Convert to xywh
                 x, y, w, h = int(x1), int(y1), int(x2-x1), int(y2-y1)
 
-                # Initialize track frame count
+                # Initialize track
                 if track_id not in track_frame_count:
                     track_frame_count[track_id] = 0
-                    track_embeddings[track_id] = []
 
                 track_frame_count[track_id] += 1
                 current_frame_count = track_frame_count[track_id]
 
-                # Strategy: First-3 frames + Re-verify every 30 frames
-                should_extract = False
-
-                if current_frame_count <= 3:
-                    # First 3 frames: collect embeddings for voting
-                    should_extract = True
-                    reason = f"first-{current_frame_count}"
-                elif current_frame_count % 30 == 0:
-                    # Re-verify every 30 frames (1 second at 30fps)
-                    should_extract = True
-                    reason = "re-verify"
+                # ReID extraction: Frame 1 + re-verify every 60 frames
+                should_extract = (current_frame_count == 1) or (current_frame_count % 60 == 0)
 
                 if should_extract:
                     bbox = [x, y, w, h]
                     embedding = self.extractor.extract(frame, bbox)
+                    matches = self.database.find_best_match(embedding, threshold=0.0, top_k=1)
 
-                    if current_frame_count <= 3:
-                        # Store embedding for voting
-                        track_embeddings[track_id].append(embedding)
+                    if matches:
+                        global_id, similarity, person_name = matches[0]
+                        label = person_name if similarity >= similarity_threshold else "Unknown"
+                        old_label = track_labels.get(track_id, {}).get('label', 'Unknown')
 
-                        # After 3rd frame, perform majority voting
-                        if current_frame_count == 3:
-                            # Match all 3 embeddings
-                            votes = {}  # {(global_id, name): count}
-                            similarities = {}  # {(global_id, name): max_similarity}
+                        track_labels[track_id] = {
+                            'global_id': global_id,
+                            'similarity': similarity,
+                            'label': label,
+                            'person_name': person_name
+                        }
 
-                            for emb in track_embeddings[track_id]:
-                                matches = self.database.find_best_match(emb, threshold=0.0, top_k=1)
-                                if matches:
-                                    gid, sim, name = matches[0]
-                                    key = (gid, name)
-                                    votes[key] = votes.get(key, 0) + 1
-                                    similarities[key] = max(similarities.get(key, 0), sim)
-
-                            # Get majority vote
-                            if votes:
-                                best_key = max(votes.items(), key=lambda x: (x[1], similarities[x[0]]))[0]
-                                global_id, person_name = best_key
-                                similarity = similarities[best_key]
-
-                                # Determine label
-                                if similarity >= similarity_threshold:
-                                    label = person_name
-                                else:
-                                    label = "Unknown"
-
-                                track_labels[track_id] = {
-                                    'global_id': global_id,
-                                    'similarity': similarity,
-                                    'label': label,
-                                    'person_name': person_name,
-                                    'votes': votes[best_key]
-                                }
-
-                                log_msg = f"  Track {track_id} [VOTING]: {votes[best_key]}/3 votes → " \
-                                         f"{label} (sim={similarity:.4f}, gid={global_id})\n"
-                                log_file.write(log_msg)
-                                logger.info(f"  Track {track_id}: {label} (votes={votes[best_key]}/3, sim={similarity:.4f})")
-
-                    else:
-                        # Re-verification
-                        matches = self.database.find_best_match(embedding, threshold=0.0, top_k=1)
-                        if matches:
-                            global_id, similarity, person_name = matches[0]
-
-                            # Update only if confidence is high or current label is Unknown
-                            old_label = track_labels.get(track_id, {}).get('label', 'Unknown')
-
-                            if similarity >= similarity_threshold:
-                                new_label = person_name
+                        if current_frame_count == 1:
+                            log_msg = f"  Track {track_id}: {label} (sim={similarity:.4f}, gid={global_id})\n"
+                            log_file.write(log_msg)
+                            logger.info(f"  Track {track_id}: {label} (sim={similarity:.4f}, gid={global_id})")
+                        else:
+                            log_msg = f"  Track {track_id} [RE-VERIFY]: {old_label} → {label} (sim={similarity:.4f})\n"
+                            log_file.write(log_msg)
+                            if old_label != label:
+                                logger.info(f"  Track {track_id}: Re-verified {old_label} → {label} (sim={similarity:.4f})")
                             else:
-                                new_label = "Unknown"
-
-                            # Update if changed
-                            if new_label != old_label or similarity >= similarity_threshold:
-                                track_labels[track_id] = {
-                                    'global_id': global_id,
-                                    'similarity': similarity,
-                                    'label': new_label,
-                                    'person_name': person_name
-                                }
-
-                                log_msg = f"  Track {track_id} [RE-VERIFY]: {old_label} → {new_label} " \
-                                         f"(sim={similarity:.4f}, frame={current_frame_count})\n"
-                                log_file.write(log_msg)
-                                logger.info(f"  Track {track_id}: Re-verified {old_label} → {new_label} (sim={similarity:.4f})")
+                                logger.debug(f"  Track {track_id}: Re-verified as {label} (sim={similarity:.4f})")
                 
                 # Get cached label
                 info = track_labels.get(track_id, {
@@ -709,9 +652,8 @@ class PersonReIDPipeline:
         logger.info("")
         logger.info("Track Summary:")
         for tid, info in sorted(track_labels.items()):
-            votes_info = f" (votes={info['votes']}/3)" if 'votes' in info else ""
             folder_info = f" → {person_video_writers[tid]['path'].name}" if tid in person_video_writers else ""
-            logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){votes_info}{folder_info}")
+            logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){folder_info}")
         logger.info("="*80)
 
 
