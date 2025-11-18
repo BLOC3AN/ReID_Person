@@ -376,7 +376,9 @@ class ZoneMonitor:
                 'name': person_name,
                 'current_zone': zone_id,
                 'enter_time': frame_time if zone_id else None,
-                'camera_idx': 0  # Will be updated by caller if needed
+                'camera_idx': 0,  # Will be updated by caller if needed
+                'last_zone_id': old_zone,  # Keep track of last zone for display
+                'last_exit_time': frame_time if zone_id is None else None  # When person left zone
             }
 
             # Log movement
@@ -1240,10 +1242,25 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
 
             # Draw on frame (ZONE-CENTRIC LOGIC)
             # Color logic:
-            # Green: Person is in a zone
+            # Green: Person is in a zone (current or last known zone)
             # Red: Person is outside all zones
-            if zone_id is not None:
-                color = (0, 255, 0)  # Green - in a zone
+
+            # Use current zone_id if available, otherwise use last known zone
+            display_zone_id = zone_id
+            display_zone_name = zone_name
+            display_duration = duration
+
+            if display_zone_id is None and info['global_id'] > 0 and info['global_id'] in zone_monitor.person_locations:
+                # Use last known zone if person is currently outside
+                person_loc = zone_monitor.person_locations[info['global_id']]
+                if person_loc.get('last_zone_id'):
+                    display_zone_id = person_loc['last_zone_id']
+                    display_zone_name = zone_monitor.zones[display_zone_id]['name'] if display_zone_id in zone_monitor.zones else "Unknown"
+                    if person_loc.get('last_exit_time'):
+                        display_duration = frame_time - person_loc['last_exit_time']
+
+            if display_zone_id is not None:
+                color = (0, 255, 0)  # Green - in a zone or recently in zone
             else:
                 color = (0, 0, 255)  # Red - outside zones
 
@@ -1253,8 +1270,8 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             label_text = f"{info['label']} (ID:{track_id})"
 
             # Add zone info and time (ZONE-CENTRIC LOGIC)
-            if zone_id is not None:
-                label_text += f" | {zone_name} ({duration:.1f}s)"
+            if display_zone_id is not None:
+                label_text += f" | {display_zone_name} ({display_duration:.1f}s)"
             else:
                 label_text += f" | Outside"
 
