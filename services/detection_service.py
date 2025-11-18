@@ -52,15 +52,66 @@ cancellation_flags = {}  # {job_id: threading.Event()}
 websocket_connections: Dict[str, List[WebSocket]] = {}  # {job_id: [websocket1, websocket2, ...]}
 
 
+# Helper functions
+def _save_zone_config(zone_config: UploadFile, job_id: str) -> Optional[Path]:
+    """
+    Save uploaded zone config file
+
+    Args:
+        zone_config: Uploaded zone config file
+        job_id: Job ID for filename
+
+    Returns:
+        Path to saved zone config file or None if no config provided
+    """
+    if zone_config is None:
+        return None
+
+    # Preserve original file extension (.yaml, .yml, or .json)
+    original_ext = Path(zone_config.filename).suffix
+    if original_ext not in ['.yaml', '.yml', '.json']:
+        original_ext = '.yaml'  # Default to .yaml if unknown
+    zone_config_filename = f"{job_id}_zones{original_ext}"
+    zone_config_path = UPLOAD_DIR / zone_config_filename
+
+    with open(zone_config_path, "wb") as buffer:
+        shutil.copyfileobj(zone_config.file, buffer)
+
+    logger.info(f"Zone config saved: {zone_config_path}")
+    return zone_config_path
+
+
+def _ensure_output_directories():
+    """Ensure all output directories exist"""
+    (OUTPUT_DIR / "videos").mkdir(parents=True, exist_ok=True)
+    (OUTPUT_DIR / "csv").mkdir(parents=True, exist_ok=True)
+    (OUTPUT_DIR / "logs").mkdir(parents=True, exist_ok=True)
+
+
+def _get_total_frames(video_path: str) -> int:
+    """
+    Get total frames from video file
+
+    Args:
+        video_path: Path to video file
+
+    Returns:
+        Total frame count (0 for streams)
+    """
+    import cv2
+    cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return total_frames
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize pre-loaded components at service startup"""
     logger.info("🚀 Detection Service starting up...")
     try:
         # Ensure output directories exist (important for Docker volume mounts)
-        (OUTPUT_DIR / "videos").mkdir(parents=True, exist_ok=True)
-        (OUTPUT_DIR / "csv").mkdir(parents=True, exist_ok=True)
-        (OUTPUT_DIR / "logs").mkdir(parents=True, exist_ok=True)
+        _ensure_output_directories()
         logger.info(f"✅ Output directories ready: {OUTPUT_DIR}")
 
         # Initialize pre-loaded components
@@ -125,14 +176,9 @@ def process_detection(job_id: str, video_path: str, output_video: str,
 
         if use_zones:
             logger.info(f"Zone monitoring enabled: {zone_config_path}")
-            # Use zone monitoring pipeline
-            from scripts.zone_monitor import process_video_with_zones
 
             # Get total frames
-            import cv2
-            cap = cv2.VideoCapture(video_path)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
+            total_frames = _get_total_frames(video_path)
             progress_data[job_id]["total_frames"] = total_frames
 
             # Output JSON for zone report
@@ -174,18 +220,13 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                 f.write(f"\nStatus: Completed\n")
                 f.write(f"\nNote: Detailed logs are in the JSON report.\n")
 
-            # Update job outputs
-            jobs[job_id]["output_video"] = output_video
-            jobs[job_id]["output_csv"] = output_csv
-            jobs[job_id]["output_log"] = output_log
-            jobs[job_id]["output_json"] = output_json
-
         else:
             # Standard detection without zones
             logger.info("Standard detection (no zone monitoring)")
 
-            # Initialize pipeline with pre-loaded components
-            pipeline = PersonReIDPipeline(config_path=config_path, use_preloaded=True)
+            # Initialize pipeline (automatically uses pre-loaded components if available)
+            pipeline = PersonReIDPipeline(config_path=config_path)
+            output_json = None  # No JSON output for standard detection
 
             # Override config parameters if provided (for this job only)
             if model_type is not None:
@@ -207,10 +248,7 @@ def process_detection(job_id: str, video_path: str, output_video: str,
             # Components are either pre-loaded or will be initialized automatically
 
             # Get total frames from video (will be 0 for streams)
-            import cv2
-            cap = cv2.VideoCapture(video_path)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            cap.release()
+            total_frames = _get_total_frames(video_path)
             progress_data[job_id]["total_frames"] = total_frames
 
             # Run detection and tracking with specific output paths
@@ -234,10 +272,14 @@ def process_detection(job_id: str, video_path: str, output_video: str,
         else:
             jobs[job_id]["status"] = "completed"
             jobs[job_id]["message"] = "Detection and tracking completed successfully"
-            jobs[job_id]["output_video"] = output_video
-            jobs[job_id]["output_csv"] = output_csv
-            jobs[job_id]["output_log"] = output_log
             logger.info(f"Detection job {job_id} completed")
+
+        # Update job outputs (for both completed and cancelled jobs)
+        jobs[job_id]["output_video"] = output_video
+        jobs[job_id]["output_csv"] = output_csv
+        jobs[job_id]["output_log"] = output_log
+        if output_json:
+            jobs[job_id]["output_json"] = output_json
 
     except Exception as e:
         # Check if exception was due to cancellation
@@ -469,119 +511,8 @@ async def test_stream_connection(request: dict):
 @app.post("/detect")
 async def detect_and_track(
     background_tasks: BackgroundTasks,
-    video: UploadFile = File(...),
-    config_path: Optional[str] = Form(None),
-    similarity_threshold: float = Form(0.8),
-    model_type: Optional[str] = Form(None),
-    conf_thresh: Optional[float] = Form(None),
-    track_thresh: Optional[float] = Form(None),
-    face_conf_thresh: Optional[float] = Form(None),
-    zone_config: Optional[UploadFile] = File(None),
-    iou_threshold: float = Form(0.6),
-    zone_opacity: float = Form(0.3),
-    alert_threshold: float = Form(0),
-    zone_workers: Optional[int] = Form(None)
-):
-    """
-    Detect, track, and re-identify persons in video with optional zone monitoring
-
-    Args:
-        video: Video file to process
-        config_path: Optional path to custom config file
-        similarity_threshold: Cosine similarity threshold for ReID (default: 0.8)
-        model_type: Detection model type - 'mot17' or 'yolox' (default: from config)
-        conf_thresh: Detection confidence threshold 0-1 (default: from config)
-        track_thresh: Tracking confidence threshold 0-1 (default: from config)
-        face_conf_thresh: Face detection confidence threshold 0-1 (default: from config)
-        zone_config: Optional zone configuration YAML file
-        iou_threshold: Zone IoP threshold 0-1 (default: 0.6 = 60%)
-        zone_opacity: Zone border thickness factor 0-1 (default: 0.3 = 3px)
-        alert_threshold: Time threshold (seconds) before showing alert (default: 0)
-
-    Returns:
-        Job ID for tracking the detection process
-    """
-    try:
-        # Generate job ID
-        job_id = str(uuid.uuid4())
-
-        # Save uploaded video
-        video_filename = f"{job_id}_{video.filename}"
-        video_path = UPLOAD_DIR / video_filename
-
-        with open(video_path, "wb") as buffer:
-            shutil.copyfileobj(video.file, buffer)
-
-        # Save zone config if provided
-        zone_config_path = None
-        if zone_config is not None:
-            # Preserve original file extension (.yaml, .yml, or .json)
-            original_ext = Path(zone_config.filename).suffix
-            if original_ext not in ['.yaml', '.yml', '.json']:
-                original_ext = '.yaml'  # Default to .yaml if unknown
-            zone_config_filename = f"{job_id}_zones{original_ext}"
-            zone_config_path = UPLOAD_DIR / zone_config_filename
-
-            with open(zone_config_path, "wb") as buffer:
-                shutil.copyfileobj(zone_config.file, buffer)
-
-            logger.info(f"Zone config saved: {zone_config_path}")
-
-        # Setup output paths
-        output_video = str(OUTPUT_DIR / "videos" / f"{job_id}_output.mp4")
-        output_csv = str(OUTPUT_DIR / "csv" / f"{job_id}_tracking.csv")
-        output_log = str(OUTPUT_DIR / "logs" / f"{job_id}_detection.log")
-
-        # Create output directories
-        (OUTPUT_DIR / "videos").mkdir(parents=True, exist_ok=True)
-        (OUTPUT_DIR / "csv").mkdir(parents=True, exist_ok=True)
-        (OUTPUT_DIR / "logs").mkdir(parents=True, exist_ok=True)
-
-        # Initialize job status
-        jobs[job_id] = {
-            "job_id": job_id,
-            "status": "pending",
-            "message": "Job queued for processing",
-            "video_path": str(video_path),
-            "zone_monitoring": zone_config_path is not None
-        }
-
-        # Add background task
-        background_tasks.add_task(
-            process_detection,
-            job_id=job_id,
-            video_path=str(video_path),
-            output_video=output_video,
-            output_csv=output_csv,
-            output_log=output_log,
-            config_path=config_path,
-            similarity_threshold=similarity_threshold,
-            model_type=model_type,
-            conf_thresh=conf_thresh,
-            track_thresh=track_thresh,
-            face_conf_thresh=face_conf_thresh,
-            zone_config_path=str(zone_config_path) if zone_config_path else None,
-            iou_threshold=iou_threshold,
-            zone_opacity=zone_opacity,
-            alert_threshold=alert_threshold,
-            zone_workers=zone_workers
-        )
-        
-        return JSONResponse(content={
-            "job_id": job_id,
-            "status": "pending",
-            "message": "Detection job started"
-        })
-        
-    except Exception as e:
-        logger.error(f"Error starting detection: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/detect_stream")
-async def detect_and_track_stream(
-    background_tasks: BackgroundTasks,
-    stream_url: str = Form(...),
+    video: Optional[UploadFile] = File(None),
+    stream_url: Optional[str] = Form(None),
     config_path: Optional[str] = Form(None),
     similarity_threshold: float = Form(0.8),
     model_type: Optional[str] = Form(None),
@@ -597,10 +528,15 @@ async def detect_and_track_stream(
     zone_workers: Optional[int] = Form(None)
 ):
     """
-    Detect, track, and re-identify persons from video stream (UDP/RTSP)
+    Detect, track, and re-identify persons in video file or stream with optional zone monitoring
+
+    This unified endpoint handles both:
+    - Video file upload (provide 'video' parameter)
+    - Stream URL (provide 'stream_url' parameter)
 
     Args:
-        stream_url: Stream URL (e.g., 'udp://127.0.0.1:1905', 'rtsp://camera_ip/stream')
+        video: Video file to process (mutually exclusive with stream_url)
+        stream_url: Stream URL like 'udp://127.0.0.1:1905' or 'rtsp://camera_ip/stream' (mutually exclusive with video)
         config_path: Optional path to custom config file
         similarity_threshold: Cosine similarity threshold for ReID (default: 0.8)
         model_type: Detection model type - 'mot17' or 'yolox' (default: from config)
@@ -610,59 +546,73 @@ async def detect_and_track_stream(
         zone_config: Optional zone configuration YAML file
         iou_threshold: Zone IoP threshold 0-1 (default: 0.6 = 60%)
         zone_opacity: Zone border thickness factor 0-1 (default: 0.3 = 3px)
-        max_frames: Maximum frames to process (None for unlimited)
-        max_duration_seconds: Maximum duration in seconds (None for unlimited)
+        max_frames: Maximum frames to process (None for unlimited, mainly for streams)
+        max_duration_seconds: Maximum duration in seconds (None for unlimited, mainly for streams)
         alert_threshold: Time threshold (seconds) before showing alert (default: 0)
+        zone_workers: Number of worker processes for zone monitoring (default: auto)
 
     Returns:
         Job ID for tracking the detection process
     """
     try:
+        # Validate input: must provide either video or stream_url, but not both
+        if video is None and stream_url is None:
+            raise HTTPException(status_code=400, detail="Must provide either 'video' file or 'stream_url'")
+        if video is not None and stream_url is not None:
+            raise HTTPException(status_code=400, detail="Cannot provide both 'video' and 'stream_url'. Choose one.")
+
         # Generate job ID
         job_id = str(uuid.uuid4())
 
+        # Determine if this is a stream or video file
+        is_stream = stream_url is not None
+
+        # Handle video file upload or stream URL
+        if is_stream:
+            # Stream processing
+            video_path_str = stream_url
+            logger.info(f"Processing stream: {stream_url}")
+        else:
+            # Video file processing
+            video_filename = f"{job_id}_{video.filename}"
+            video_path = UPLOAD_DIR / video_filename
+            with open(video_path, "wb") as buffer:
+                shutil.copyfileobj(video.file, buffer)
+            video_path_str = str(video_path)
+            logger.info(f"Processing video file: {video_path_str}")
+
         # Save zone config if provided
-        zone_config_path = None
-        if zone_config is not None:
-            # Preserve original file extension (.yaml, .yml, or .json)
-            original_ext = Path(zone_config.filename).suffix
-            if original_ext not in ['.yaml', '.yml', '.json']:
-                original_ext = '.yaml'  # Default to .yaml if unknown
-            zone_config_filename = f"{job_id}_zones{original_ext}"
-            zone_config_path = UPLOAD_DIR / zone_config_filename
-
-            with open(zone_config_path, "wb") as buffer:
-                shutil.copyfileobj(zone_config.file, buffer)
-
-            logger.info(f"Zone config saved: {zone_config_path}")
+        zone_config_path = _save_zone_config(zone_config, job_id)
 
         # Setup output paths
-        output_video = str(OUTPUT_DIR / "videos" / f"{job_id}_stream_output.mp4")
-        output_csv = str(OUTPUT_DIR / "csv" / f"{job_id}_stream_tracking.csv")
-        output_log = str(OUTPUT_DIR / "logs" / f"{job_id}_stream_detection.log")
+        output_suffix = "stream" if is_stream else "video"
+        output_video = str(OUTPUT_DIR / "videos" / f"{job_id}_{output_suffix}_output.mp4")
+        output_csv = str(OUTPUT_DIR / "csv" / f"{job_id}_{output_suffix}_tracking.csv")
+        output_log = str(OUTPUT_DIR / "logs" / f"{job_id}_{output_suffix}_detection.log")
 
         # Create output directories
-        (OUTPUT_DIR / "videos").mkdir(parents=True, exist_ok=True)
-        (OUTPUT_DIR / "csv").mkdir(parents=True, exist_ok=True)
-        (OUTPUT_DIR / "logs").mkdir(parents=True, exist_ok=True)
+        _ensure_output_directories()
 
         # Initialize job status
         jobs[job_id] = {
             "job_id": job_id,
             "status": "pending",
-            "message": "Stream detection job queued for processing",
-            "video_path": stream_url,
+            "message": f"{'Stream' if is_stream else 'Video'} detection job queued for processing",
+            "video_path": video_path_str,
             "zone_monitoring": zone_config_path is not None,
-            "is_stream": True,
-            "max_frames": max_frames,
-            "max_duration_seconds": max_duration_seconds
+            "is_stream": is_stream
         }
+
+        # Add stream-specific metadata
+        if is_stream:
+            jobs[job_id]["max_frames"] = max_frames
+            jobs[job_id]["max_duration_seconds"] = max_duration_seconds
 
         # Add background task
         background_tasks.add_task(
             process_detection,
             job_id=job_id,
-            video_path=stream_url,  # Pass stream URL directly
+            video_path=video_path_str,
             output_video=output_video,
             output_csv=output_csv,
             output_log=output_log,
@@ -681,18 +631,29 @@ async def detect_and_track_stream(
             zone_workers=zone_workers
         )
 
-        return JSONResponse(content={
+        # Prepare response
+        response_data = {
             "job_id": job_id,
             "status": "pending",
-            "message": "Stream detection job started",
-            "stream_url": stream_url,
-            "max_frames": max_frames,
-            "max_duration_seconds": max_duration_seconds
-        })
+            "message": f"{'Stream' if is_stream else 'Video'} detection job started"
+        }
 
+        if is_stream:
+            response_data["stream_url"] = stream_url
+            response_data["max_frames"] = max_frames
+            response_data["max_duration_seconds"] = max_duration_seconds
+
+        return JSONResponse(content=response_data)
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error starting stream detection: {e}")
+        logger.error(f"Error starting detection: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Removed: /detect_stream endpoint - merged into unified /detect endpoint
+# The /detect endpoint now handles both video files and stream URLs
 
 
 @app.get("/status/{job_id}")

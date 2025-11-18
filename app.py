@@ -1080,86 +1080,56 @@ Zone Border Thickness: {int(zone_opacity*10)}px
             spinner_text = "Uploading video and starting detection..." if input_method == "Upload Video File" else "Starting stream detection..."
             with st.spinner(spinner_text):
                 try:
+                    # Prepare files dict for multipart form data
+                    files = {}
+
+                    # Add zone config if provided
+                    if zone_config_file:
+                        files["zone_config"] = (zone_config_file.name, zone_config_file.getvalue(), "application/x-yaml")
+                    elif zones_data:
+                        yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
+                        files["zone_config"] = ("zones.yaml", yaml_content.encode('utf-8'), "application/x-yaml")
+
+                    # Prepare common parameters (all as strings for multipart/form-data)
+                    data = {
+                        "similarity_threshold": str(similarity_threshold),
+                        "iou_threshold": str(iou_threshold),
+                        "zone_opacity": str(zone_opacity),
+                        "alert_threshold": str(alert_threshold)
+                    }
+
+                    # Add optional parameters
+                    if model_type:
+                        data["model_type"] = model_type
+                    if conf_thresh is not None:
+                        data["conf_thresh"] = str(conf_thresh)
+                    if track_thresh is not None:
+                        data["track_thresh"] = str(track_thresh)
+                    if face_conf_thresh is not None:
+                        data["face_conf_thresh"] = str(face_conf_thresh)
+                    if zone_enabled and zone_workers is not None:
+                        data["zone_workers"] = str(zone_workers)
+
+                    # Add input-specific parameters
                     if input_method == "Upload Video File":
-                        # Prepare files and data for API call (existing code)
-                        files = {"video": (video_file.name, video_file.getvalue(), "video/mp4")}
-
-                        # Add zone config if provided
-                        if zone_config_file:
-                            # Use uploaded file
-                            files["zone_config"] = (zone_config_file.name, zone_config_file.getvalue(), "application/x-yaml")
-                        elif zones_data:
-                            # Create YAML from UI data
-                            yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
-                            files["zone_config"] = ("zones.yaml", yaml_content.encode('utf-8'), "application/x-yaml")
-
-                        data = {
-                            "similarity_threshold": similarity_threshold,
-                            "model_type": model_type,
-                            "conf_thresh": conf_thresh,
-                            "track_thresh": track_thresh,
-                            "face_conf_thresh": face_conf_thresh,
-                            "iou_threshold": iou_threshold,
-                            "zone_opacity": zone_opacity,
-                            "alert_threshold": alert_threshold
-                        }
-
-                        # Add zone_workers if zone monitoring is enabled
-                        if zone_enabled and zone_workers is not None:
-                            data["zone_workers"] = str(zone_workers)
-
-                        # Call Detection API
-                        logger.info(f"🔄 [Detect & Track] Calling detection API: {DETECTION_API_URL}/detect")
-                        response = requests.post(f"{DETECTION_API_URL}/detect", files=files, data=data)
-
+                        # Add video file
+                        files["video"] = (video_file.name, video_file.getvalue(), "video/mp4")
+                        logger.info(f"🔄 [Detect & Track] Calling unified detection API with video file: {video_file.name}")
                     else:  # Stream URL
-                        # Prepare multipart form data for stream API call
-                        files = {}
-                        data = {}
-
-                        # Add zone config if provided
-                        if zone_config_file:
-                            files["zone_config"] = (zone_config_file.name, zone_config_file.getvalue(), "application/x-yaml")
-                        elif zones_data:
-                            yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
-                            files["zone_config"] = ("zones.yaml", yaml_content.encode('utf-8'), "application/x-yaml")
-
-                        # Prepare form data (all parameters must be strings for multipart/form-data)
-                        data = {
-                            "stream_url": stream_url,
-                            "similarity_threshold": str(similarity_threshold),
-                            "iou_threshold": str(iou_threshold),
-                            "zone_opacity": str(zone_opacity),
-                            "alert_threshold": str(alert_threshold)
-                        }
-
-                        # Add optional parameters only if they have values
-                        if model_type:
-                            data["model_type"] = model_type
-                        if conf_thresh is not None:
-                            data["conf_thresh"] = str(conf_thresh)
-                        if track_thresh is not None:
-                            data["track_thresh"] = str(track_thresh)
-                        if face_conf_thresh is not None:
-                            data["face_conf_thresh"] = str(face_conf_thresh)
+                        # Add stream URL and stream-specific parameters
+                        data["stream_url"] = stream_url
                         if max_frames:
                             data["max_frames"] = str(max_frames)
                         if max_duration:
                             data["max_duration_seconds"] = str(max_duration)
-                        if zone_enabled and zone_workers is not None:
-                            data["zone_workers"] = str(zone_workers)
-
-                        # Call Stream Detection API
-                        # Always use multipart form-data (files parameter) even if no files are uploaded
-                        # This ensures compatibility with FastAPI Form(...) parameters
-                        logger.info(f"🔄 [Detect & Track] Calling stream detection API: {DETECTION_API_URL}/detect_stream")
-                        logger.info(f"📡 [Detect & Track] Stream URL: {stream_url}")
+                        logger.info(f"🔄 [Detect & Track] Calling unified detection API with stream URL: {stream_url}")
                         if max_frames:
                             logger.info(f"⏱️ [Detect & Track] Max frames: {max_frames}")
                         if max_duration:
                             logger.info(f"⏱️ [Detect & Track] Max duration: {max_duration}s")
 
-                        response = requests.post(f"{DETECTION_API_URL}/detect_stream", files=files, data=data)
+                    # Call unified Detection API (handles both video files and streams)
+                    response = requests.post(f"{DETECTION_API_URL}/detect", files=files, data=data)
 
                     if response.status_code == 200:
                         result = response.json()

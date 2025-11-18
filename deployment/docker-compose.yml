@@ -1,21 +1,4 @@
 services:
-  # Redis Cache (for track label storage)
-  redis:
-    image: redis:7-alpine
-    container_name: person_reid_redis
-    network_mode: "host"
-    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
-    volumes:
-      - /home/ubuntu/data/redis_data:/data
-    environment:
-      - REDIS_PASSWORD=
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
 
   # Triton Inference Server (for multi-stream optimization)
   triton:
@@ -171,13 +154,13 @@ services:
     env_file:
       - ../configs/.env
     restart: unless-stopped
-    shm_size: '4gb'
+    shm_size: '8gb'
     depends_on:
       triton:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
-      interval: 10s
+      interval: 60s
       timeout: 7s
       retries: 3
       start_period: 30s

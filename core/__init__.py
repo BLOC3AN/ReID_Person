@@ -11,6 +11,7 @@ from .vector_db import QdrantVectorDB
 from .preloaded_manager import preloaded_manager
 from .zone_service import ZoneMonitoringService, ZoneTask, ZoneResult
 from .redis_track_manager import RedisTrackManager
+from .reid_logic import process_reid_logic
 
 __all__ = [
     'YOLOXDetector',
@@ -24,5 +25,6 @@ __all__ = [
     'ZoneTask',
     'ZoneResult',
     'RedisTrackManager',
+    'process_reid_logic',
 ]
 

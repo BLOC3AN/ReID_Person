@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core import (
     YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB,
-    ZoneMonitoringService, ZoneTask, ZoneResult, RedisTrackManager
+    ZoneMonitoringService, ZoneTask, ZoneResult, RedisTrackManager, process_reid_logic
 )
 from tabulate import tabulate
 
@@ -800,94 +800,7 @@ class ZoneMonitor:
         return frame
 
 
-def _process_reid_logic_zone(track_id, frame_id, current_frame_count, embedding,
-                             database, similarity_threshold, redis_manager,
-                             track_labels, logger):
-    """
-    Process ReID logic with Redis storage for zone monitoring
-
-    Decision Logic:
-    - Frame 1: Extract → Assign (first time)
-    - Frame 60+: Extract → Compare with old
-    - Update only if new_sim > old_sim AND passes threshold
-    - Reset when track lost (TTL expires)
-
-    Returns:
-        Updated track_data dict or None
-    """
-    matches = database.find_best_match(embedding, threshold=0.0, top_k=1)
-
-    if not matches:
-        return None
-
-    new_global_id, new_similarity, new_person_name = matches[0]
-
-    # Get old data from Redis or in-memory
-    old_data = None
-    if redis_manager:
-        old_data = redis_manager.get_track(track_id)
-    if old_data is None:
-        old_data = track_labels.get(track_id)
-
-    # Decision logic
-    if new_similarity >= similarity_threshold:
-        if old_data is None:
-            # New track (first time or recovered after TTL)
-            new_data = {
-                'global_id': new_global_id,
-                'similarity': new_similarity,
-                'best_similarity': new_similarity,
-                'person_name': new_person_name,
-                'label': new_person_name,
-                'first_assignment_frame': frame_id,
-                'last_update_frame': frame_id,
-                'timestamp': time.time(),
-                'camera_idx': 0,
-                'status': 'active'
-            }
-            logger.info(f"✅ Track {track_id}: ASSIGN {new_person_name} (ID:{new_global_id}, sim={new_similarity:.4f})")
-
-        else:
-            # Existing track
-            old_similarity = old_data.get('similarity', 0.0)
-            old_person_name = old_data.get('person_name', 'Unknown')
-
-            if new_similarity > old_similarity:
-                # UPDATE: Better match found
-                new_data = old_data.copy()
-                new_data['global_id'] = new_global_id
-                new_data['similarity'] = new_similarity
-                new_data['best_similarity'] = max(new_similarity, old_data.get('best_similarity', 0.0))
-                new_data['person_name'] = new_person_name
-                new_data['label'] = new_person_name
-                new_data['last_update_frame'] = frame_id
-                new_data['timestamp'] = time.time()
-                logger.info(f"✅ Track {track_id}: UPDATE {old_person_name} → {new_person_name} (sim {old_similarity:.4f} → {new_similarity:.4f})")
-
-            else:
-                # REJECT: Same or worse match
-                new_data = old_data.copy()
-                new_data['last_update_frame'] = frame_id
-                new_data['timestamp'] = time.time()
-                logger.debug(f"❌ Track {track_id}: REJECT {new_person_name} (sim {new_similarity:.4f} < {old_similarity:.4f})")
-
-    else:
-        # FAIL_THRESHOLD: Below threshold
-        if old_data is None:
-            logger.debug(f"❌ Track {track_id}: FAIL_THRESHOLD {new_person_name} (sim {new_similarity:.4f} < {similarity_threshold:.4f})")
-            return None
-        else:
-            new_data = old_data.copy()
-            new_data['last_update_frame'] = frame_id
-            new_data['timestamp'] = time.time()
-            logger.debug(f"❌ Track {track_id}: FAIL_THRESHOLD {new_person_name} (sim {new_similarity:.4f} < {similarity_threshold:.4f})")
-
-    # Save to Redis and in-memory
-    if redis_manager:
-        redis_manager.set_track(track_id, new_data)
-    track_labels[track_id] = new_data
-
-    return new_data
+# Removed: _process_reid_logic_zone() - now using shared process_reid_logic() from core.reid_logic
 
 
 def process_video_with_zones(video_path, zone_config_path, reid_config_path=None,
@@ -932,8 +845,10 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     logger.info("🎯 ZONE MONITORING WITH PERSON REID")
     logger.info("="*80)
 
-    # Initialize ReID pipeline
+    # Initialize ReID pipeline (will use preloaded components if available)
     pipeline = PersonReIDPipeline(reid_config_path)
+    # Note: initialize_*() calls are optional - pipeline auto-initializes on first use
+    # These calls are kept for explicit initialization and will skip if already loaded
     pipeline.initialize_detector()
     pipeline.initialize_tracker()
     pipeline.initialize_extractor()
@@ -1122,7 +1037,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             if should_extract:
                 bbox = [x, y, w, h]
                 embedding = pipeline.extractor.extract(frame, bbox)
-                _process_reid_logic_zone(
+                process_reid_logic(
                     track_id=track_id,
                     frame_id=frame_id,
                     current_frame_count=current_frame_count,
@@ -1131,7 +1046,8 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                     similarity_threshold=similarity_threshold,
                     redis_manager=redis_manager,
                     track_labels=track_labels,
-                    logger=logger
+                    log_file=None,  # Zone monitoring doesn't use log file
+                    camera_idx=0
                 )
 
             # Get track info
