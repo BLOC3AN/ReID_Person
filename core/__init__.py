@@ -10,6 +10,7 @@ from .face_recognition_triton import FaceRecognitionTriton
 from .vector_db import QdrantVectorDB
 from .preloaded_manager import preloaded_manager
 from .zone_service import ZoneMonitoringService, ZoneTask, ZoneResult
+from .redis_track_manager import RedisTrackManager
 
 __all__ = [
     'YOLOXDetector',
@@ -22,5 +23,6 @@ __all__ = [
     'ZoneMonitoringService',
     'ZoneTask',
     'ZoneResult',
+    'RedisTrackManager',
 ]
 
