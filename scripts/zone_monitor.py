@@ -1126,20 +1126,20 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             zone_ids_for_service[track_id] = zone_id
 
             # Get zone info (ZONE-CENTRIC LOGIC)
-            zone_name = zone_monitor.zones[zone_id]['name'] if zone_id else "None"
+            zone_name = zone_monitor.zones[zone_id]['name'] if zone_id is not None else "None"
             duration = 0.0
 
             # Get person location data for duration tracking (from cached results)
             if info['global_id'] > 0 and info['global_id'] in zone_monitor.person_locations:
                 person_loc = zone_monitor.person_locations[info['global_id']]
-                if zone_id and person_loc.get('enter_time'):
+                if zone_id is not None and person_loc.get('enter_time'):
                     duration = frame_time - person_loc['enter_time']
 
             # Write to CSV (ZONE-CENTRIC LOGIC)
             csv_writer.writerow([
                 frame_id, track_id, info['global_id'], info['person_name'],
                 f"{info['similarity']:.4f}", x, y, w, h,
-                zone_id if zone_id else "", zone_name, f"{duration:.2f}", camera_idx
+                zone_id if zone_id is not None else "", zone_name, f"{duration:.2f}", camera_idx
             ])
 
             # Save person frames as images
@@ -1241,11 +1241,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             # Draw on frame (ZONE-CENTRIC LOGIC)
             # Color logic:
             # Green: Person is in a zone
-            # Blue: Person is outside all zones
-            if zone_id:
+            # Red: Person is outside all zones
+            if zone_id is not None:
                 color = (0, 255, 0)  # Green - in a zone
             else:
-                color = (255, 0, 0)  # Blue - outside zones
+                color = (0, 0, 255)  # Red - outside zones
 
             cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
 
@@ -1253,7 +1253,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             label_text = f"{info['label']} (ID:{track_id})"
 
             # Add zone info and time (ZONE-CENTRIC LOGIC)
-            if zone_id:
+            if zone_id is not None:
                 label_text += f" | {zone_name} ({duration:.1f}s)"
             else:
                 label_text += f" | Outside"
