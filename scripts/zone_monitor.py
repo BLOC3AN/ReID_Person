@@ -304,7 +304,7 @@ class ZoneMonitor:
         logger.info(f"   R-tree index built for {len(self.zones)} zones")
         return idx
     
-    def find_zone(self, person_bbox, camera_idx=0):
+    def find_zone(self, person_bbox, camera_idx=0, track_id=None, person_name=None):
         """
         Find which zone contains the person using IoP >= threshold
 
@@ -315,6 +315,8 @@ class ZoneMonitor:
         Args:
             person_bbox: [x1, y1, x2, y2] or [x, y, w, h]
             camera_idx: Camera index (0-based) for multi-camera setup
+            track_id: Track ID for logging (optional)
+            person_name: Person name for logging (optional)
         Returns:
             zone_id or None
         """
@@ -332,6 +334,11 @@ class ZoneMonitor:
         best_zone = None
         best_iop = 0.0
 
+        # Debug logging
+        debug_info = []
+        if track_id is not None:
+            debug_info.append(f"Track {track_id} ({person_name}): bbox={person_bbox_xyxy}")
+
         for candidate in candidates:
             zone_id = candidate.object
             zone_data = self.zones[zone_id]
@@ -345,9 +352,27 @@ class ZoneMonitor:
             # Calculate IoP (Intersection over Person)
             iop = calculate_iop(person_bbox_xyxy, zone_bbox)
 
+            # Debug logging
+            zone_name = zone_data.get('name', zone_id)
+            iop_percent = iop * 100
+            threshold_percent = self.iop_threshold * 100
+
+            if track_id is not None:
+                status = "✅ MATCH" if iop >= self.iop_threshold else "❌ NO MATCH"
+                debug_info.append(f"  {status} {zone_name}: IoP={iop_percent:.1f}% (threshold={threshold_percent:.0f}%) | zone_bbox={zone_bbox}")
+
             if iop >= self.iop_threshold and iop > best_iop:
                 best_iop = iop
                 best_zone = zone_id
+
+        # Log debug info
+        if track_id is not None and debug_info:
+            for line in debug_info:
+                logger.debug(line)
+            if best_zone:
+                logger.info(f"✅ Track {track_id} ({person_name}): ASSIGNED to {self.zones[best_zone]['name']} (IoP={best_iop*100:.1f}%)")
+            else:
+                logger.info(f"❌ Track {track_id} ({person_name}): NO ZONE MATCH (best IoP={best_iop*100:.1f}% < threshold={self.iop_threshold*100:.0f}%)")
 
         return best_zone
     
@@ -1122,7 +1147,12 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
 
             # Find zone (works for both single and multi-camera)
             # This is done in main thread for immediate use in drawing
-            zone_id = zone_monitor.find_zone(relative_bbox, camera_idx)
+            zone_id = zone_monitor.find_zone(
+                relative_bbox,
+                camera_idx,
+                track_id=track_id,
+                person_name=info.get('person_name', 'Unknown')
+            )
 
             # Store zone_id for zone service
             zone_ids_for_service[track_id] = zone_id
