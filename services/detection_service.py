@@ -101,7 +101,8 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                       face_conf_thresh: Optional[float] = None,
                       zone_config_path: Optional[str] = None, iou_threshold: float = 0.6,
                       zone_opacity: float = 0.3, max_frames: Optional[int] = None,
-                      max_duration_seconds: Optional[int] = None, alert_threshold: float = 0):
+                      max_duration_seconds: Optional[int] = None, alert_threshold: float = 0,
+                      zone_workers: Optional[int] = None):
     """Background task to process detection and tracking with optional zone monitoring"""
     try:
         jobs[job_id]["status"] = "processing"
@@ -153,7 +154,8 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                 progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks),
                 violation_callback=lambda violation: _add_violation(job_id, violation),
                 cancellation_flag=cancellation_flags.get(job_id),
-                alert_threshold=alert_threshold
+                alert_threshold=alert_threshold,
+                zone_workers=zone_workers
             )
 
             # Create a simple log file for zone monitoring
@@ -477,7 +479,8 @@ async def detect_and_track(
     zone_config: Optional[UploadFile] = File(None),
     iou_threshold: float = Form(0.6),
     zone_opacity: float = Form(0.3),
-    alert_threshold: float = Form(0)
+    alert_threshold: float = Form(0),
+    zone_workers: Optional[int] = Form(None)
 ):
     """
     Detect, track, and re-identify persons in video with optional zone monitoring
@@ -560,7 +563,8 @@ async def detect_and_track(
             zone_config_path=str(zone_config_path) if zone_config_path else None,
             iou_threshold=iou_threshold,
             zone_opacity=zone_opacity,
-            alert_threshold=alert_threshold
+            alert_threshold=alert_threshold,
+            zone_workers=zone_workers
         )
         
         return JSONResponse(content={
@@ -589,7 +593,8 @@ async def detect_and_track_stream(
     zone_opacity: float = Form(0.3),
     max_frames: Optional[int] = Form(None),
     max_duration_seconds: Optional[int] = Form(None),
-    alert_threshold: float = Form(0)
+    alert_threshold: float = Form(0),
+    zone_workers: Optional[int] = Form(None)
 ):
     """
     Detect, track, and re-identify persons from video stream (UDP/RTSP)
@@ -672,7 +677,8 @@ async def detect_and_track_stream(
             zone_opacity=zone_opacity,
             max_frames=max_frames,
             max_duration_seconds=max_duration_seconds,
-            alert_threshold=alert_threshold
+            alert_threshold=alert_threshold,
+            zone_workers=zone_workers
         )
 
         return JSONResponse(content={

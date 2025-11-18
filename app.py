@@ -937,6 +937,32 @@ elif page == "Detect & Track":
                 help="Zone border line thickness (0.0 = thin, 1.0 = thick). Controls border width from 1-10 pixels. 0.3 (3px) recommended."
             )
 
+        # Zone processing threads
+        st.markdown("### ⚙️ Zone Processing Performance")
+        col_thread1, col_thread2 = st.columns(2)
+
+        with col_thread1:
+            zone_workers = st.number_input(
+                "Zone Worker Threads",
+                min_value=1,
+                max_value=8,
+                value=None,  # None = auto-detect (capped at 4)
+                step=1,
+                help="Number of threads for zone processing. None = auto-detect (capped at 4). Higher values = faster processing but more CPU usage."
+            )
+            if zone_workers is None:
+                st.caption("🔄 Auto-detect (capped at 4 threads)")
+            else:
+                st.caption(f"🔧 Using {zone_workers} thread(s)")
+
+        with col_thread2:
+            st.info(
+                "💡 **Thread Tips:**\n"
+                "- **1 thread**: Low CPU, sequential processing\n"
+                "- **2-4 threads**: Balanced (recommended)\n"
+                "- **>4 threads**: High CPU, parallel processing"
+            )
+
         # Alert threshold setting
         st.markdown("### 🚨 Violation Alert Settings")
         alert_threshold = st.number_input(
@@ -1073,6 +1099,10 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                             "alert_threshold": alert_threshold
                         }
 
+                        # Add zone_workers if zone monitoring is enabled
+                        if zone_enabled and zone_workers is not None:
+                            data["zone_workers"] = str(zone_workers)
+
                         # Call Detection API
                         logger.info(f"🔄 [Detect & Track] Calling detection API: {DETECTION_API_URL}/detect")
                         response = requests.post(f"{DETECTION_API_URL}/detect", files=files, data=data)
@@ -1111,6 +1141,8 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                             data["max_frames"] = str(max_frames)
                         if max_duration:
                             data["max_duration_seconds"] = str(max_duration)
+                        if zone_enabled and zone_workers is not None:
+                            data["zone_workers"] = str(zone_workers)
 
                         # Call Stream Detection API
                         # Always use multipart form-data (files parameter) even if no files are uploaded

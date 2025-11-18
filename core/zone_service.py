@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Zone Monitoring Service - Runs zone monitoring on separate thread
+Zone Monitoring Service - Runs zone monitoring on separate threads (Thread Pool)
 Decouples zone processing from main detection/tracking pipeline
+Uses ThreadPoolExecutor for parallel zone processing
 """
 
 import threading
@@ -10,6 +11,8 @@ import time
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from loguru import logger
+from concurrent.futures import ThreadPoolExecutor
+import os
 
 
 @dataclass
@@ -36,57 +39,84 @@ class ZoneResult:
 
 class ZoneMonitoringService:
     """
-    Service for zone monitoring on separate thread
-    
+    Service for zone monitoring on thread pool
+
     Receives pre-computed zone_ids from main thread
-    Processes zone status updates and violation detection
+    Processes zone status updates and violation detection using multiple threads
     Returns results via queue for main thread to use
     """
-    
-    def __init__(self, zone_monitor, max_queue_size: int = 100):
+
+    def __init__(self, zone_monitor, max_queue_size: int = 100, num_workers: Optional[int] = None):
         """
         Args:
             zone_monitor: ZoneMonitor instance
             max_queue_size: Maximum queue size before dropping frames
+            num_workers: Number of worker threads (default: CPU count)
+                        Set to 1 for single-threaded mode (backward compatible)
         """
         self.zone_monitor = zone_monitor
-        
+
+        # Determine number of workers
+        if num_workers is None:
+            # Default: use CPU count, but cap at 4 for zone processing
+            num_workers = min(os.cpu_count() or 2, 4)
+
+        self.num_workers = num_workers
+
         # Queues for communication
         self.input_queue = queue.Queue(maxsize=max_queue_size)
         self.result_queue = queue.Queue(maxsize=max_queue_size)
-        
-        # Thread control
+
+        # Thread pool
+        self.executor = None
         self.running = False
-        self.thread = None
-        
+        self.threads = []
+
         # Metrics
         self.processed_frames = 0
         self.dropped_frames = 0
         self.avg_process_time = 0.0
         
     def start(self):
-        """Start zone monitoring thread"""
+        """Start zone monitoring thread pool"""
         if self.running:
             logger.warning("Zone service already running")
             return
-            
+
         self.running = True
-        self.thread = threading.Thread(
-            target=self._service_loop,
-            daemon=True,
-            name="ZoneMonitoringService"
+
+        # Create thread pool executor
+        self.executor = ThreadPoolExecutor(
+            max_workers=self.num_workers,
+            thread_name_prefix="ZoneWorker"
         )
-        self.thread.start()
-        logger.info("✅ Zone monitoring service started")
+
+        # Start dispatcher thread (reads from input queue and submits to pool)
+        dispatcher_thread = threading.Thread(
+            target=self._dispatcher_loop,
+            daemon=True,
+            name="ZoneDispatcher"
+        )
+        dispatcher_thread.start()
+        self.threads.append(dispatcher_thread)
+
+        logger.info(f"✅ Zone monitoring service started with {self.num_workers} worker threads")
         
     def stop(self):
-        """Stop zone monitoring thread"""
+        """Stop zone monitoring thread pool"""
         if not self.running:
             return
-            
+
         self.running = False
-        if self.thread:
-            self.thread.join(timeout=2.0)
+
+        # Shutdown executor
+        if self.executor:
+            self.executor.shutdown(wait=True)
+
+        # Wait for dispatcher thread
+        for thread in self.threads:
+            thread.join(timeout=2.0)
+
         logger.info("🛑 Zone monitoring service stopped")
         
     def submit_task(self, task: ZoneTask) -> bool:
@@ -121,37 +151,46 @@ class ZoneMonitoringService:
         except queue.Empty:
             return None
             
-    def _service_loop(self):
-        """Main service loop running on separate thread"""
-        logger.info("Zone service loop started")
-        
+    def _dispatcher_loop(self):
+        """Dispatcher loop - reads tasks and submits to thread pool"""
+        logger.info("Zone dispatcher started")
+
         while self.running:
             try:
                 # Get task (blocking with timeout to check running flag)
                 task = self.input_queue.get(timeout=0.1)
-                
-                start_time = time.time()
-                result = self._process_zone_task(task)
-                process_time = time.time() - start_time
-                
-                # Update metrics
-                self.processed_frames += 1
-                self.avg_process_time = self.avg_process_time * 0.9 + process_time * 0.1
-                
-                # Send result
-                result.process_time_ms = process_time * 1000
-                
-                try:
-                    self.result_queue.put(result, block=False)
-                except queue.Full:
-                    pass  # Drop result if queue full
-                    
+
+                # Submit task to thread pool
+                future = self.executor.submit(self._process_zone_task_wrapper, task)
+
             except queue.Empty:
                 continue
             except Exception as e:
-                logger.error(f"Error in zone service: {e}", exc_info=True)
-                
-        logger.info("Zone service loop stopped")
+                logger.error(f"Error in zone dispatcher: {e}", exc_info=True)
+
+        logger.info("Zone dispatcher stopped")
+
+    def _process_zone_task_wrapper(self, task: ZoneTask):
+        """Wrapper for zone task processing (runs in thread pool)"""
+        try:
+            start_time = time.time()
+            result = self._process_zone_task(task)
+            process_time = time.time() - start_time
+
+            # Update metrics
+            self.processed_frames += 1
+            self.avg_process_time = self.avg_process_time * 0.9 + process_time * 0.1
+
+            # Send result
+            result.process_time_ms = process_time * 1000
+
+            try:
+                self.result_queue.put(result, block=False)
+            except queue.Full:
+                pass  # Drop result if queue full
+
+        except Exception as e:
+            logger.error(f"Error processing zone task: {e}", exc_info=True)
         
     def _process_zone_task(self, task: ZoneTask) -> ZoneResult:
         """
@@ -223,10 +262,12 @@ class ZoneMonitoringService:
     def get_metrics(self) -> Dict[str, Any]:
         """Get service metrics"""
         return {
+            'num_workers': self.num_workers,
             'processed_frames': self.processed_frames,
             'dropped_frames': self.dropped_frames,
             'avg_process_time_ms': self.avg_process_time * 1000,
             'input_queue_size': self.input_queue.qsize(),
-            'result_queue_size': self.result_queue.qsize()
+            'result_queue_size': self.result_queue.qsize(),
+            'running': self.running
         }
 

@@ -894,9 +894,13 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                              output_dir=None, max_frames=None, max_duration_seconds=None,
                              output_video_path=None, output_csv_path=None, output_json_path=None,
                              progress_callback=None, cancellation_flag=None,
-                             violation_callback=None, alert_threshold=0):
+                             violation_callback=None, alert_threshold=0, zone_workers=None):
     """
     Process video with zone monitoring integrated into ReID pipeline
+
+    Args:
+        zone_workers: Number of worker threads for zone processing (default: auto-detect, capped at 4)
+                     Set to 1 for single-threaded mode, or higher for faster processing
 
     Args:
         video_path: Path to input video or stream URL(s)
@@ -941,8 +945,9 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     # Initialize zone monitor with camera count
     zone_monitor = ZoneMonitor(zone_config_path, iou_threshold, zone_opacity, num_cameras=num_cameras)
 
-    # Initialize zone monitoring service (separate thread)
-    zone_service = ZoneMonitoringService(zone_monitor, max_queue_size=100)
+    # Initialize zone monitoring service (thread pool)
+    # zone_workers: number of worker threads (default: auto-detect, capped at 4)
+    zone_service = ZoneMonitoringService(zone_monitor, max_queue_size=100, num_workers=zone_workers)
     zone_service.start()
 
     # Initialize Redis Track Manager
@@ -1288,6 +1293,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                     display_zone_name = zone_monitor.zones[display_zone_id]['name'] if display_zone_id in zone_monitor.zones else "Unknown"
                     if person_loc.get('last_exit_time'):
                         display_duration = frame_time - person_loc['last_exit_time']
+                    logger.debug(f"Using last zone for {info['label']}: {display_zone_name} (exited {display_duration:.1f}s ago)")
 
             if display_zone_id is not None:
                 color = (0, 255, 0)  # Green - in a zone or recently in zone
