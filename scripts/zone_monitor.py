@@ -148,18 +148,20 @@ class ZoneMonitor:
         """
         Load zone definitions from YAML or JSON
 
-        Supports two formats:
-        1. Single camera (old format):
-           zones:
-             zone1: {name, polygon, authorized_ids}
-             zone2: {...}
-
-        2. Multi-camera (new format):
+        Unified format (cameras-based):
            cameras:
              camera_1:
+               name: "Camera 1"
                zones:
                  zone1: {name, polygon, authorized_ids}
+                 zone2: {...}
              camera_2:
+               zones:
+                 zone1: {...}
+
+        For single camera, use:
+           cameras:
+             camera_1:
                zones:
                  zone1: {...}
 
@@ -177,44 +179,43 @@ class ZoneMonitor:
         zones = {}
         is_multi_camera = False
 
-        # Check format: 'cameras' key = multi-camera, 'zones' key = single camera
-        if 'cameras' in config:
-            # Multi-camera format
-            is_multi_camera = True
-            logger.info("📹 Detected multi-camera zone config")
+        # Only support 'cameras' format
+        if 'cameras' not in config:
+            raise ValueError("Invalid zone config: must contain 'cameras' key. "
+                           "Format: cameras -> camera_1 -> zones -> zone1")
 
-            for camera_idx, (camera_id, camera_data) in enumerate(config['cameras'].items()):
-                camera_name = camera_data.get('name', f'Camera {camera_idx+1}')
-                logger.info(f"   Loading zones for {camera_name}")
+        num_cameras = len(config['cameras'])
+        is_multi_camera = num_cameras > 1
 
-                if 'zones' not in camera_data:
-                    logger.warning(f"   No zones defined for {camera_name}")
-                    continue
-
-                for zone_id, zone_data in camera_data['zones'].items():
-                    # Create unique zone ID: camera_id + zone_id
-                    unique_zone_id = f"{camera_id}_{zone_id}"
-
-                    # Create zone with camera metadata
-                    zone = self._create_zone_from_data(
-                        zone_data,
-                        camera_idx=camera_idx,
-                        camera_id=camera_id,
-                        camera_name=camera_name
-                    )
-                    zones[unique_zone_id] = zone
-                    logger.info(f"      - {zone_data['name']} ({len(zone_data.get('authorized_ids', []))} authorized)")
-
-        elif 'zones' in config:
-            # Single camera format (backward compatible)
+        if is_multi_camera:
+            logger.info(f"📹 Detected multi-camera zone config ({num_cameras} cameras)")
+        else:
             logger.info("📹 Detected single-camera zone config")
 
-            for zone_id, zone_data in config['zones'].items():
-                # Create zone for camera 0 (single camera)
-                zone = self._create_zone_from_data(zone_data, camera_idx=0)
-                zones[zone_id] = zone
-        else:
-            raise ValueError("Invalid zone config: must contain 'zones' or 'cameras' key")
+        for camera_idx, (camera_id, camera_data) in enumerate(config['cameras'].items()):
+            camera_name = camera_data.get('name', f'Camera {camera_idx+1}')
+            logger.info(f"   Loading zones for {camera_name}")
+
+            if 'zones' not in camera_data:
+                logger.warning(f"   No zones defined for {camera_name}")
+                continue
+
+            for zone_id, zone_data in camera_data['zones'].items():
+                # Only add camera prefix for multi-camera setups
+                if is_multi_camera:
+                    unique_zone_id = f"{camera_id}_{zone_id}"
+                else:
+                    unique_zone_id = zone_id  # Keep simple zone1, zone2 for single camera
+
+                # Create zone with camera metadata
+                zone = self._create_zone_from_data(
+                    zone_data,
+                    camera_idx=camera_idx,
+                    camera_id=camera_id,
+                    camera_name=camera_name
+                )
+                zones[unique_zone_id] = zone
+                logger.info(f"      - {zone_data['name']} ({len(zone_data.get('authorized_ids', []))} authorized)")
 
         return zones, is_multi_camera
 

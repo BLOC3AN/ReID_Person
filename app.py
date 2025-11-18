@@ -880,10 +880,11 @@ elif page == "Detect & Track":
                     }
                 return zones_dict
 
-            # Create YAML content from zones
+            # Create YAML content from zones (always use cameras format)
+            cameras_dict = {}
+
             if num_cameras > 1 and 'camera_zones' in st.session_state:
-                # Multi-camera format
-                cameras_dict = {}
+                # Multi-camera: use camera_zones
                 for cam_idx in range(num_cameras):
                     camera_key = f'camera_{cam_idx+1}'
                     camera_zones = st.session_state.camera_zones.get(camera_key, [])
@@ -892,14 +893,17 @@ elif page == "Detect & Track":
                         'name': f'Camera {cam_idx+1}',
                         'zones': zones_list_to_dict(camera_zones)
                     }
-
-                zones_data = {'cameras': cameras_dict}
             else:
-                # Single camera format
-                zones_data = {'zones': zones_list_to_dict(st.session_state.zones_config)}
+                # Single camera: wrap in camera_1
+                cameras_dict['camera_1'] = {
+                    'name': 'Camera 1',
+                    'zones': zones_list_to_dict(st.session_state.zones_config)
+                }
+
+            zones_data = {'cameras': cameras_dict}
 
             # Preview YAML
-            if zones_data and (zones_data.get('zones') or zones_data.get('cameras')):
+            if zones_data and zones_data.get('cameras'):
                 with st.expander("📄 Preview YAML Config", expanded=False):
                     yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
                     st.code(yaml_content, language='yaml')
@@ -908,7 +912,7 @@ elif page == "Detect & Track":
                     st.download_button(
                         label="💾 Download Zone Config",
                         data=yaml_content,
-                        file_name="zones_multi_camera.yaml" if num_cameras > 1 else "zones.yaml",
+                        file_name="zones.yaml",
                         mime="application/x-yaml"
                     )
 
@@ -1065,12 +1069,13 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                 if zone_config_file:
                     logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (uploaded): {zone_config_file.name}")
                 else:
-                    # Count zones based on format (single camera or multi-camera)
-                    if 'cameras' in zones_data:
-                        total_zones = sum(len(cam_data['zones']) for cam_data in zones_data['cameras'].values())
-                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {total_zones} zones across {len(zones_data['cameras'])} cameras")
+                    # Count zones (always cameras format now)
+                    total_zones = sum(len(cam_data['zones']) for cam_data in zones_data['cameras'].values())
+                    num_cams = len(zones_data['cameras'])
+                    if num_cams > 1:
+                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {total_zones} zones across {num_cams} cameras")
                     else:
-                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {len(zones_data['zones'])} zones")
+                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {total_zones} zones")
 
             spinner_text = "Uploading video and starting detection..." if input_method == "Upload Video File" else "Starting stream detection..."
             with st.spinner(spinner_text):

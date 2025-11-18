@@ -83,25 +83,30 @@ Output: Video (zones drawn) + CSV + JSON report
 1. Tạo file `zones.yaml`:
 
 ```yaml
-zones:
-  zone1:
-    name: "Assembly Area"
-    polygon:
-      - [100, 100]  # Top-left
-      - [400, 100]  # Top-right
-      - [400, 300]  # Bottom-right
-      - [100, 300]  # Bottom-left
-    authorized_ids: [1]  # Duong (Global ID từ Qdrant)
+cameras:
+  camera_1:
+    name: "Camera 1 - Main Entrance"
+    zones:
+      zone1:
+        name: "Assembly Area"
+        polygon:
+          - [100, 100]  # Top-left
+          - [400, 100]  # Top-right
+          - [400, 300]  # Bottom-right
+          - [100, 300]  # Bottom-left
+        authorized_ids: [1]  # Duong (Global ID từ Qdrant)
 
-  zone2:
-    name: "Packaging Area"
-    polygon:
-      - [450, 100]
-      - [750, 100]
-      - [750, 300]
-      - [450, 300]
-    authorized_ids: [2]  # Khiem
+      zone2:
+        name: "Packaging Area"
+        polygon:
+          - [450, 100]
+          - [750, 100]
+          - [750, 300]
+          - [450, 300]
+        authorized_ids: [2]  # Khiem
 ```
+
+**Note:** Format mới sử dụng `cameras -> camera_1 -> zones` structure. Điều này cho phép mở rộng sang multi-camera dễ dàng.
 
 2. Chạy qua UI:
    - Mở UI: `http://localhost:8501`
