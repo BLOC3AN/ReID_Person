@@ -601,6 +601,8 @@ elif page == "Detect & Track":
                                         if auth_id in users_dict:
                                             current_selections.append(f"{users_dict[auth_id]} (ID: {auth_id})")
 
+                                    logger.info(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] current authorized_ids: {zone['authorized_ids']}, current_selections: {current_selections}")
+
                                     selected_users = st.multiselect(
                                         "Authorized Users",
                                         options=list(user_options.keys()),
@@ -609,8 +611,16 @@ elif page == "Detect & Track":
                                         help="Select authorized users from database"
                                     )
 
+                                    logger.info(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] selected_users from widget: {selected_users}")
+
                                     # Update authorized_ids based on selection
-                                    zone['authorized_ids'] = [user_options[user] for user in selected_users]
+                                    # IMPORTANT: Only update if widget is not empty OR if current_selections was also empty
+                                    # This prevents widget reset from clearing authorized_ids
+                                    if selected_users or not current_selections:
+                                        zone['authorized_ids'] = [user_options[user] for user in selected_users]
+                                        logger.info(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] final authorized_ids: {zone['authorized_ids']}")
+                                    else:
+                                        logger.warning(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] Widget returned empty but current_selections was not empty - keeping existing authorized_ids: {zone['authorized_ids']}")
                                 else:
                                     # Fallback to text input if database is not available
                                     st.warning("⚠️ Database not available. Using manual input.")
@@ -809,6 +819,8 @@ elif page == "Detect & Track":
                                         if auth_id in users_dict:
                                             current_selections.append(f"{users_dict[auth_id]} (ID: {auth_id})")
 
+                                    logger.info(f"[Single-cam Zone {i+1}] current authorized_ids: {zone['authorized_ids']}, current_selections: {current_selections}")
+
                                     selected_users = st.multiselect(
                                         "Authorized Users",
                                         options=list(user_options.keys()),
@@ -817,8 +829,16 @@ elif page == "Detect & Track":
                                         help="Select authorized users from database"
                                     )
 
+                                    logger.info(f"[Single-cam Zone {i+1}] selected_users from widget: {selected_users}")
+
                                     # Update authorized_ids based on selection
-                                    zone['authorized_ids'] = [user_options[user] for user in selected_users]
+                                    # IMPORTANT: Only update if widget is not empty OR if current_selections was also empty
+                                    # This prevents widget reset from clearing authorized_ids
+                                    if selected_users or not current_selections:
+                                        zone['authorized_ids'] = [user_options[user] for user in selected_users]
+                                        logger.info(f"[Single-cam Zone {i+1}] final authorized_ids: {zone['authorized_ids']}")
+                                    else:
+                                        logger.warning(f"[Single-cam Zone {i+1}] Widget returned empty but current_selections was not empty - keeping existing authorized_ids: {zone['authorized_ids']}")
                                 else:
                                     # Fallback to text input if database is not available
                                     st.warning("⚠️ Database not available. Using manual input.")
@@ -891,6 +911,7 @@ elif page == "Detect & Track":
                         'polygon': zone['polygon'],
                         'authorized_ids': zone['authorized_ids']
                     }
+                    logger.info(f"[YAML Export] Zone {zone_id} ({zone['name']}): authorized_ids={zone['authorized_ids']}")
                 return zones_dict
 
             # Create YAML content from zones (always use cameras format)
