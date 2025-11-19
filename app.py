@@ -104,9 +104,10 @@ page = st.sidebar.selectbox(
     ["Detect & Track", "Register Person", "👥 User Management", "ℹ️ About"]
 )
 
-# PAGE 2: REGISTER PERSON
 # ============================================================================
-elif page == "Register Person":
+# PAGE 1: REGISTER PERSON
+# ============================================================================
+if page == "Register Person":
     st.header("Register Person to Database")
     st.markdown("Register a person using face recognition (ArcFace)")
 
