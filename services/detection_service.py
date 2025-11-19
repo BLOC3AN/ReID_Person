@@ -1136,6 +1136,35 @@ async def cancel_job(job_id: str):
     })
 
 
+@app.get("/zones/from-db")
+async def get_zones_from_database(camera_name: str = "camera_1"):
+    """
+    Get zone configuration from database
+
+    Args:
+        camera_name: Camera identifier (default: "camera_1")
+
+    Returns:
+        Zone configuration in YAML-compatible format
+    """
+    try:
+        from services.zone_db_loader import get_zone_config_dict
+
+        zone_config = get_zone_config_dict(camera_name)
+
+        if not zone_config:
+            raise HTTPException(
+                status_code=404,
+                detail="No zones found in database or database connection failed"
+            )
+
+        return JSONResponse(content=zone_config)
+
+    except Exception as e:
+        logger.error(f"Error loading zones from database: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/job/{job_id}/status")
 async def get_job_status(job_id: str):
     """
