@@ -1212,11 +1212,23 @@ Zone Border Thickness: {int(zone_opacity*10)}px
         job_id = st.session_state['detect_current_job_id']
         logger.info(f"📋 [Detect & Track] Displaying results for job: {job_id}")
 
+        # Check job status to determine if multi-stream
+        is_multi_stream = False
+        try:
+            status_response = requests.get(f"{DETECTION_API_URL}/status/{job_id}")
+            if status_response.status_code == 200:
+                status = status_response.json()
+                is_multi_stream = status.get("is_multi_stream", False)
+                logger.info(f"📋 [Detect & Track] Job type: {'Multi-stream' if is_multi_stream else 'Single-stream'}")
+        except Exception as e:
+            logger.warning(f"⚠️ [Detect & Track] Failed to fetch job status: {e}")
+
         # Get cached data (removed log)
         video_cache_key = f"detect_video_{job_id}"
         csv_cache_key = f"detect_csv_{job_id}"
         json_cache_key = f"detect_json_{job_id}"
         zip_cache_key = f"detect_zip_{job_id}"
+        zip_filename_key = f"detect_zip_filename_{job_id}"
 
         video_data = st.session_state.get(video_cache_key)
         csv_data = st.session_state.get(csv_cache_key)
@@ -1224,6 +1236,28 @@ Zone Border Thickness: {int(zone_opacity*10)}px
         zip_data = st.session_state.get(zip_cache_key)
 
         logger.info(f"📊 [Detect & Track] Cache status - Video: {bool(video_data)}, CSV: {bool(csv_data)}, JSON: {bool(json_data)}, ZIP: {bool(zip_data)}")
+
+        # If multi-stream but ZIP not cached, fetch it now
+        if is_multi_stream and not zip_data:
+            logger.info(f"📦 [Detect & Track] Multi-stream job but ZIP not cached - fetching now")
+            try:
+                zip_url = f"{DETECTION_API_URL}/download/zip/{job_id}"
+                zip_response = requests.get(zip_url)
+                if zip_response.status_code == 200:
+                    st.session_state[zip_cache_key] = zip_response.content
+                    zip_data = zip_response.content
+                    # Extract filename from Content-Disposition header
+                    content_disposition = zip_response.headers.get('content-disposition', '')
+                    if 'filename=' in content_disposition:
+                        filename = content_disposition.split('filename=')[1].strip('"')
+                        st.session_state[zip_filename_key] = filename
+                    else:
+                        st.session_state[zip_filename_key] = f"{job_id}_multi_stream_results.zip"
+                    logger.info(f"✅ [Detect & Track] ZIP fetched and cached: {len(zip_data) / (1024*1024):.2f} MB")
+                else:
+                    logger.error(f"❌ [Detect & Track] Failed to fetch ZIP: status {zip_response.status_code}")
+            except Exception as e:
+                logger.error(f"❌ [Detect & Track] Failed to fetch ZIP: {e}")
 
         # Show multi-stream notification if ZIP is available
         if zip_data:
