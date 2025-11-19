@@ -50,23 +50,27 @@ else
     echo "✅ Docker already installed ($(docker --version))"
 fi
 
-# 2. Install NVIDIA Container Runtime if not exists
+# 2. Install NVIDIA Container Runtime if not exists (optional)
 echo ""
 echo "[2/5] Checking NVIDIA Container Runtime..."
 if ! command_exists nvidia-container-runtime; then
-    echo "NVIDIA Container Runtime not found. Installing..."
+    echo "NVIDIA Container Runtime not found. Attempting to install..."
 
     # Add NVIDIA Container Runtime repository
     distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-    curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+    curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add - 2>/dev/null || true
     curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | \
-        sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+        sudo tee /etc/apt/sources.list.d/nvidia-docker.list > /dev/null 2>&1 || true
 
-    # Install NVIDIA Container Runtime
-    sudo apt-get update
-    sudo apt-get install -y nvidia-container-runtime
+    # Install NVIDIA Container Runtime (non-blocking if fails)
+    sudo apt-get update > /dev/null 2>&1 || true
+    sudo apt-get install -y nvidia-container-runtime 2>/dev/null || {
+        echo "⚠️  NVIDIA Container Runtime not available for this distribution (continuing without GPU support)"
+    }
 
-    echo "✅ NVIDIA Container Runtime installed successfully"
+    if command_exists nvidia-container-runtime; then
+        echo "✅ NVIDIA Container Runtime installed successfully"
+    fi
 else
     echo "✅ NVIDIA Container Runtime already installed"
 fi
