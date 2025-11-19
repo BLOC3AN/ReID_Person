@@ -1107,81 +1107,33 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                     # Clear stop button
                                     stop_button_container.empty()
 
-                                    # Check if multi-stream job FIRST
-                                    is_multi_stream = status.get("is_multi_stream", False)
+                                    # Always fetch ZIP file (works for both single-stream and multi-stream)
+                                    logger.info(f"📦 [Detect & Track] Fetching ZIP file for job: {job_id}")
+                                    zip_url = f"{DETECTION_API_URL}/download/zip/{job_id}"
+                                    zip_cache_key = f"detect_zip_{job_id}"
+                                    zip_filename_key = f"detect_zip_filename_{job_id}"
 
-                                    if is_multi_stream:
-                                        # Multi-stream: ONLY fetch ZIP file
-                                        logger.info(f"📦 [Detect & Track] Multi-stream job detected - fetching ZIP only")
-                                        zip_url = f"{DETECTION_API_URL}/download/zip/{job_id}"
-                                        zip_cache_key = f"detect_zip_{job_id}"
-                                        zip_filename_key = f"detect_zip_filename_{job_id}"
-                                        if zip_cache_key not in st.session_state:
-                                            try:
-                                                logger.info(f"📥 [Detect & Track] Fetching multi-stream ZIP: {zip_url}")
-                                                zip_response = requests.get(zip_url)
-                                                if zip_response.status_code == 200:
-                                                    st.session_state[zip_cache_key] = zip_response.content
-                                                    # Extract filename from Content-Disposition header
-                                                    content_disposition = zip_response.headers.get('content-disposition', '')
-                                                    if 'filename=' in content_disposition:
-                                                        filename = content_disposition.split('filename=')[1].strip('"')
-                                                        st.session_state[zip_filename_key] = filename
-                                                    else:
-                                                        # Fallback to default name
-                                                        st.session_state[zip_filename_key] = f"{job_id}_multi_stream_results.zip"
-                                                    logger.info(f"✅ [Detect & Track] ZIP cached: {len(zip_response.content) / (1024*1024):.2f} MB, filename: {st.session_state[zip_filename_key]}")
+                                    if zip_cache_key not in st.session_state:
+                                        try:
+                                            logger.info(f"📥 [Detect & Track] Fetching ZIP: {zip_url}")
+                                            zip_response = requests.get(zip_url)
+                                            if zip_response.status_code == 200:
+                                                st.session_state[zip_cache_key] = zip_response.content
+                                                # Extract filename from Content-Disposition header
+                                                content_disposition = zip_response.headers.get('content-disposition', '')
+                                                if 'filename=' in content_disposition:
+                                                    filename = content_disposition.split('filename=')[1].strip('"')
+                                                    st.session_state[zip_filename_key] = filename
                                                 else:
-                                                    logger.warning(f"⚠️ [Detect & Track] ZIP not available (status {zip_response.status_code})")
-                                            except Exception as e:
-                                                logger.warning(f"⚠️ [Detect & Track] Failed to fetch ZIP: {e}")
-                                    else:
-                                        # Single-stream: fetch individual files
-                                        logger.info(f"📹 [Detect & Track] Single-stream job - fetching individual files")
-
-                                        # Fetch results ONCE and cache in session state
-                                        video_url = f"{DETECTION_API_URL}/download/video/{job_id}"
-                                        csv_url = f"{DETECTION_API_URL}/download/csv/{job_id}"
-
-                                        # Cache video data
-                                        video_cache_key = f"detect_video_{job_id}"
-                                        if video_cache_key not in st.session_state:
-                                            try:
-                                                logger.info(f"📥 [Detect & Track] Fetching video: {video_url}")
-                                                video_response = requests.get(video_url)
-                                                if video_response.status_code == 200:
-                                                    st.session_state[video_cache_key] = video_response.content
-                                                    logger.info(f"✅ [Detect & Track] Video cached: {len(video_response.content) / (1024*1024):.2f} MB")
-                                            except Exception as e:
-                                                logger.error(f"❌ [Detect & Track] Failed to fetch video: {e}")
-                                                st.error(f"Failed to fetch video: {e}")
-
-                                        # Cache CSV data
-                                        csv_cache_key = f"detect_csv_{job_id}"
-                                        if csv_cache_key not in st.session_state:
-                                            try:
-                                                logger.info(f"📥 [Detect & Track] Fetching CSV: {csv_url}")
-                                                csv_response = requests.get(csv_url)
-                                                if csv_response.status_code == 200:
-                                                    st.session_state[csv_cache_key] = csv_response.content
-                                                    logger.info(f"✅ [Detect & Track] CSV cached: {len(csv_response.content) / 1024:.2f} KB")
-                                            except Exception as e:
-                                                logger.error(f"❌ [Detect & Track] Failed to fetch CSV: {e}")
-                                                st.error(f"Failed to fetch CSV: {e}")
-
-                                        # Cache zone JSON if zone monitoring was enabled
-                                        if status.get("zone_monitoring", False):
-                                            json_url = f"{DETECTION_API_URL}/download/json/{job_id}"
-                                            json_cache_key = f"detect_json_{job_id}"
-                                            if json_cache_key not in st.session_state:
-                                                try:
-                                                    logger.info(f"📥 [Detect & Track] Fetching zone report: {json_url}")
-                                                    json_response = requests.get(json_url)
-                                                    if json_response.status_code == 200:
-                                                        st.session_state[json_cache_key] = json_response.content
-                                                        logger.info(f"✅ [Detect & Track] Zone report cached: {len(json_response.content) / 1024:.2f} KB")
-                                                except Exception as e:
-                                                    logger.warning(f"⚠️ [Detect & Track] Failed to fetch zone report: {e}")
+                                                    # Fallback to default name
+                                                    st.session_state[zip_filename_key] = f"{job_id}_results.zip"
+                                                logger.info(f"✅ [Detect & Track] ZIP cached: {len(zip_response.content) / (1024*1024):.2f} MB, filename: {st.session_state[zip_filename_key]}")
+                                            else:
+                                                logger.error(f"❌ [Detect & Track] ZIP not available (status {zip_response.status_code})")
+                                                st.error(f"Failed to fetch results ZIP (status {zip_response.status_code})")
+                                        except Exception as e:
+                                            logger.error(f"❌ [Detect & Track] Failed to fetch ZIP: {e}")
+                                            st.error(f"Failed to fetch results: {e}")
 
                                     break
 
@@ -1212,34 +1164,17 @@ Zone Border Thickness: {int(zone_opacity*10)}px
         job_id = st.session_state['detect_current_job_id']
         logger.info(f"📋 [Detect & Track] Displaying results for job: {job_id}")
 
-        # Check job status to determine if multi-stream
-        is_multi_stream = False
-        try:
-            status_response = requests.get(f"{DETECTION_API_URL}/status/{job_id}")
-            if status_response.status_code == 200:
-                status = status_response.json()
-                is_multi_stream = status.get("is_multi_stream", False)
-                logger.info(f"📋 [Detect & Track] Job type: {'Multi-stream' if is_multi_stream else 'Single-stream'}")
-        except Exception as e:
-            logger.warning(f"⚠️ [Detect & Track] Failed to fetch job status: {e}")
-
-        # Get cached data (removed log)
-        video_cache_key = f"detect_video_{job_id}"
-        csv_cache_key = f"detect_csv_{job_id}"
-        json_cache_key = f"detect_json_{job_id}"
+        # Get cached ZIP data
         zip_cache_key = f"detect_zip_{job_id}"
         zip_filename_key = f"detect_zip_filename_{job_id}"
-
-        video_data = st.session_state.get(video_cache_key)
-        csv_data = st.session_state.get(csv_cache_key)
-        json_data = st.session_state.get(json_cache_key)
         zip_data = st.session_state.get(zip_cache_key)
+        zip_filename = st.session_state.get(zip_filename_key, f"{job_id}_results.zip")
 
-        logger.info(f"📊 [Detect & Track] Cache status - Video: {bool(video_data)}, CSV: {bool(csv_data)}, JSON: {bool(json_data)}, ZIP: {bool(zip_data)}")
+        logger.info(f"📊 [Detect & Track] Cache status - ZIP: {bool(zip_data)}")
 
-        # If multi-stream but ZIP not cached, fetch it now
-        if is_multi_stream and not zip_data:
-            logger.info(f"📦 [Detect & Track] Multi-stream job but ZIP not cached - fetching now")
+        # If ZIP not cached, fetch it now
+        if not zip_data:
+            logger.info(f"📦 [Detect & Track] ZIP not cached - fetching now")
             try:
                 zip_url = f"{DETECTION_API_URL}/download/zip/{job_id}"
                 zip_response = requests.get(zip_url)
@@ -1251,327 +1186,46 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                     if 'filename=' in content_disposition:
                         filename = content_disposition.split('filename=')[1].strip('"')
                         st.session_state[zip_filename_key] = filename
-                    else:
-                        st.session_state[zip_filename_key] = f"{job_id}_multi_stream_results.zip"
+                        zip_filename = filename
                     logger.info(f"✅ [Detect & Track] ZIP fetched and cached: {len(zip_data) / (1024*1024):.2f} MB")
                 else:
                     logger.error(f"❌ [Detect & Track] Failed to fetch ZIP: status {zip_response.status_code}")
+                    st.error(f"Failed to fetch results ZIP (status {zip_response.status_code})")
             except Exception as e:
                 logger.error(f"❌ [Detect & Track] Failed to fetch ZIP: {e}")
+                st.error(f"Failed to fetch results: {e}")
 
-        # Show multi-stream notification if ZIP is available
+        # Show completion message
         if zip_data:
-            st.success("✅ Multi-stream processing completed! All camera outputs are ready for download.")
-            st.info("📦 This is a **multi-camera job**. Download the ZIP file below to get all results organized by camera.")
+            st.success("✅ Processing completed! All outputs are ready for download.")
+            st.info("📦 Download the ZIP file below to get all results (video, CSV, zone reports).")
 
-        # Real-Time Zone Monitoring Dashboard (if zone monitoring was enabled)
-        # Only show for single-stream jobs (multi-stream has separate outputs per camera)
-        if json_data and csv_data and not zip_data:
-            st.markdown("### 📊 Real-Time Zone Monitoring Dashboard")
-            import json
-            import pandas as pd
-            import io
-            from collections import defaultdict
+        # Download ZIP file
+        st.markdown("---")
+        st.markdown("### 📦 Download Results")
 
-            try:
-                logger.info(f"📊 [Detect & Track] Parsing zone monitoring data...")
-                zone_report = json.loads(json_data)
-                df = pd.read_csv(io.BytesIO(csv_data))
-
-                # Tab layout for monitoring
-                tab1, tab2, tab3 = st.tabs(["🗺️ Zone Status", "📈 Statistics", "📋 Raw Data"])
-
-                # Tab 1: Zone Status (Real-time)
-                with tab1:
-                    st.subheader("Current Zone Status")
-
-                    if "summary" in zone_report:
-                        # Metrics row
-                        total_zones = len(zone_report["summary"])
-                        total_persons_in_zones = sum(z['count'] for z in zone_report["summary"].values())
-
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Total Zones", total_zones)
-                        with col2:
-                            st.metric("Persons in Zones", total_persons_in_zones)
-
-                        st.divider()
-
-                        # Display each zone
-                        for zone_id, zone_info in zone_report["summary"].items():
-                            # Zone color logic:
-                            # Green: Person is IN their authorized zone
-                            # Red: Person is NOT in their authorized zone (but should be)
-                            authorized_ids = zone_info.get('authorized_ids', [])
-                            current_persons = zone_info.get('current_persons', [])
-
-                            # Determine zone status
-                            all_authorized = all(p.get('authorized', False) for p in current_persons) if current_persons else True
-                            zone_color = "🟢" if all_authorized else "🔴"
-
-                            with st.expander(f"{zone_color} **{zone_info['name']}** ({zone_id}) - {zone_info['count']} person(s)", expanded=True):
-                                st.markdown(f"**Authorized IDs:** {', '.join(map(str, authorized_ids)) if authorized_ids else 'None'}")
-
-                                if current_persons:
-                                    st.markdown("**Current Persons:**")
-                                    for person in current_persons:
-                                        # Person status icon
-                                        # Green: Authorized and in correct zone
-                                        # Red: Not authorized for this zone
-                                        person_icon = "🟢" if person.get('authorized', False) else "🔴"
-                                        st.markdown(f"{person_icon} **{person['name']}** (ID: {person['id']}) - Duration: {person['duration']:.1f}s")
-                                else:
-                                    st.info("No persons currently in this zone")
-
-                # Tab 2: Historical Statistics
-                with tab2:
-                    st.subheader("Historical Statistics")
-
-                    # Calculate statistics per person
-                    stats_data = []
-                    persons = df[df['global_id'] > 0].groupby('global_id')
-
-                    for global_id, person_df in persons:
-                        person_name = person_df['person_name'].iloc[0]
-
-                        # Get zones this person was registered in
-                        zones_registered = person_df[person_df['zone_name'].notna() & (person_df['zone_name'] != '')]['zone_name'].unique()
-                        zone_registered = ', '.join(zones_registered) if len(zones_registered) > 0 else "None"
-
-                        # Count zone transitions
-                        person_df_sorted = person_df.sort_values('frame_id')
-                        prev_zone = None
-                        total_in = 0
-                        total_out = 0
-
-                        for _, row in person_df_sorted.iterrows():
-                            current_zone = row['zone_name'] if pd.notna(row['zone_name']) and row['zone_name'] != '' else None
-
-                            if current_zone != prev_zone:
-                                if current_zone is not None and prev_zone is None:
-                                    total_in += 1
-                                elif current_zone is None and prev_zone is not None:
-                                    total_out += 1
-
-                            prev_zone = current_zone
-
-                        # Get current status
-                        latest_person_df = person_df[person_df['frame_id'] == person_df['frame_id'].max()]
-                        if len(latest_person_df) > 0:
-                            latest_row = latest_person_df.iloc[0]
-                            current_zone = latest_row['zone_name'] if pd.notna(latest_row['zone_name']) and latest_row['zone_name'] != '' else None
-                            status = 'in' if current_zone else 'out'
-                        else:
-                            status = 'Null'
-
-                        stats_data.append({
-                            'Name': person_name,
-                            'Zone Registered': zone_registered,
-                            'Status': status,
-                            'Total In': total_in,
-                            'Total Out': total_out
-                        })
-
-                    if stats_data:
-                        stats_df = pd.DataFrame(stats_data)
-                        st.dataframe(stats_df, use_container_width=True, hide_index=True)
-
-                        # Visualizations
-                        st.divider()
-                        st.markdown("#### 📊 Visualizations")
-
-                        col1, col2 = st.columns(2)
-
-                        with col1:
-                            import plotly.graph_objects as go
-                            fig = go.Figure(data=[
-                                go.Bar(name='Total In', x=stats_df['Name'], y=stats_df['Total In'], marker_color='green'),
-                                go.Bar(name='Total Out', x=stats_df['Name'], y=stats_df['Total Out'], marker_color='red')
-                            ])
-                            fig.update_layout(
-                                title="Zone Entry/Exit Counts",
-                                xaxis_title="Person",
-                                yaxis_title="Count",
-                                barmode='group'
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-
-                        with col2:
-                            status_counts = stats_df['Status'].value_counts()
-                            fig = go.Figure(data=[go.Pie(labels=status_counts.index, values=status_counts.values)])
-                            fig.update_layout(title="Current Status Distribution")
-                            st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.info("No person statistics available")
-
-                # Tab 3: Raw Data
-                with tab3:
-                    st.subheader("Raw Tracking Data")
-
-                    # Filters
-                    col1, col2, col3 = st.columns(3)
-
-                    with col1:
-                        filter_person = st.multiselect(
-                            "Filter by Person",
-                            options=df[df['global_id'] > 0]['person_name'].unique().tolist(),
-                            default=[]
-                        )
-
-                    with col2:
-                        filter_zone = st.multiselect(
-                            "Filter by Zone",
-                            options=df[df['zone_name'].notna() & (df['zone_name'] != '')]['zone_name'].unique().tolist(),
-                            default=[]
-                        )
-
-                    with col3:
-                        show_unknown = st.checkbox("Show Unknown Persons", value=False)
-
-                    # Apply filters
-                    filtered_df = df.copy()
-
-                    if not show_unknown:
-                        filtered_df = filtered_df[filtered_df['global_id'] > 0]
-
-                    if filter_person:
-                        filtered_df = filtered_df[filtered_df['person_name'].isin(filter_person)]
-
-                    if filter_zone:
-                        filtered_df = filtered_df[filtered_df['zone_name'].isin(filter_zone)]
-
-                    st.dataframe(filtered_df.head(100), use_container_width=True, hide_index=True)
-                    st.info(f"Showing first 100 of {len(filtered_df)} filtered records (Total: {len(df)} records)")
-
-                logger.info(f"✅ [Detect & Track] Zone monitoring dashboard displayed")
-            except Exception as e:
-                logger.error(f"❌ [Detect & Track] Failed to parse zone monitoring data: {e}")
-                st.error(f"Failed to parse zone monitoring data: {e}")
-                import traceback
-                st.code(traceback.format_exc())
-
-        elif csv_data and not zip_data:
-            # Show CSV preview if no zone monitoring (single-stream only)
-            st.markdown("### 📊 Tracking Data Preview")
-            import pandas as pd
-            import io
-            try:
-                logger.info(f"📊 [Detect & Track] Parsing CSV...")
-                df = pd.read_csv(io.BytesIO(csv_data))
-                st.dataframe(df.head(100), width="stretch")
-                st.info(f"Showing first 100 rows of {len(df)} total detections")
-                logger.info(f"✅ [Detect & Track] CSV displayed: {len(df)} rows")
-            except Exception as e:
-                logger.error(f"❌ [Detect & Track] Failed to parse CSV: {e}")
-                st.error(f"Failed to parse CSV: {e}")
-
-        # Download buttons - USE CACHED DATA
-        st.markdown("### 📁 Download Results")
-
-        # Check if multi-stream ZIP is available
-        zip_cache_key = f"detect_zip_{job_id}"
-        zip_filename_key = f"detect_zip_filename_{job_id}"
-        zip_data = st.session_state.get(zip_cache_key)
-        zip_filename = st.session_state.get(zip_filename_key, f"{job_id}_multi_stream_results.zip")
-
-        # If multi-stream, ONLY show ZIP download
         if zip_data:
-            st.info("📦 **Multi-Stream Job**: Download the complete ZIP file containing all camera outputs")
+            # Show ZIP content structure hint
+            st.markdown("**ZIP File Contents:**")
+            st.markdown("""
+            - 📹 **Video**: Annotated output video with tracking boxes
+            - 📊 **CSV**: Tracking data with person IDs and coordinates
+            - 📋 **JSON**: Zone monitoring report (if enabled)
 
-            # Show ZIP content structure
-            with st.expander("📋 ZIP File Contents", expanded=False):
-                st.markdown("""
-                The ZIP file contains organized outputs for each camera:
-                ```
-                multi_stream_{timestamp}/
-                ├── camera_0/
-                │   ├── output_*.mp4      (Annotated video)
-                │   ├── tracks_*.csv      (Tracking data)
-                │   └── zones_*.json      (Zone monitoring report)
-                ├── camera_1/
-                │   ├── output_*.mp4
-                │   ├── tracks_*.csv
-                │   └── zones_*.json
-                └── ...
-                ```
-                """)
+            For multi-camera jobs, files are organized by camera in separate folders.
+            """)
 
-            if st.download_button(
-                label="📦 Download All Cameras (ZIP)",
+            # Download button
+            st.download_button(
+                label="📦 Download ZIP",
                 data=zip_data,
                 file_name=zip_filename,
                 mime="application/zip",
-                key=f"download_detect_zip_{job_id}",
                 use_container_width=True
-            ):
-                logger.info(f"📥 [Detect & Track] User downloading multi-stream ZIP: {zip_filename} ({len(zip_data) / (1024*1024):.2f} MB)")
-
+            )
+            logger.info(f"✅ [Detect & Track] ZIP download button displayed: {zip_filename}")
         else:
-            # Single-stream: show individual download buttons
-            # Adjust columns based on whether zone report exists (removed log download)
-            if json_data:
-                col1, col2, col3 = st.columns(3)
-            else:
-                col1, col2 = st.columns(2)
-                col3 = None
-
-            with col1:
-                if video_data:
-                    if st.download_button(
-                        label="📹 Download Video",
-                        data=video_data,
-                        file_name=f"{job_id}_output.mp4",
-                        mime="video/mp4",
-                        key=f"download_detect_video_{job_id}",
-                        use_container_width=True
-                    ):
-                        logger.info(f"📥 [Detect & Track] User downloading video: {job_id}_output.mp4 ({len(video_data) / (1024*1024):.2f} MB)")
-                else:
-                    st.warning("Video not available")
-
-            with col2:
-                if csv_data:
-                    if st.download_button(
-                        label="📊 Download CSV",
-                        data=csv_data,
-                        file_name=f"{job_id}_tracking.csv",
-                        mime="text/csv",
-                        key=f"download_detect_csv_{job_id}",
-                        use_container_width=True
-                    ):
-                        logger.info(f"📥 [Detect & Track] User downloading CSV: {job_id}_tracking.csv ({len(csv_data) / 1024:.2f} KB)")
-                else:
-                    st.warning("CSV not available")
-
-            if col3 and json_data:
-                if st.download_button(
-                    label="🗺️ Download Zone Report",
-                    data=json_data,
-                    file_name=f"{job_id}_zones.json",
-                    mime="application/json",
-                    key=f"download_detect_json_{job_id}",
-                    use_container_width=True
-                ):
-                    logger.info(f"📥 [Detect & Track] User downloading zone report: {job_id}_zones.json ({len(json_data) / 1024:.2f} KB)")
-
-        # Button to clear results and browse new video
-        st.markdown("---")
-        if st.button("🔄 Clear Results & Browse New Video", type="secondary", use_container_width=True):
-            logger.info(f"🔄 [Detect & Track] User clearing results for job: {job_id}")
-            # Clear all detection-related session state
-            if 'detect_current_job_id' in st.session_state:
-                job_id_to_clear = st.session_state['detect_current_job_id']
-                st.session_state.pop('detect_current_job_id', None)
-                st.session_state.pop(f"detect_video_{job_id_to_clear}", None)
-                st.session_state.pop(f"detect_csv_{job_id_to_clear}", None)
-                st.session_state.pop(f"detect_log_{job_id_to_clear}", None)
-                logger.info(f"✅ [Detect & Track] Results cleared, ready for new video")
-            st.rerun()
-
-# ============================================================================
-# PAGE 4: USER MANAGEMENT
-# ============================================================================
+            st.warning("⚠️ Results not available. Please wait for processing to complete.")
 elif page == "👥 User Management":
     st.header("👥 User Management")
     st.markdown("Manage users in PostgreSQL database")

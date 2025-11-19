@@ -1020,22 +1020,35 @@ async def download_json(job_id: str):
 
 @app.get("/download/zip/{job_id}")
 async def download_all_as_zip(job_id: str):
-    """Download all multi-stream outputs as a ZIP file"""
+    """Download all outputs as a ZIP file (supports both single-stream and multi-stream)"""
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
 
     if jobs[job_id]["status"] != "completed":
         raise HTTPException(status_code=400, detail="Job not completed yet")
 
-    # Check if this is a multi-stream job
-    if "multi_stream_dir" not in jobs[job_id]:
-        raise HTTPException(status_code=404, detail="Multi-stream output not found. This endpoint is only for multi-stream jobs.")
+    # Determine output directory and ZIP filename
+    is_multi_stream = jobs[job_id].get("is_multi_stream", False)
 
-    multi_stream_dirname = jobs[job_id]["multi_stream_dir"]
-    multi_stream_dir = OUTPUT_DIR / multi_stream_dirname
+    if is_multi_stream:
+        # Multi-stream: use multi_stream_dir
+        if "multi_stream_dir" not in jobs[job_id]:
+            raise HTTPException(status_code=404, detail="Multi-stream output not found.")
 
-    if not multi_stream_dir.exists():
-        raise HTTPException(status_code=404, detail=f"Multi-stream directory not found: {multi_stream_dirname}")
+        multi_stream_dirname = jobs[job_id]["multi_stream_dir"]
+        output_dir = OUTPUT_DIR / multi_stream_dirname
+        zip_filename = f"{multi_stream_dirname}_results.zip"
+    else:
+        # Single-stream: create ZIP from individual output files
+        output_dir = OUTPUT_DIR
+        # Generate timestamp for single-stream ZIP
+        from datetime import datetime, timezone, timedelta
+        tz_hcm = timezone(timedelta(hours=7))
+        timestamp = datetime.now(tz_hcm).strftime("%Y-%m-%d-%H-%M")
+        zip_filename = f"single_stream_{timestamp}_results.zip"
+
+    if not output_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Output directory not found: {output_dir}")
 
     # Create a temporary ZIP file
     import tempfile
@@ -1047,19 +1060,35 @@ async def download_all_as_zip(job_id: str):
 
     try:
         with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            # Add all files from multi_stream directory
-            for file_path in multi_stream_dir.rglob('*'):
-                if file_path.is_file():
-                    # Create relative path for ZIP archive
-                    arcname = file_path.relative_to(multi_stream_dir.parent)
-                    zipf.write(file_path, arcname=arcname)
-                    logger.info(f"Added to ZIP: {arcname}")
+            if is_multi_stream:
+                # Multi-stream: Add all files from multi_stream directory
+                for file_path in output_dir.rglob('*'):
+                    if file_path.is_file():
+                        # Create relative path for ZIP archive
+                        arcname = file_path.relative_to(output_dir.parent)
+                        zipf.write(file_path, arcname=arcname)
+                        logger.info(f"Added to ZIP: {arcname}")
+            else:
+                # Single-stream: Add individual output files for this job
+                job_files = [
+                    jobs[job_id].get("output_video"),
+                    jobs[job_id].get("output_csv"),
+                    jobs[job_id].get("zone_report")
+                ]
 
-        # Return the ZIP file with timestamp-based filename
+                for file_path_str in job_files:
+                    if file_path_str:
+                        file_path = Path(file_path_str)
+                        if file_path.exists() and file_path.is_file():
+                            # Use just the filename in ZIP (no subdirectories)
+                            zipf.write(file_path, arcname=file_path.name)
+                            logger.info(f"Added to ZIP: {file_path.name}")
+
+        # Return the ZIP file
         return FileResponse(
             path=temp_zip_path,
             media_type="application/zip",
-            filename=f"{multi_stream_dirname}_results.zip",
+            filename=zip_filename,
             background=BackgroundTask(lambda: os.unlink(temp_zip_path))  # Clean up temp file after sending
         )
 
