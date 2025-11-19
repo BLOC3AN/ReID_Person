@@ -101,7 +101,7 @@ st.markdown("---")
 # Sidebar for navigation
 page = st.sidebar.selectbox(
     "Select Operation",
-    ["Detect & Track", "Register Person", "👥 User Management", "ℹ️ About"]
+    ["Detect & Track", "Register Person", "🗄️ DB Management", "ℹ️ About"]
 )
 
 # ============================================================================
@@ -482,11 +482,111 @@ elif page == "Detect & Track":
                             col1, col2 = st.columns(2)
 
                             with col1:
-                                zone['name'] = st.text_input(
+                                # Load zones from database for dropdown
+                                db_zones = []
+                                db_manager = None
+                                try:
+                                    db_manager = get_db_manager()
+                                    if db_manager:
+                                        db_zones = db_manager.get_all_zones()
+                                except Exception as e:
+                                    logger.warning(f"Could not load zones from database: {e}")
+
+                                # Create zone name options
+                                zone_name_options = ["Custom (Manual Input)"] + [f"{z.zone_name} ({z.zone_id})" for z in db_zones]
+
+                                # Initialize session state for this zone's selection if not exists
+                                selection_key = f"zone_selection_cam{cam_idx}_z{zone_idx}"
+                                if selection_key not in st.session_state:
+                                    st.session_state[selection_key] = "Custom (Manual Input)"
+
+                                selected_zone_option = st.selectbox(
                                     "Zone Name",
-                                    value=zone['name'],
-                                    key=f"zone_name_cam{cam_idx}_z{zone_idx}"
+                                    options=zone_name_options,
+                                    index=zone_name_options.index(st.session_state[selection_key]) if st.session_state[selection_key] in zone_name_options else 0,
+                                    key=f"zone_name_select_cam{cam_idx}_z{zone_idx}",
+                                    help="Select from database or create custom zone"
                                 )
+
+                                # Check if selection changed
+                                if selected_zone_option != st.session_state[selection_key]:
+                                    st.session_state[selection_key] = selected_zone_option
+                                    logger.info(f"Zone selection changed to: {selected_zone_option}")
+
+                                    # If database zone selected, auto-fill immediately
+                                    if selected_zone_option != "Custom (Manual Input)":
+                                        zone_id = selected_zone_option.split('(')[-1].rstrip(')')
+                                        logger.info(f"Auto-filling zone_id: {zone_id}")
+
+                                        # Find the selected zone in database
+                                        for z in db_zones:
+                                            if z.zone_id == zone_id:
+                                                # Auto-fill from database
+                                                zone['name'] = z.zone_name
+                                                zone['polygon'] = [
+                                                    [int(z.x1), int(z.y1)],
+                                                    [int(z.x2), int(z.y2)],
+                                                    [int(z.x3), int(z.y3)],
+                                                    [int(z.x4), int(z.y4)]
+                                                ]
+                                                logger.info(f"Auto-filled polygon: {zone['polygon']}")
+
+                                                # Force update polygon widget state
+                                                widget_key = f"zone_polygon_input_cam{cam_idx}_z{zone_idx}"
+                                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                                                st.session_state[widget_key] = polygon_str
+                                                logger.info(f"Updated widget state {widget_key} = {polygon_str}")
+
+                                                # Get authorized users from this zone
+                                                if db_manager:
+                                                    try:
+                                                        users_in_zone = db_manager.get_users_by_zone(zone_id)
+                                                        zone['authorized_ids'] = [u.global_id for u in users_in_zone]
+                                                        logger.info(f"Auto-filled authorized_ids: {zone['authorized_ids']}")
+                                                    except Exception as e:
+                                                        logger.warning(f"Could not load users for zone: {e}")
+                                                break
+                                    st.rerun()
+
+                                # Handle zone selection for display
+                                if selected_zone_option == "Custom (Manual Input)":
+                                    # Manual input
+                                    zone['name'] = st.text_input(
+                                        "Custom Zone Name",
+                                        value=zone.get('name', f'Zone {zone_idx+1}'),
+                                        key=f"zone_name_custom_cam{cam_idx}_z{zone_idx}"
+                                    )
+                                else:
+                                    # Extract zone_id from selection
+                                    zone_id = selected_zone_option.split('(')[-1].rstrip(')')
+
+                                    # Find the selected zone in database and ensure data is loaded
+                                    selected_db_zone = None
+                                    for z in db_zones:
+                                        if z.zone_id == zone_id:
+                                            selected_db_zone = z
+                                            break
+
+                                    if selected_db_zone:
+                                        # Ensure zone data is populated (in case rerun didn't happen)
+                                        if not zone.get('polygon') or zone['polygon'] == [[100, 100], [200, 100], [200, 200], [100, 200]]:
+                                            zone['name'] = selected_db_zone.zone_name
+                                            zone['polygon'] = [
+                                                [int(selected_db_zone.x1), int(selected_db_zone.y1)],
+                                                [int(selected_db_zone.x2), int(selected_db_zone.y2)],
+                                                [int(selected_db_zone.x3), int(selected_db_zone.y3)],
+                                                [int(selected_db_zone.x4), int(selected_db_zone.y4)]
+                                            ]
+
+                                            # Get authorized users from this zone
+                                            if db_manager:
+                                                try:
+                                                    users_in_zone = db_manager.get_users_by_zone(zone_id)
+                                                    zone['authorized_ids'] = [u.global_id for u in users_in_zone]
+                                                except Exception as e:
+                                                    logger.warning(f"Could not load users for zone: {e}")
+
+                                        st.info(f"✅ Zone loaded from database: {len(zone.get('authorized_ids', []))} authorized users")
 
                                 # Fetch users from database for dropdown
                                 users_dict = fetch_users_dict()
@@ -530,14 +630,24 @@ elif page == "Detect & Track":
                                         zone['authorized_ids'] = []
 
                             with col2:
-                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                                # Convert current polygon to string
+                                current_polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+
+                                # Use widget key directly - Streamlit will manage the state
+                                widget_key = f"zone_polygon_input_cam{cam_idx}_z{zone_idx}"
+
+                                # Initialize widget with current polygon value if not exists
+                                if widget_key not in st.session_state:
+                                    st.session_state[widget_key] = current_polygon_str
+
                                 polygon_input = st.text_area(
                                     "Polygon (x,y; x,y; ...)",
-                                    value=polygon_str,
-                                    key=f"zone_polygon_cam{cam_idx}_z{zone_idx}",
+                                    value=st.session_state[widget_key],
+                                    key=widget_key,
                                     height=80
                                 )
 
+                                # Parse and update zone polygon from user input
                                 try:
                                     points = []
                                     for point_str in polygon_input.split(';'):
@@ -580,11 +690,111 @@ elif page == "Detect & Track":
                             col1, col2 = st.columns(2)
 
                             with col1:
-                                zone['name'] = st.text_input(
+                                # Load zones from database for dropdown
+                                db_zones = []
+                                db_manager = None
+                                try:
+                                    db_manager = get_db_manager()
+                                    if db_manager:
+                                        db_zones = db_manager.get_all_zones()
+                                except Exception as e:
+                                    logger.warning(f"Could not load zones from database: {e}")
+
+                                # Create zone name options
+                                zone_name_options = ["Custom (Manual Input)"] + [f"{z.zone_name} ({z.zone_id})" for z in db_zones]
+
+                                # Initialize session state for this zone's selection if not exists
+                                selection_key = f"zone_selection_{i}"
+                                if selection_key not in st.session_state:
+                                    st.session_state[selection_key] = "Custom (Manual Input)"
+
+                                selected_zone_option = st.selectbox(
                                     "Zone Name",
-                                    value=zone['name'],
-                                    key=f"zone_name_{i}"
+                                    options=zone_name_options,
+                                    index=zone_name_options.index(st.session_state[selection_key]) if st.session_state[selection_key] in zone_name_options else 0,
+                                    key=f"zone_name_select_{i}",
+                                    help="Select from database or create custom zone"
                                 )
+
+                                # Check if selection changed
+                                if selected_zone_option != st.session_state[selection_key]:
+                                    st.session_state[selection_key] = selected_zone_option
+                                    logger.info(f"Zone selection changed to: {selected_zone_option}")
+
+                                    # If database zone selected, auto-fill immediately
+                                    if selected_zone_option != "Custom (Manual Input)":
+                                        zone_id = selected_zone_option.split('(')[-1].rstrip(')')
+                                        logger.info(f"Auto-filling zone_id: {zone_id}")
+
+                                        # Find the selected zone in database
+                                        for z in db_zones:
+                                            if z.zone_id == zone_id:
+                                                # Auto-fill from database
+                                                zone['name'] = z.zone_name
+                                                zone['polygon'] = [
+                                                    [int(z.x1), int(z.y1)],
+                                                    [int(z.x2), int(z.y2)],
+                                                    [int(z.x3), int(z.y3)],
+                                                    [int(z.x4), int(z.y4)]
+                                                ]
+                                                logger.info(f"Auto-filled polygon: {zone['polygon']}")
+
+                                                # Force update polygon widget state
+                                                widget_key = f"zone_polygon_input_{i}"
+                                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                                                st.session_state[widget_key] = polygon_str
+                                                logger.info(f"Updated widget state {widget_key} = {polygon_str}")
+
+                                                # Get authorized users from this zone
+                                                if db_manager:
+                                                    try:
+                                                        users_in_zone = db_manager.get_users_by_zone(zone_id)
+                                                        zone['authorized_ids'] = [u.global_id for u in users_in_zone]
+                                                        logger.info(f"Auto-filled authorized_ids: {zone['authorized_ids']}")
+                                                    except Exception as e:
+                                                        logger.warning(f"Could not load users for zone: {e}")
+                                                break
+                                    st.rerun()
+
+                                # Handle zone selection for display
+                                if selected_zone_option == "Custom (Manual Input)":
+                                    # Manual input
+                                    zone['name'] = st.text_input(
+                                        "Custom Zone Name",
+                                        value=zone.get('name', f'Zone {i+1}'),
+                                        key=f"zone_name_custom_{i}"
+                                    )
+                                else:
+                                    # Extract zone_id from selection
+                                    zone_id = selected_zone_option.split('(')[-1].rstrip(')')
+
+                                    # Find the selected zone in database and ensure data is loaded
+                                    selected_db_zone = None
+                                    for z in db_zones:
+                                        if z.zone_id == zone_id:
+                                            selected_db_zone = z
+                                            break
+
+                                    if selected_db_zone:
+                                        # Ensure zone data is populated (in case rerun didn't happen)
+                                        if not zone.get('polygon') or zone['polygon'] == [[100, 100], [200, 100], [200, 200], [100, 200]]:
+                                            zone['name'] = selected_db_zone.zone_name
+                                            zone['polygon'] = [
+                                                [int(selected_db_zone.x1), int(selected_db_zone.y1)],
+                                                [int(selected_db_zone.x2), int(selected_db_zone.y2)],
+                                                [int(selected_db_zone.x3), int(selected_db_zone.y3)],
+                                                [int(selected_db_zone.x4), int(selected_db_zone.y4)]
+                                            ]
+
+                                            # Get authorized users from this zone
+                                            if db_manager:
+                                                try:
+                                                    users_in_zone = db_manager.get_users_by_zone(zone_id)
+                                                    zone['authorized_ids'] = [u.global_id for u in users_in_zone]
+                                                except Exception as e:
+                                                    logger.warning(f"Could not load users for zone: {e}")
+
+                                        st.info(f"✅ Zone loaded from database: {len(zone.get('authorized_ids', []))} authorized users")
 
                                 # Fetch users from database for dropdown
                                 users_dict = fetch_users_dict()
@@ -633,18 +843,25 @@ elif page == "Detect & Track":
                                 st.markdown("**Polygon Coordinates (x,y)**")
                                 st.markdown("*Format: x1,y1; x2,y2; x3,y3; x4,y4*")
 
-                                # Convert polygon to string
-                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                                # Convert current polygon to string
+                                current_polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+
+                                # Use widget key directly - Streamlit will manage the state
+                                widget_key = f"zone_polygon_input_{i}"
+
+                                # Initialize widget with current polygon value if not exists
+                                if widget_key not in st.session_state:
+                                    st.session_state[widget_key] = current_polygon_str
 
                                 polygon_input = st.text_area(
                                     "Polygon Points",
-                                    value=polygon_str,
-                                    key=f"zone_polygon_{i}",
+                                    value=st.session_state[widget_key],
+                                    key=widget_key,
                                     height=100,
                                     help="Enter coordinates as: x1,y1; x2,y2; x3,y3; ..."
                                 )
 
-                                # Parse polygon
+                                # Parse and update zone polygon from user input
                                 try:
                                     points = []
                                     for point_str in polygon_input.split(';'):
@@ -1226,156 +1443,409 @@ Zone Border Thickness: {int(zone_opacity*10)}px
             logger.info(f"✅ [Detect & Track] ZIP download button displayed: {zip_filename}")
         else:
             st.warning("⚠️ Results not available. Please wait for processing to complete.")
-elif page == "👥 User Management":
-    st.header("👥 User Management")
-    st.markdown("Manage users in PostgreSQL database")
+elif page == "🗄️ DB Management":
+    st.header("🗄️ Database Management")
+    st.markdown("Manage users and working zones in PostgreSQL database")
 
-    # Tabs for different operations
-    tab1, tab2, tab3 = st.tabs(["📋 View Users", "➕ Create User", "✏️ Edit/Delete User"])
+    # Main sections: User Management and Zone Management
+    main_tab1, main_tab2 = st.tabs(["👥 User Management", "📍 Zone Management"])
 
-    # Tab 1: View Users
-    with tab1:
-        st.subheader("All Users")
+    # ============================================================================
+    # USER MANAGEMENT SECTION
+    # ============================================================================
+    with main_tab1:
+        # Tabs for different operations
+        tab1, tab2, tab3 = st.tabs(["📋 View Users", "➕ Create User", "✏️ Edit/Delete User"])
 
-        if st.button("🔄 Refresh", key="refresh_users"):
-            st.rerun()
+        # Tab 1: View Users
+        with tab1:
+            st.subheader("All Users")
 
-        try:
-            db_manager = get_db_manager()
-            if db_manager:
-                users = db_manager.get_all_users()
+            if st.button("🔄 Refresh", key="refresh_users"):
+                st.rerun()
 
-                if users:
-                    # Display as table
-                    import pandas as pd
-                    users_data = [user.dict() for user in users]
-                    df = pd.DataFrame(users_data)
+            try:
+                db_manager = get_db_manager()
+                if db_manager:
+                    users = db_manager.get_all_users()
 
-                    # Select columns to display
-                    display_cols = ['id', 'global_id', 'name', 'created_at', 'updated_at']
-                    df_display = df[display_cols]
+                    if users:
+                        # Display as table
+                        import pandas as pd
+                        users_data = [user.dict() for user in users]
+                        df = pd.DataFrame(users_data)
 
-                    st.dataframe(df_display, use_container_width=True, hide_index=True)
-                    st.success(f"✅ Total users: {len(users)}")
+                        # Select columns to display (including zone_id)
+                        display_cols = ['id', 'global_id', 'name', 'zone_id', 'created_at', 'updated_at']
+                        df_display = df[display_cols]
+
+                        st.dataframe(df_display, use_container_width=True, hide_index=True)
+                        st.success(f"✅ Total users: {len(users)}")
+                    else:
+                        st.info("No users found in database")
                 else:
-                    st.info("No users found in database")
-            else:
-                st.error("Failed to connect to database")
-                st.info("Check PostgreSQL connection settings in configs/.env")
-        except Exception as e:
-            st.error(f"Error connecting to database: {e}")
-            import traceback
-            st.code(traceback.format_exc())
+                    st.error("Failed to connect to database")
+                    st.info("Check PostgreSQL connection settings in configs/.env")
+            except Exception as e:
+                st.error(f"Error connecting to database: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
-    # Tab 2: Create User
-    with tab2:
-        st.subheader("Create New User")
+        # Tab 2: Create User
+        with tab2:
+            st.subheader("Create New User")
 
-        with st.form("create_user_form"):
-            new_global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique global ID for this user")
-            new_name = st.text_input("Name", placeholder="e.g., John Doe")
+            with st.form("create_user_form"):
+                new_global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique global ID for this user")
+                new_name = st.text_input("Name", placeholder="e.g., John Doe")
 
-            submitted = st.form_submit_button("➕ Create User", type="primary")
+                # Zone selection dropdown
+                try:
+                    db_manager = get_db_manager()
+                    zones = db_manager.get_all_zones() if db_manager else []
+                    zone_options = ["None (No Zone)"] + [f"{z.zone_name} ({z.zone_id})" for z in zones]
+                    selected_zone_str = st.selectbox("Assign to Zone (Optional)", options=zone_options)
 
-            if submitted:
-                if not new_name:
-                    st.error("Please enter a name")
-                else:
-                    try:
-                        db_manager = get_db_manager()
-                        if db_manager:
-                            # Check if global_id already exists
-                            existing_user = db_manager.get_user_by_global_id(new_global_id)
-                            if existing_user:
-                                st.error(f"User with global_id {new_global_id} already exists: {existing_user.name}")
-                            else:
+                    # Extract zone_id from selection
+                    if selected_zone_str == "None (No Zone)":
+                        selected_zone_id = None
+                    else:
+                        # Extract zone_id from "Zone Name (ZONE_ID)" format
+                        selected_zone_id = selected_zone_str.split("(")[-1].rstrip(")")
+                except Exception as e:
+                    st.warning(f"Could not load zones: {e}")
+                    selected_zone_id = None
+
+                submitted = st.form_submit_button("➕ Create User", type="primary")
+
+                if submitted:
+                    if not new_name:
+                        st.error("Please enter a name")
+                    else:
+                        try:
+                            db_manager = get_db_manager()
+                            if db_manager:
+                                # Note: global_id can be duplicated, no need to check uniqueness
                                 from services.database.models import UserCreate
-                                user_data = UserCreate(global_id=new_global_id, name=new_name)
+                                user_data = UserCreate(
+                                    global_id=new_global_id,
+                                    name=new_name,
+                                    zone_id=selected_zone_id
+                                )
                                 user = db_manager.create_user(user_data)
 
                                 if user:
-                                    st.success(f"✅ User created successfully!")
+                                    st.success(f"✅ User created successfully! (ID: {user.id}, Global ID: {user.global_id})")
                                     st.json(user.dict())
                                     st.balloons()
                                 else:
                                     st.error("Failed to create user")
-                        else:
-                            st.error("Database connection not available")
-                    except Exception as e:
-                        st.error(f"Error creating user: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
+                            else:
+                                st.error("Database connection not available")
+                        except Exception as e:
+                            st.error(f"Error creating user: {e}")
+                            import traceback
+                            st.code(traceback.format_exc())
 
-    # Tab 3: Edit/Delete User
-    with tab3:
-        st.subheader("Edit or Delete User")
+        # Tab 3: Edit/Delete User
+        with tab3:
+            st.subheader("Edit or Delete User")
 
-        try:
-            db_manager = get_db_manager()
-            if db_manager:
-                users = db_manager.get_all_users()
+            try:
+                db_manager = get_db_manager()
+                if db_manager:
+                    users = db_manager.get_all_users()
 
-                if users:
-                    # Create selection dropdown
-                    user_options = {f"{u.name} (ID: {u.global_id})": u for u in users}
-                    selected_user_str = st.selectbox(
-                        "Select User",
-                        options=list(user_options.keys())
-                    )
+                    if users:
+                        # Create selection dropdown
+                        user_options = {f"{u.name} (ID: {u.global_id})": u for u in users}
+                        selected_user_str = st.selectbox(
+                            "Select User",
+                            options=list(user_options.keys())
+                        )
 
-                    selected_user = user_options[selected_user_str]
+                        selected_user = user_options[selected_user_str]
 
-                    st.divider()
+                        st.divider()
 
-                    # Edit section
-                    st.markdown("### ✏️ Edit User")
-                    with st.form("edit_user_form"):
-                        edit_name = st.text_input("Name", value=selected_user.name)
+                        # Edit section
+                        st.markdown("### ✏️ Edit User")
+                        with st.form("edit_user_form"):
+                            edit_name = st.text_input("Name", value=selected_user.name)
 
-                        submitted_edit = st.form_submit_button("💾 Update User", type="primary")
+                            # Zone selection dropdown for editing
+                            zones = db_manager.get_all_zones()
+                            zone_options = ["None (No Zone)"] + [f"{z.zone_name} ({z.zone_id})" for z in zones]
 
-                        if submitted_edit:
-                            try:
-                                from services.database.models import UserUpdate
-                                user_data = UserUpdate(name=edit_name)
-                                updated_user = db_manager.update_user(selected_user.id, user_data)
+                            # Find current zone index
+                            current_zone_idx = 0
+                            if selected_user.zone_id:
+                                for idx, opt in enumerate(zone_options):
+                                    if selected_user.zone_id in opt:
+                                        current_zone_idx = idx
+                                        break
 
-                                if updated_user:
-                                    st.success("✅ User updated successfully!")
-                                    st.rerun()
-                                else:
-                                    st.error("Failed to update user")
-                            except Exception as e:
-                                st.error(f"Error updating user: {e}")
+                            selected_zone_str = st.selectbox(
+                                "Assign to Zone (Optional)",
+                                options=zone_options,
+                                index=current_zone_idx
+                            )
 
-                    st.divider()
+                            # Extract zone_id from selection
+                            if selected_zone_str == "None (No Zone)":
+                                edit_zone_id = None
+                            else:
+                                edit_zone_id = selected_zone_str.split("(")[-1].rstrip(")")
 
-                    # Delete section
-                    st.markdown("### 🗑️ Delete User")
-                    st.warning(f"⚠️ You are about to delete: **{selected_user.name}** (Global ID: {selected_user.global_id})")
+                            submitted_edit = st.form_submit_button("💾 Update User", type="primary")
 
-                    col1, col2 = st.columns([1, 3])
-                    with col1:
-                        if st.button("🗑️ Delete User", type="secondary"):
-                            try:
-                                success = db_manager.delete_user(selected_user.id)
+                            if submitted_edit:
+                                try:
+                                    from services.database.models import UserUpdate
+                                    user_data = UserUpdate(name=edit_name, zone_id=edit_zone_id)
+                                    updated_user = db_manager.update_user(selected_user.id, user_data)
 
-                                if success:
-                                    st.success("✅ User deleted successfully!")
-                                    time.sleep(1)
-                                    st.rerun()
-                                else:
-                                    st.error("Failed to delete user")
-                            except Exception as e:
-                                st.error(f"Error deleting user: {e}")
+                                    if updated_user:
+                                        st.success("✅ User updated successfully!")
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to update user")
+                                except Exception as e:
+                                    st.error(f"Error updating user: {e}")
+
+                        st.divider()
+
+                        # Delete section
+                        st.markdown("### 🗑️ Delete User")
+                        st.warning(f"⚠️ You are about to delete: **{selected_user.name}** (Global ID: {selected_user.global_id})")
+
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            if st.button("🗑️ Delete User", type="secondary"):
+                                try:
+                                    success = db_manager.delete_user(selected_user.id)
+
+                                    if success:
+                                        st.success("✅ User deleted successfully!")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to delete user")
+                                except Exception as e:
+                                    st.error(f"Error deleting user: {e}")
+                    else:
+                        st.info("No users found in database")
                 else:
-                    st.info("No users found in database")
-            else:
-                st.error("Database connection not available")
-        except Exception as e:
-            st.error(f"Error connecting to database: {e}")
-            import traceback
-            st.code(traceback.format_exc())
+                    st.error("Database connection not available")
+            except Exception as e:
+                st.error(f"Error connecting to database: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+    # ============================================================================
+    # ZONE MANAGEMENT SECTION
+    # ============================================================================
+    with main_tab2:
+        # Tabs for different operations
+        zone_tab1, zone_tab2, zone_tab3 = st.tabs(["📋 View Zones", "➕ Create Zone", "✏️ Edit/Delete Zone"])
+
+        # Tab 1: View Zones
+        with zone_tab1:
+            st.subheader("All Working Zones")
+
+            if st.button("🔄 Refresh", key="refresh_zones"):
+                st.rerun()
+
+            try:
+                db_manager = get_db_manager()
+                if db_manager:
+                    zones = db_manager.get_all_zones()
+
+                    if zones:
+                        # Display as table with user count
+                        import pandas as pd
+                        zones_data = []
+                        for zone in zones:
+                            zone_dict = zone.dict()
+                            # Get user count for this zone
+                            users_in_zone = db_manager.get_users_by_zone(zone.zone_id)
+                            zone_dict['user_count'] = len(users_in_zone)
+                            zones_data.append(zone_dict)
+
+                        df = pd.DataFrame(zones_data)
+
+                        # Select columns to display (including user_count)
+                        display_cols = ['zone_id', 'zone_name', 'user_count', 'x1', 'y1', 'x2', 'y2', 'x3', 'y3', 'x4', 'y4', 'created_at', 'updated_at']
+                        df_display = df[display_cols]
+
+                        st.dataframe(df_display, use_container_width=True, hide_index=True)
+                        st.success(f"✅ Total zones: {len(zones)}")
+
+                        # Show users in each zone
+                        st.divider()
+                        st.markdown("### 👥 Users in Zones")
+                        for zone in zones:
+                            users_in_zone = db_manager.get_users_by_zone(zone.zone_id)
+                            with st.expander(f"📍 {zone.zone_name} ({zone.zone_id}) - {len(users_in_zone)} users"):
+                                if users_in_zone:
+                                    user_list = [f"- **{u.name}** (Global ID: {u.global_id})" for u in users_in_zone]
+                                    st.markdown("\n".join(user_list))
+                                else:
+                                    st.info("No users assigned to this zone")
+                    else:
+                        st.info("No zones found in database")
+                else:
+                    st.error("Failed to connect to database")
+                    st.info("Check PostgreSQL connection settings in configs/.env")
+            except Exception as e:
+                st.error(f"Error connecting to database: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+        # Tab 2: Create Zone
+        with zone_tab2:
+            st.subheader("Create New Working Zone")
+
+            with st.form("create_zone_form"):
+                new_zone_id = st.text_input("Zone ID", placeholder="e.g., ZONE_001", help="Unique zone identifier")
+                new_zone_name = st.text_input("Zone Name", placeholder="e.g., Entrance Area")
+
+                st.markdown("#### Zone Coordinates (4 points)")
+                col1, col2 = st.columns(2)
+                with col1:
+                    x1 = st.number_input("X1", value=0.0, format="%.2f")
+                    y1 = st.number_input("Y1", value=0.0, format="%.2f")
+                    x2 = st.number_input("X2", value=0.0, format="%.2f")
+                    y2 = st.number_input("Y2", value=0.0, format="%.2f")
+                with col2:
+                    x3 = st.number_input("X3", value=0.0, format="%.2f")
+                    y3 = st.number_input("Y3", value=0.0, format="%.2f")
+                    x4 = st.number_input("X4", value=0.0, format="%.2f")
+                    y4 = st.number_input("Y4", value=0.0, format="%.2f")
+
+                submitted = st.form_submit_button("➕ Create Zone", type="primary")
+
+                if submitted:
+                    if not new_zone_id or not new_zone_name:
+                        st.error("Please enter zone ID and name")
+                    else:
+                        try:
+                            db_manager = get_db_manager()
+                            if db_manager:
+                                # Check if zone_id already exists
+                                existing_zone = db_manager.get_zone_by_id(new_zone_id)
+                                if existing_zone:
+                                    st.error(f"Zone with zone_id {new_zone_id} already exists: {existing_zone.zone_name}")
+                                else:
+                                    from services.database.models import WorkingZoneCreate
+                                    zone_data = WorkingZoneCreate(
+                                        zone_id=new_zone_id,
+                                        zone_name=new_zone_name,
+                                        x1=x1, y1=y1, x2=x2, y2=y2,
+                                        x3=x3, y3=y3, x4=x4, y4=y4
+                                    )
+                                    zone = db_manager.create_zone(zone_data)
+
+                                    if zone:
+                                        st.success(f"✅ Zone created successfully!")
+                                        st.json(zone.dict())
+                                        st.balloons()
+                                    else:
+                                        st.error("Failed to create zone")
+                            else:
+                                st.error("Database connection not available")
+                        except Exception as e:
+                            st.error(f"Error creating zone: {e}")
+                            import traceback
+                            st.code(traceback.format_exc())
+
+        # Tab 3: Edit/Delete Zone
+        with zone_tab3:
+            st.subheader("Edit or Delete Working Zone")
+
+            try:
+                db_manager = get_db_manager()
+                if db_manager:
+                    zones = db_manager.get_all_zones()
+
+                    if zones:
+                        # Create selection dropdown
+                        zone_options = {f"{z.zone_name} (ID: {z.zone_id})": z for z in zones}
+                        selected_zone_str = st.selectbox(
+                            "Select Zone",
+                            options=list(zone_options.keys())
+                        )
+
+                        selected_zone = zone_options[selected_zone_str]
+
+                        st.divider()
+
+                        # Edit section
+                        st.markdown("### ✏️ Edit Zone")
+                        with st.form("edit_zone_form"):
+                            edit_zone_name = st.text_input("Zone Name", value=selected_zone.zone_name)
+
+                            st.markdown("#### Zone Coordinates (4 points)")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                edit_x1 = st.number_input("X1", value=float(selected_zone.x1), format="%.2f")
+                                edit_y1 = st.number_input("Y1", value=float(selected_zone.y1), format="%.2f")
+                                edit_x2 = st.number_input("X2", value=float(selected_zone.x2), format="%.2f")
+                                edit_y2 = st.number_input("Y2", value=float(selected_zone.y2), format="%.2f")
+                            with col2:
+                                edit_x3 = st.number_input("X3", value=float(selected_zone.x3), format="%.2f")
+                                edit_y3 = st.number_input("Y3", value=float(selected_zone.y3), format="%.2f")
+                                edit_x4 = st.number_input("X4", value=float(selected_zone.x4), format="%.2f")
+                                edit_y4 = st.number_input("Y4", value=float(selected_zone.y4), format="%.2f")
+
+                            submitted_edit = st.form_submit_button("💾 Update Zone", type="primary")
+
+                            if submitted_edit:
+                                try:
+                                    from services.database.models import WorkingZoneUpdate
+                                    zone_data = WorkingZoneUpdate(
+                                        zone_name=edit_zone_name,
+                                        x1=edit_x1, y1=edit_y1, x2=edit_x2, y2=edit_y2,
+                                        x3=edit_x3, y3=edit_y3, x4=edit_x4, y4=edit_y4
+                                    )
+                                    updated_zone = db_manager.update_zone(selected_zone.zone_id, zone_data)
+
+                                    if updated_zone:
+                                        st.success("✅ Zone updated successfully!")
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to update zone")
+                                except Exception as e:
+                                    st.error(f"Error updating zone: {e}")
+
+                        st.divider()
+
+                        # Delete section
+                        st.markdown("### 🗑️ Delete Zone")
+                        st.warning(f"⚠️ You are about to delete: **{selected_zone.zone_name}** (Zone ID: {selected_zone.zone_id})")
+
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            if st.button("🗑️ Delete Zone", type="secondary"):
+                                try:
+                                    success = db_manager.delete_zone(selected_zone.zone_id)
+
+                                    if success:
+                                        st.success("✅ Zone deleted successfully!")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to delete zone")
+                                except Exception as e:
+                                    st.error(f"Error deleting zone: {e}")
+                    else:
+                        st.info("No zones found in database")
+                else:
+                    st.error("Database connection not available")
+            except Exception as e:
+                st.error(f"Error connecting to database: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
 # ============================================================================
 # PAGE 5: ABOUT
