@@ -250,6 +250,8 @@ stores/videos/
 data/videos/
 data/database/
 
+data/
+
 # Video files
 *.mp4
 *.mkv

@@ -8,7 +8,7 @@ Hệ thống Person ReID hỗ trợ xử lý đồng thời nhiều camera strea
 - ✅ **Parallel Multi-Camera Processing**: Xử lý đồng thời nhiều camera streams
 - ✅ **Frame Synchronization**: Đồng bộ frames từ các cameras
 - ✅ **Job Cancellation**: Dừng processing bất kỳ lúc nào qua UI
-- ✅ **Combined View**: Ghép nhiều camera thành 1 video output
+- ✅ **Organized Output**: Mỗi camera có output riêng (video, CSV, JSON) trong ZIP file
 - ✅ **Thread-Safe**: An toàn với multi-threading
 
 ---
@@ -191,6 +191,41 @@ MultiStreamReader(
 - `sync_tolerance`: Thời gian chờ tối đa để sync (default: 0.1s)
   - Tăng nếu cameras có jitter cao
   - Giảm để sync chặt chẽ hơn
+
+### 5. Multi-Stream Output Structure
+
+Khi xử lý multi-stream với zone monitoring, hệ thống tạo output riêng cho mỗi camera:
+
+```
+outputs/multi_stream_2024-01-15-14-30/
+├── camera_0/
+│   ├── output_20240115_143022.mp4      # Annotated video
+│   ├── tracks_20240115_143022.csv      # Tracking data
+│   └── zones_20240115_143022.json      # Zone monitoring report
+├── camera_1/
+│   ├── output_20240115_143022.mp4
+│   ├── tracks_20240115_143022.csv
+│   └── zones_20240115_143022.json
+└── camera_2/
+    ├── output_20240115_143022.mp4
+    ├── tracks_20240115_143022.csv
+    └── zones_20240115_143022.json
+```
+
+**Naming Convention:**
+- Thư mục: `multi_stream_{YYYY-MM-DD-HH-MM}` (UTC+7 timezone)
+- ZIP file: `multi_stream_{YYYY-MM-DD-HH-MM}_results.zip`
+- Ví dụ: `multi_stream_2024-01-15-14-30_results.zip`
+
+**Download từ UI:**
+- Multi-stream job: Chỉ có nút **"📦 Download All Cameras (ZIP)"**
+- ZIP file chứa toàn bộ cấu trúc thư mục trên
+- Mỗi camera có đầy đủ video, CSV, và JSON report riêng
+
+**Lưu ý:**
+- Multi-stream **yêu cầu zone monitoring** phải được bật
+- Không có "combined view" - mỗi camera được xử lý độc lập
+- Parallel processing giúp tăng tốc độ xử lý
 
 ---
 

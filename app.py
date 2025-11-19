@@ -308,7 +308,6 @@ if page == "Extract Objects":
                             st.session_state.pop(key, None)
                 st.rerun()
 
-# ============================================================================
 # PAGE 2: REGISTER PERSON
 # ============================================================================
 elif page == "Register Person":
@@ -1183,36 +1182,79 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                 if progress_response.status_code == 200:
                                     progress = progress_response.json()
 
-                                    # Update progress bar
-                                    if progress['total_frames'] > 0:
-                                        progress_bar.progress(min(progress['progress_percent'] / 100, 0.99))
+                                    # Check if multi-camera mode
+                                    is_multi_camera = progress.get('cameras') is not None
+
+                                    if is_multi_camera:
+                                        # Multi-camera progress display
+                                        cameras_data = progress['cameras']
+                                        num_cameras = len(cameras_data)
+
+                                        # Update progress bar (average across cameras)
+                                        progress_bar.progress(0.5)  # Indeterminate for streams
+
+                                        # Update status text
+                                        status_text.text(f"Status: {progress['status']} ({num_cameras} cameras)")
+
+                                        # Update progress text
+                                        avg_frame = sum(cam.get('current_frame', 0) for cam in cameras_data.values()) // num_cameras
+                                        progress_text.text(f"📊 Processing {num_cameras} cameras (avg frame: {avg_frame})")
+
+                                        if poll_count % 10 == 0:
+                                            logger.info(f"📊 [Detect & Track] Multi-camera progress: {num_cameras} cameras, avg frame {avg_frame}")
+
+                                        # Display tracks per camera
+                                        if progress['tracks']:
+                                            tracks_info = "### 🎯 Current Tracks (All Cameras):\n"
+
+                                            # Group tracks by camera
+                                            tracks_by_camera = {}
+                                            for track in progress['tracks']:
+                                                cam_id = track.get('camera_id', 0)
+                                                if cam_id not in tracks_by_camera:
+                                                    tracks_by_camera[cam_id] = []
+                                                tracks_by_camera[cam_id].append(track)
+
+                                            # Display per camera
+                                            for cam_id in sorted(tracks_by_camera.keys()):
+                                                tracks_info += f"\n**📹 Camera {cam_id + 1}** (Frame {cameras_data[cam_id]['current_frame']}):\n"
+                                                for track in tracks_by_camera[cam_id]:
+                                                    color = "🟢" if track['label'] != "Unknown" else "🔴"
+                                                    tracks_info += f"  {color} Track {track['track_id']}: **{track['label']}** (sim: {track['similarity']:.3f})\n"
+
+                                            tracks_container.markdown(tracks_info)
                                     else:
-                                        # For streams, show indeterminate progress
-                                        progress_bar.progress(0.5)
-
-                                    # Update status text
-                                    status_text.text(f"Status: {progress['status']}")
-
-                                    # Update progress text
-                                    if progress['total_frames'] > 0:
-                                        progress_text.text(f"📊 Frame {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
-                                    else:
-                                        # For streams, show only current frame
-                                        progress_text.text(f"📊 Frame {progress['current_frame']} (streaming...)")
-
-                                    if poll_count % 10 == 0:  # Log every 10 polls
+                                        # Single-camera progress display (backward compatible)
+                                        # Update progress bar
                                         if progress['total_frames'] > 0:
-                                            logger.info(f"📊 [Detect & Track] Progress: {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+                                            progress_bar.progress(min(progress['progress_percent'] / 100, 0.99))
                                         else:
-                                            logger.info(f"📊 [Detect & Track] Progress: Frame {progress['current_frame']} (streaming)")
+                                            # For streams, show indeterminate progress
+                                            progress_bar.progress(0.5)
 
-                                    # Display current tracks
-                                    if progress['tracks']:
-                                        tracks_info = "### 🎯 Current Tracks:\n"
-                                        for track in progress['tracks']:
-                                            color = "🟢" if track['label'] != "Unknown" else "🔴"
-                                            tracks_info += f"{color} Track {track['track_id']}: **{track['label']}** (sim: {track['similarity']:.3f})\n"
-                                        tracks_container.markdown(tracks_info)
+                                        # Update status text
+                                        status_text.text(f"Status: {progress['status']}")
+
+                                        # Update progress text
+                                        if progress['total_frames'] > 0:
+                                            progress_text.text(f"📊 Frame {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+                                        else:
+                                            # For streams, show only current frame
+                                            progress_text.text(f"📊 Frame {progress['current_frame']} (streaming...)")
+
+                                        if poll_count % 10 == 0:  # Log every 10 polls
+                                            if progress['total_frames'] > 0:
+                                                logger.info(f"📊 [Detect & Track] Progress: {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+                                            else:
+                                                logger.info(f"📊 [Detect & Track] Progress: Frame {progress['current_frame']} (streaming)")
+
+                                        # Display current tracks
+                                        if progress['tracks']:
+                                            tracks_info = "### 🎯 Current Tracks:\n"
+                                            for track in progress['tracks']:
+                                                color = "🟢" if track['label'] != "Unknown" else "🔴"
+                                                tracks_info += f"{color} Track {track['track_id']}: **{track['label']}** (sim: {track['similarity']:.3f})\n"
+                                            tracks_container.markdown(tracks_info)
 
                                     # Display real-time violations as log lines (ZONE-CENTRIC LOGIC)
                                     if progress.get('violations'):
@@ -1268,49 +1310,81 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                     # Clear stop button
                                     stop_button_container.empty()
 
-                                    # Fetch results ONCE and cache in session state
-                                    video_url = f"{DETECTION_API_URL}/download/video/{job_id}"
-                                    csv_url = f"{DETECTION_API_URL}/download/csv/{job_id}"
+                                    # Check if multi-stream job FIRST
+                                    is_multi_stream = status.get("is_multi_stream", False)
 
-                                    # Cache video data
-                                    video_cache_key = f"detect_video_{job_id}"
-                                    if video_cache_key not in st.session_state:
-                                        try:
-                                            logger.info(f"📥 [Detect & Track] Fetching video: {video_url}")
-                                            video_response = requests.get(video_url)
-                                            if video_response.status_code == 200:
-                                                st.session_state[video_cache_key] = video_response.content
-                                                logger.info(f"✅ [Detect & Track] Video cached: {len(video_response.content) / (1024*1024):.2f} MB")
-                                        except Exception as e:
-                                            logger.error(f"❌ [Detect & Track] Failed to fetch video: {e}")
-                                            st.error(f"Failed to fetch video: {e}")
-
-                                    # Cache CSV data
-                                    csv_cache_key = f"detect_csv_{job_id}"
-                                    if csv_cache_key not in st.session_state:
-                                        try:
-                                            logger.info(f"📥 [Detect & Track] Fetching CSV: {csv_url}")
-                                            csv_response = requests.get(csv_url)
-                                            if csv_response.status_code == 200:
-                                                st.session_state[csv_cache_key] = csv_response.content
-                                                logger.info(f"✅ [Detect & Track] CSV cached: {len(csv_response.content) / 1024:.2f} KB")
-                                        except Exception as e:
-                                            logger.error(f"❌ [Detect & Track] Failed to fetch CSV: {e}")
-                                            st.error(f"Failed to fetch CSV: {e}")
-
-                                    # Cache zone JSON if zone monitoring was enabled
-                                    if status.get("zone_monitoring", False):
-                                        json_url = f"{DETECTION_API_URL}/download/json/{job_id}"
-                                        json_cache_key = f"detect_json_{job_id}"
-                                        if json_cache_key not in st.session_state:
+                                    if is_multi_stream:
+                                        # Multi-stream: ONLY fetch ZIP file
+                                        logger.info(f"📦 [Detect & Track] Multi-stream job detected - fetching ZIP only")
+                                        zip_url = f"{DETECTION_API_URL}/download/zip/{job_id}"
+                                        zip_cache_key = f"detect_zip_{job_id}"
+                                        zip_filename_key = f"detect_zip_filename_{job_id}"
+                                        if zip_cache_key not in st.session_state:
                                             try:
-                                                logger.info(f"📥 [Detect & Track] Fetching zone report: {json_url}")
-                                                json_response = requests.get(json_url)
-                                                if json_response.status_code == 200:
-                                                    st.session_state[json_cache_key] = json_response.content
-                                                    logger.info(f"✅ [Detect & Track] Zone report cached: {len(json_response.content) / 1024:.2f} KB")
+                                                logger.info(f"📥 [Detect & Track] Fetching multi-stream ZIP: {zip_url}")
+                                                zip_response = requests.get(zip_url)
+                                                if zip_response.status_code == 200:
+                                                    st.session_state[zip_cache_key] = zip_response.content
+                                                    # Extract filename from Content-Disposition header
+                                                    content_disposition = zip_response.headers.get('content-disposition', '')
+                                                    if 'filename=' in content_disposition:
+                                                        filename = content_disposition.split('filename=')[1].strip('"')
+                                                        st.session_state[zip_filename_key] = filename
+                                                    else:
+                                                        # Fallback to default name
+                                                        st.session_state[zip_filename_key] = f"{job_id}_multi_stream_results.zip"
+                                                    logger.info(f"✅ [Detect & Track] ZIP cached: {len(zip_response.content) / (1024*1024):.2f} MB, filename: {st.session_state[zip_filename_key]}")
+                                                else:
+                                                    logger.warning(f"⚠️ [Detect & Track] ZIP not available (status {zip_response.status_code})")
                                             except Exception as e:
-                                                logger.warning(f"⚠️ [Detect & Track] Failed to fetch zone report: {e}")
+                                                logger.warning(f"⚠️ [Detect & Track] Failed to fetch ZIP: {e}")
+                                    else:
+                                        # Single-stream: fetch individual files
+                                        logger.info(f"📹 [Detect & Track] Single-stream job - fetching individual files")
+
+                                        # Fetch results ONCE and cache in session state
+                                        video_url = f"{DETECTION_API_URL}/download/video/{job_id}"
+                                        csv_url = f"{DETECTION_API_URL}/download/csv/{job_id}"
+
+                                        # Cache video data
+                                        video_cache_key = f"detect_video_{job_id}"
+                                        if video_cache_key not in st.session_state:
+                                            try:
+                                                logger.info(f"📥 [Detect & Track] Fetching video: {video_url}")
+                                                video_response = requests.get(video_url)
+                                                if video_response.status_code == 200:
+                                                    st.session_state[video_cache_key] = video_response.content
+                                                    logger.info(f"✅ [Detect & Track] Video cached: {len(video_response.content) / (1024*1024):.2f} MB")
+                                            except Exception as e:
+                                                logger.error(f"❌ [Detect & Track] Failed to fetch video: {e}")
+                                                st.error(f"Failed to fetch video: {e}")
+
+                                        # Cache CSV data
+                                        csv_cache_key = f"detect_csv_{job_id}"
+                                        if csv_cache_key not in st.session_state:
+                                            try:
+                                                logger.info(f"📥 [Detect & Track] Fetching CSV: {csv_url}")
+                                                csv_response = requests.get(csv_url)
+                                                if csv_response.status_code == 200:
+                                                    st.session_state[csv_cache_key] = csv_response.content
+                                                    logger.info(f"✅ [Detect & Track] CSV cached: {len(csv_response.content) / 1024:.2f} KB")
+                                            except Exception as e:
+                                                logger.error(f"❌ [Detect & Track] Failed to fetch CSV: {e}")
+                                                st.error(f"Failed to fetch CSV: {e}")
+
+                                        # Cache zone JSON if zone monitoring was enabled
+                                        if status.get("zone_monitoring", False):
+                                            json_url = f"{DETECTION_API_URL}/download/json/{job_id}"
+                                            json_cache_key = f"detect_json_{job_id}"
+                                            if json_cache_key not in st.session_state:
+                                                try:
+                                                    logger.info(f"📥 [Detect & Track] Fetching zone report: {json_url}")
+                                                    json_response = requests.get(json_url)
+                                                    if json_response.status_code == 200:
+                                                        st.session_state[json_cache_key] = json_response.content
+                                                        logger.info(f"✅ [Detect & Track] Zone report cached: {len(json_response.content) / 1024:.2f} KB")
+                                                except Exception as e:
+                                                    logger.warning(f"⚠️ [Detect & Track] Failed to fetch zone report: {e}")
 
                                     break
 
@@ -1345,15 +1419,23 @@ Zone Border Thickness: {int(zone_opacity*10)}px
         video_cache_key = f"detect_video_{job_id}"
         csv_cache_key = f"detect_csv_{job_id}"
         json_cache_key = f"detect_json_{job_id}"
+        zip_cache_key = f"detect_zip_{job_id}"
 
         video_data = st.session_state.get(video_cache_key)
         csv_data = st.session_state.get(csv_cache_key)
         json_data = st.session_state.get(json_cache_key)
+        zip_data = st.session_state.get(zip_cache_key)
 
-        logger.info(f"📊 [Detect & Track] Cache status - Video: {bool(video_data)}, CSV: {bool(csv_data)}, JSON: {bool(json_data)}")
+        logger.info(f"📊 [Detect & Track] Cache status - Video: {bool(video_data)}, CSV: {bool(csv_data)}, JSON: {bool(json_data)}, ZIP: {bool(zip_data)}")
+
+        # Show multi-stream notification if ZIP is available
+        if zip_data:
+            st.success("✅ Multi-stream processing completed! All camera outputs are ready for download.")
+            st.info("📦 This is a **multi-camera job**. Download the ZIP file below to get all results organized by camera.")
 
         # Real-Time Zone Monitoring Dashboard (if zone monitoring was enabled)
-        if json_data and csv_data:
+        # Only show for single-stream jobs (multi-stream has separate outputs per camera)
+        if json_data and csv_data and not zip_data:
             st.markdown("### 📊 Real-Time Zone Monitoring Dashboard")
             import json
             import pandas as pd
@@ -1538,8 +1620,8 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                 import traceback
                 st.code(traceback.format_exc())
 
-        elif csv_data:
-            # Show CSV preview if no zone monitoring
+        elif csv_data and not zip_data:
+            # Show CSV preview if no zone monitoring (single-stream only)
             st.markdown("### 📊 Tracking Data Preview")
             import pandas as pd
             import io
@@ -1556,51 +1638,91 @@ Zone Border Thickness: {int(zone_opacity*10)}px
         # Download buttons - USE CACHED DATA
         st.markdown("### 📁 Download Results")
 
-        # Adjust columns based on whether zone report exists (removed log download)
-        if json_data:
-            col1, col2, col3 = st.columns(3)
-        else:
-            col1, col2 = st.columns(2)
-            col3 = None
+        # Check if multi-stream ZIP is available
+        zip_cache_key = f"detect_zip_{job_id}"
+        zip_filename_key = f"detect_zip_filename_{job_id}"
+        zip_data = st.session_state.get(zip_cache_key)
+        zip_filename = st.session_state.get(zip_filename_key, f"{job_id}_multi_stream_results.zip")
 
-        with col1:
-            if video_data:
-                if st.download_button(
-                    label="📹 Download Video",
-                    data=video_data,
-                    file_name=f"{job_id}_output.mp4",
-                    mime="video/mp4",
-                    key=f"download_detect_video_{job_id}",
-                    use_container_width=True
-                ):
-                    logger.info(f"📥 [Detect & Track] User downloading video: {job_id}_output.mp4 ({len(video_data) / (1024*1024):.2f} MB)")
-            else:
-                st.warning("Video not available")
+        # If multi-stream, ONLY show ZIP download
+        if zip_data:
+            st.info("📦 **Multi-Stream Job**: Download the complete ZIP file containing all camera outputs")
 
-        with col2:
-            if csv_data:
-                if st.download_button(
-                    label="📊 Download CSV",
-                    data=csv_data,
-                    file_name=f"{job_id}_tracking.csv",
-                    mime="text/csv",
-                    key=f"download_detect_csv_{job_id}",
-                    use_container_width=True
-                ):
-                    logger.info(f"📥 [Detect & Track] User downloading CSV: {job_id}_tracking.csv ({len(csv_data) / 1024:.2f} KB)")
-            else:
-                st.warning("CSV not available")
+            # Show ZIP content structure
+            with st.expander("📋 ZIP File Contents", expanded=False):
+                st.markdown("""
+                The ZIP file contains organized outputs for each camera:
+                ```
+                multi_stream_{timestamp}/
+                ├── camera_0/
+                │   ├── output_*.mp4      (Annotated video)
+                │   ├── tracks_*.csv      (Tracking data)
+                │   └── zones_*.json      (Zone monitoring report)
+                ├── camera_1/
+                │   ├── output_*.mp4
+                │   ├── tracks_*.csv
+                │   └── zones_*.json
+                └── ...
+                ```
+                """)
 
-        if col3 and json_data:
             if st.download_button(
-                label="🗺️ Download Zone Report",
-                data=json_data,
-                file_name=f"{job_id}_zones.json",
-                mime="application/json",
-                key=f"download_detect_json_{job_id}",
+                label="📦 Download All Cameras (ZIP)",
+                data=zip_data,
+                file_name=zip_filename,
+                mime="application/zip",
+                key=f"download_detect_zip_{job_id}",
                 use_container_width=True
             ):
-                logger.info(f"📥 [Detect & Track] User downloading zone report: {job_id}_zones.json ({len(json_data) / 1024:.2f} KB)")
+                logger.info(f"📥 [Detect & Track] User downloading multi-stream ZIP: {zip_filename} ({len(zip_data) / (1024*1024):.2f} MB)")
+
+        else:
+            # Single-stream: show individual download buttons
+            # Adjust columns based on whether zone report exists (removed log download)
+            if json_data:
+                col1, col2, col3 = st.columns(3)
+            else:
+                col1, col2 = st.columns(2)
+                col3 = None
+
+            with col1:
+                if video_data:
+                    if st.download_button(
+                        label="📹 Download Video",
+                        data=video_data,
+                        file_name=f"{job_id}_output.mp4",
+                        mime="video/mp4",
+                        key=f"download_detect_video_{job_id}",
+                        use_container_width=True
+                    ):
+                        logger.info(f"📥 [Detect & Track] User downloading video: {job_id}_output.mp4 ({len(video_data) / (1024*1024):.2f} MB)")
+                else:
+                    st.warning("Video not available")
+
+            with col2:
+                if csv_data:
+                    if st.download_button(
+                        label="📊 Download CSV",
+                        data=csv_data,
+                        file_name=f"{job_id}_tracking.csv",
+                        mime="text/csv",
+                        key=f"download_detect_csv_{job_id}",
+                        use_container_width=True
+                    ):
+                        logger.info(f"📥 [Detect & Track] User downloading CSV: {job_id}_tracking.csv ({len(csv_data) / 1024:.2f} KB)")
+                else:
+                    st.warning("CSV not available")
+
+            if col3 and json_data:
+                if st.download_button(
+                    label="🗺️ Download Zone Report",
+                    data=json_data,
+                    file_name=f"{job_id}_zones.json",
+                    mime="application/json",
+                    key=f"download_detect_json_{job_id}",
+                    use_container_width=True
+                ):
+                    logger.info(f"📥 [Detect & Track] User downloading zone report: {job_id}_zones.json ({len(json_data) / 1024:.2f} KB)")
 
         # Button to clear results and browse new video
         st.markdown("---")

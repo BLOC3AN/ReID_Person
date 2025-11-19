@@ -13,6 +13,7 @@ import yaml
 import json
 import time
 import argparse
+import threading
 import numpy as np
 from pathlib import Path
 from datetime import datetime
@@ -301,10 +302,10 @@ class ZoneMonitor:
             bbox = zone_data['bbox']
             # R-tree format: (minx, miny, maxx, maxy)
             idx.insert(i, tuple(bbox), obj=zone_id)
-        
+
         logger.info(f"   R-tree index built for {len(self.zones)} zones")
         return idx
-    
+
     def find_zone(self, person_bbox, camera_idx=0, track_id=None, person_name=None):
         """
         Find which zone contains the person using IoP >= threshold
@@ -376,7 +377,7 @@ class ZoneMonitor:
                 logger.info(f"❌ Track {track_id} ({person_name}): NO ZONE MATCH (best IoP={best_iop*100:.1f}% < threshold={self.iop_threshold*100:.0f}%)")
 
         return best_zone
-    
+
     def update_presence(self, global_id, zone_id, frame_time, person_name):
         """
         Update person location and recalculate zone status (ZONE-CENTRIC LOGIC)
@@ -611,7 +612,7 @@ class ZoneMonitor:
             logger.info("="*80)
             logger.info("\n" + tabulate(table_data, headers=headers, tablefmt="grid"))
             logger.info("="*80 + "\n")
-    
+
     def get_zone_summary(self):
         """
         Get summary of zone status (ZONE-CENTRIC LOGIC)
@@ -650,7 +651,7 @@ class ZoneMonitor:
             List of zone violation events
         """
         return self.zone_violations.copy()
-    
+
     def save_report(self, output_path):
         """Save zone monitoring report to JSON (ZONE-CENTRIC LOGIC)"""
         report = {
@@ -1450,4 +1451,210 @@ if __name__ == "__main__":
         output_dir=args.output,
         max_frames=args.max_frames
     )
+
+
+def process_multi_stream_with_zones(
+    stream_urls: list,
+    zone_config_path: str,
+    reid_config_path: str = None,
+    similarity_threshold: float = 0.8,
+    iou_threshold: float = 0.6,
+    zone_opacity: float = 0.3,
+    output_dir: str = None,
+    max_frames: int = None,
+    max_duration_seconds: int = None,
+    progress_callback: callable = None,
+    violation_callback: callable = None,
+    cancellation_flag: threading.Event = None,
+    alert_threshold: float = 0,
+    zone_workers: int = None
+):
+    """
+    Process multiple video streams with zone monitoring in parallel
+
+    Each stream is processed in a separate thread with its own zone monitoring.
+
+    Args:
+        stream_urls: List of stream URLs or file paths
+        zone_config_path: Path to zone configuration YAML (must contain cameras section)
+        reid_config_path: Path to ReID config
+        similarity_threshold: ReID similarity threshold
+        iou_threshold: Zone IoP threshold
+        zone_opacity: Zone border thickness factor
+        output_dir: Output directory for results
+        max_frames: Maximum frames per stream
+        max_duration_seconds: Maximum duration per stream
+        progress_callback: Callback(camera_id, frame_id, tracks) for progress updates
+        violation_callback: Callback(violation_dict) for violations
+        cancellation_flag: Threading event to signal cancellation
+        alert_threshold: Time threshold before showing alert
+        zone_workers: Number of worker threads for zone processing
+
+    Returns:
+        Dict with results per camera
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from pathlib import Path
+
+    logger.info("="*80)
+    logger.info("🎯 MULTI-STREAM ZONE MONITORING WITH PERSON REID")
+    logger.info("="*80)
+    logger.info(f"Processing {len(stream_urls)} streams in parallel")
+
+    # Load zone config to extract per-camera zones
+    with open(zone_config_path, 'r') as f:
+        if Path(zone_config_path).suffix.lower() == '.json':
+            import json
+            zone_config = json.load(f)
+        else:
+            zone_config = yaml.safe_load(f)
+
+    if 'cameras' not in zone_config:
+        raise ValueError("Zone config must contain 'cameras' section for multi-stream processing")
+
+    cameras = zone_config['cameras']
+    num_cameras = len(cameras)
+
+    if len(stream_urls) != num_cameras:
+        logger.warning(f"⚠️  Number of streams ({len(stream_urls)}) != number of cameras in config ({num_cameras})")
+        logger.warning(f"   Will process min({len(stream_urls)}, {num_cameras}) streams")
+        num_cameras = min(len(stream_urls), num_cameras)
+
+    # Setup output directory
+    if output_dir is None:
+        output_dir = Path(__file__).parent.parent / "outputs" / "multi_stream_zones"
+    else:
+        output_dir = Path(output_dir)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create per-camera zone configs
+    camera_zone_configs = {}
+    for camera_idx, (camera_id, camera_data) in enumerate(list(cameras.items())[:num_cameras]):
+        # Create single-camera zone config
+        single_camera_config = {
+            'cameras': {
+                'camera_1': camera_data  # Always use camera_1 for single-camera processing
+            }
+        }
+
+        # Save to temp file
+        temp_config_path = output_dir / f"zone_config_camera_{camera_idx}.yaml"
+        with open(temp_config_path, 'w') as f:
+            yaml.dump(single_camera_config, f)
+
+        camera_zone_configs[camera_idx] = str(temp_config_path)
+        logger.info(f"📹 Camera {camera_idx}: {camera_data.get('name', f'Camera {camera_idx+1}')} - {len(camera_data.get('zones', {}))} zones")
+
+    # Process each stream in parallel
+    results = {
+        'cameras': {},
+        'total_time': 0,
+        'status': 'processing'
+    }
+
+    def process_single_stream(camera_idx: int, stream_url: str, zone_config_path: str):
+        """Process a single stream with zone monitoring"""
+        try:
+            logger.info(f"🚀 [Camera {camera_idx}] Starting: {stream_url}")
+
+            # Setup output paths for this camera
+            camera_output_dir = output_dir / f"camera_{camera_idx}"
+            camera_output_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_video = camera_output_dir / f"output_{timestamp}.mp4"
+            output_csv = camera_output_dir / f"tracks_{timestamp}.csv"
+            output_json = camera_output_dir / f"zones_{timestamp}.json"
+
+            # Wrapper for progress callback to include camera_id
+            def camera_progress_callback(frame_id, tracks):
+                if progress_callback:
+                    progress_callback(camera_idx, frame_id, tracks)
+
+            # Process with zone monitoring
+            process_video_with_zones(
+                video_path=stream_url,
+                zone_config_path=zone_config_path,
+                reid_config_path=reid_config_path,
+                similarity_threshold=similarity_threshold,
+                iou_threshold=iou_threshold,
+                zone_opacity=zone_opacity,
+                output_video_path=str(output_video),
+                output_csv_path=str(output_csv),
+                output_json_path=str(output_json),
+                max_frames=max_frames,
+                max_duration_seconds=max_duration_seconds,
+                progress_callback=camera_progress_callback,
+                violation_callback=violation_callback,
+                cancellation_flag=cancellation_flag,
+                alert_threshold=alert_threshold,
+                zone_workers=zone_workers
+            )
+
+            logger.info(f"✅ [Camera {camera_idx}] Completed")
+
+            return {
+                'camera_id': camera_idx,
+                'stream_url': stream_url,
+                'status': 'completed',
+                'output_video': str(output_video),
+                'output_csv': str(output_csv),
+                'output_json': str(output_json)
+            }
+
+        except Exception as e:
+            logger.error(f"❌ [Camera {camera_idx}] Error: {e}")
+            return {
+                'camera_id': camera_idx,
+                'stream_url': stream_url,
+                'status': 'error',
+                'error': str(e)
+            }
+
+    # Execute in parallel
+    start_time = time.time()
+
+    with ThreadPoolExecutor(max_workers=num_cameras) as executor:
+        futures = {}
+
+        for camera_idx in range(num_cameras):
+            stream_url = stream_urls[camera_idx]
+            zone_config = camera_zone_configs[camera_idx]
+
+            future = executor.submit(
+                process_single_stream,
+                camera_idx,
+                stream_url,
+                zone_config
+            )
+            futures[future] = camera_idx
+
+        # Wait for all to complete
+        for future in as_completed(futures):
+            camera_idx = futures[future]
+            try:
+                result = future.result()
+                results['cameras'][camera_idx] = result
+            except Exception as e:
+                logger.error(f"❌ Camera {camera_idx} failed: {e}")
+                results['cameras'][camera_idx] = {
+                    'camera_id': camera_idx,
+                    'status': 'error',
+                    'error': str(e)
+                }
+
+    results['total_time'] = time.time() - start_time
+    results['status'] = 'completed'
+
+    logger.info("="*80)
+    logger.info(f"✅ Multi-stream zone monitoring completed in {results['total_time']:.1f}s")
+    logger.info("="*80)
+
+    return results
+
+
+if __name__ == "__main__":
+    main()
 

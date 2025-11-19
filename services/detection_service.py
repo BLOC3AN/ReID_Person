@@ -17,8 +17,10 @@ sys.path.insert(0, str(scripts_dir))
 
 import os
 import shutil
+import csv
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, FileResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 import uuid
@@ -30,8 +32,9 @@ import json
 
 # Import modules
 from scripts.detect_and_track import PersonReIDPipeline
-from scripts.zone_monitor import process_video_with_zones
+from scripts.zone_monitor import process_video_with_zones, process_multi_stream_with_zones
 from core.preloaded_manager import preloaded_manager
+from utils.multi_stream_reader import parse_stream_urls
 
 app = FastAPI(title="Detection Service", version="1.0.0")
 
@@ -45,7 +48,9 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # Job storage
 jobs = {}
 # Progress tracking
-progress_data = {}  # {job_id: {"current_frame": int, "total_frames": int, "tracks": [...]}}
+# Structure for single-stream: {"current_frame": int, "total_frames": int, "tracks": [...]}
+# Structure for multi-stream: {"cameras": {0: {"current_frame": int, "tracks": [...]}, 1: {...}}}
+progress_data = {}
 # Cancellation flags
 cancellation_flags = {}  # {job_id: threading.Event()}
 # WebSocket connections for real-time violation logs
@@ -143,6 +148,7 @@ class ProgressStatus(BaseModel):
     tracks: List[dict] = []
     violations: List[dict] = []  # Real-time violations
     message: Optional[str] = None
+    cameras: Optional[Dict] = None  # Per-camera progress for multi-stream
 
 
 def process_detection(job_id: str, video_path: str, output_video: str,
@@ -154,7 +160,13 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                       zone_opacity: float = 0.3, max_frames: Optional[int] = None,
                       max_duration_seconds: Optional[int] = None, alert_threshold: float = 0,
                       zone_workers: Optional[int] = None):
-    """Background task to process detection and tracking with optional zone monitoring"""
+    """
+    Background task to process detection and tracking with optional zone monitoring
+    Auto-detects single vs multi-stream and processes accordingly
+    """
+    # Initialize output_json to None (will be set if zone monitoring is used)
+    output_json = None
+
     try:
         jobs[job_id]["status"] = "processing"
         logger.info(f"Starting detection job {job_id}")
@@ -162,14 +174,36 @@ def process_detection(job_id: str, video_path: str, output_video: str,
         # Initialize cancellation flag
         cancellation_flags[job_id] = threading.Event()
 
+        # Parse video_path to detect single vs multi-stream
+        stream_urls = parse_stream_urls(video_path)
+        num_streams = len(stream_urls)
+        is_multi_stream = num_streams > 1
+
+        logger.info(f"Detected {num_streams} stream(s): {stream_urls}")
+
         # Initialize progress tracking
-        progress_data[job_id] = {
-            "current_frame": 0,
-            "total_frames": 0,
-            "tracks": [],
-            "violations": [],  # Real-time violations
-            "last_update": time.time()
-        }
+        if is_multi_stream:
+            # Multi-stream: per-camera progress
+            progress_data[job_id] = {
+                "cameras": {},
+                "violations": [],
+                "last_update": time.time(),
+                "num_streams": num_streams
+            }
+            for i in range(num_streams):
+                progress_data[job_id]["cameras"][i] = {
+                    "current_frame": 0,
+                    "tracks": []
+                }
+        else:
+            # Single-stream: backward compatible
+            progress_data[job_id] = {
+                "current_frame": 0,
+                "total_frames": 0,
+                "tracks": [],
+                "violations": [],
+                "last_update": time.time()
+            }
 
         # Check if zone monitoring is enabled
         use_zones = zone_config_path is not None and Path(zone_config_path).exists()
@@ -177,48 +211,183 @@ def process_detection(job_id: str, video_path: str, output_video: str,
         if use_zones:
             logger.info(f"Zone monitoring enabled: {zone_config_path}")
 
-            # Get total frames
-            total_frames = _get_total_frames(video_path)
-            progress_data[job_id]["total_frames"] = total_frames
+            # Check if multi-stream + zone monitoring
+            if is_multi_stream:
+                logger.info(f"🎯 Multi-stream zone monitoring: {num_streams} cameras")
 
-            # Output JSON for zone report
-            output_json = str(Path(output_log).parent / f"{job_id}_zones.json")
+                # Create multi-stream output directory structure with timestamp (UTC+7)
+                from datetime import datetime, timezone, timedelta
+                tz_hcm = timezone(timedelta(hours=7))
+                timestamp = datetime.now(tz_hcm).strftime("%Y-%m-%d-%H-%M")
+                multi_stream_dirname = f"multi_stream_{timestamp}"
+                multi_stream_dir = OUTPUT_DIR / multi_stream_dirname
+                multi_stream_dir.mkdir(parents=True, exist_ok=True)
 
-            # Run with zone monitoring
-            process_video_with_zones(
-                video_path=video_path,
-                zone_config_path=zone_config_path,
-                reid_config_path=config_path,
-                similarity_threshold=similarity_threshold,
-                iou_threshold=iou_threshold,
-                zone_opacity=zone_opacity,
-                output_video_path=output_video,
-                output_csv_path=output_csv,
-                output_json_path=output_json,
-                max_frames=max_frames,
-                max_duration_seconds=max_duration_seconds,
-                progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks),
-                violation_callback=lambda violation: _add_violation(job_id, violation),
-                cancellation_flag=cancellation_flags.get(job_id),
-                alert_threshold=alert_threshold,
-                zone_workers=zone_workers
-            )
+                # Store directory name in job for later retrieval
+                jobs[job_id]["multi_stream_dir"] = multi_stream_dirname
 
-            # Create a simple log file for zone monitoring
-            # (zone_monitor uses loguru which outputs to console, not file)
-            with open(output_log, 'w') as f:
-                f.write(f"Zone Monitoring Detection Log\n")
-                f.write(f"Job ID: {job_id}\n")
-                f.write(f"Video: {video_path}\n")
-                f.write(f"Zone Config: {zone_config_path}\n")
-                f.write(f"IoP Threshold: {iou_threshold}\n")
-                f.write(f"Similarity Threshold: {similarity_threshold}\n")
-                f.write(f"\nOutputs:\n")
-                f.write(f"  Video: {output_video}\n")
-                f.write(f"  CSV: {output_csv}\n")
-                f.write(f"  JSON Report: {output_json}\n")
-                f.write(f"\nStatus: Completed\n")
-                f.write(f"\nNote: Detailed logs are in the JSON report.\n")
+                # Multi-stream zone monitoring: parallel processing per camera
+                results = process_multi_stream_with_zones(
+                    stream_urls=stream_urls,
+                    zone_config_path=zone_config_path,
+                    reid_config_path=config_path,
+                    similarity_threshold=similarity_threshold,
+                    iou_threshold=iou_threshold,
+                    zone_opacity=zone_opacity,
+                    output_dir=str(multi_stream_dir),
+                    max_frames=max_frames,
+                    max_duration_seconds=max_duration_seconds,
+                    progress_callback=lambda cam_id, frame_id, tracks: _update_progress(job_id, frame_id, tracks, camera_id=cam_id),
+                    violation_callback=lambda violation: _add_violation(job_id, violation),
+                    cancellation_flag=cancellation_flags.get(job_id),
+                    alert_threshold=alert_threshold,
+                    zone_workers=zone_workers
+                )
+
+                # Create summary log file
+                with open(output_log, 'w') as f:
+                    f.write(f"Multi-Stream Zone Monitoring Detection Log\n")
+                    f.write(f"Job ID: {job_id}\n")
+                    f.write(f"Number of Cameras: {num_streams}\n")
+                    f.write(f"Zone Config: {zone_config_path}\n")
+                    f.write(f"IoP Threshold: {iou_threshold}\n")
+                    f.write(f"Similarity Threshold: {similarity_threshold}\n")
+                    f.write(f"\nOutput Directory: {multi_stream_dir}\n")
+                    f.write(f"Aggregated CSV: {output_csv}\n")
+                    f.write(f"Aggregated JSON: {output_json}\n")
+                    f.write(f"Main Video: {output_video}\n")
+                    f.write(f"\nPer-Camera Results:\n")
+                    for cam_id, result in results['cameras'].items():
+                        f.write(f"\n  Camera {cam_id}:\n")
+                        f.write(f"    Status: {result['status']}\n")
+                        if result['status'] == 'completed':
+                            f.write(f"    Video: {result['output_video']}\n")
+                            f.write(f"    CSV: {result['output_csv']}\n")
+                            f.write(f"    JSON: {result['output_json']}\n")
+                        else:
+                            f.write(f"    Error: {result.get('error', 'Unknown')}\n")
+                    f.write(f"\nTotal Time: {results['total_time']:.1f}s\n")
+                    f.write(f"Status: {results['status']}\n")
+
+                # Create aggregated CSV file (combine all cameras)
+                with open(output_csv, 'w', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    # Use the same header as zone_monitor.py
+                    writer.writerow([
+                        'frame_id', 'track_id', 'global_id', 'person_name', 'similarity',
+                        'x', 'y', 'w', 'h', 'zone_id', 'zone_name', 'duration_in_zone', 'camera_idx'
+                    ])
+
+                    for cam_id, result in results['cameras'].items():
+                        if result['status'] == 'completed' and os.path.exists(result['output_csv']):
+                            with open(result['output_csv'], 'r') as cam_csv:
+                                reader = csv.DictReader(cam_csv)
+                                for row in reader:
+                                    # Copy all fields, update camera_idx to reflect actual camera ID
+                                    writer.writerow([
+                                        row.get('frame_id', ''),
+                                        row.get('track_id', ''),
+                                        row.get('global_id', ''),
+                                        row.get('person_name', ''),
+                                        row.get('similarity', ''),
+                                        row.get('x', ''),
+                                        row.get('y', ''),
+                                        row.get('w', ''),
+                                        row.get('h', ''),
+                                        row.get('zone_id', ''),
+                                        row.get('zone_name', ''),
+                                        row.get('duration_in_zone', ''),
+                                        cam_id  # Use actual camera ID from multi-stream
+                                    ])
+
+                # Create aggregated JSON file (combine all cameras)
+                output_json = str(Path(output_log).parent / f"{job_id}_zones.json")
+                aggregated_json = {
+                    'job_id': job_id,
+                    'num_cameras': num_streams,
+                    'total_time': results['total_time'],
+                    'status': results['status'],
+                    'cameras': {}
+                }
+
+                for cam_id, result in results['cameras'].items():
+                    if result['status'] == 'completed' and os.path.exists(result['output_json']):
+                        with open(result['output_json'], 'r') as cam_json:
+                            aggregated_json['cameras'][f'camera_{cam_id}'] = json.load(cam_json)
+                    else:
+                        aggregated_json['cameras'][f'camera_{cam_id}'] = {
+                            'status': result['status'],
+                            'error': result.get('error', 'Unknown')
+                        }
+
+                with open(output_json, 'w') as f:
+                    json.dump(aggregated_json, f, indent=2)
+
+                # For video output: copy the first successful camera's video
+                # (Merging videos would be too complex and time-consuming)
+                video_copied = False
+                for cam_id in sorted(results['cameras'].keys()):
+                    result = results['cameras'][cam_id]
+                    if result['status'] == 'completed' and os.path.exists(result['output_video']):
+                        # Copy first successful camera video as the main output
+                        shutil.copy2(result['output_video'], output_video)
+                        logger.info(f"📹 Copied camera {cam_id} video as main output: {output_video}")
+                        video_copied = True
+                        break
+
+                if not video_copied:
+                    # If no video was copied, create a text file with info
+                    with open(output_video.replace('.mp4', '.txt'), 'w') as f:
+                        f.write(f"Multi-Stream Zone Monitoring - No video available\n")
+                        f.write(f"Job ID: {job_id}\n")
+                        f.write(f"All cameras failed to produce video output.\n")
+
+            else:
+                # Single-stream zone monitoring
+                logger.info("Single-stream zone monitoring")
+
+                # Get total frames
+                total_frames = _get_total_frames(video_path)
+                progress_data[job_id]["total_frames"] = total_frames
+
+                # Output JSON for zone report
+                output_json = str(Path(output_log).parent / f"{job_id}_zones.json")
+
+                # Run with zone monitoring
+                process_video_with_zones(
+                    video_path=video_path,
+                    zone_config_path=zone_config_path,
+                    reid_config_path=config_path,
+                    similarity_threshold=similarity_threshold,
+                    iou_threshold=iou_threshold,
+                    zone_opacity=zone_opacity,
+                    output_video_path=output_video,
+                    output_csv_path=output_csv,
+                    output_json_path=output_json,
+                    max_frames=max_frames,
+                    max_duration_seconds=max_duration_seconds,
+                    progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks),
+                    violation_callback=lambda violation: _add_violation(job_id, violation),
+                    cancellation_flag=cancellation_flags.get(job_id),
+                    alert_threshold=alert_threshold,
+                    zone_workers=zone_workers
+                )
+
+                # Create a simple log file for zone monitoring
+                # (zone_monitor uses loguru which outputs to console, not file)
+                with open(output_log, 'w') as f:
+                    f.write(f"Zone Monitoring Detection Log\n")
+                    f.write(f"Job ID: {job_id}\n")
+                    f.write(f"Video: {video_path}\n")
+                    f.write(f"Zone Config: {zone_config_path}\n")
+                    f.write(f"IoP Threshold: {iou_threshold}\n")
+                    f.write(f"Similarity Threshold: {similarity_threshold}\n")
+                    f.write(f"\nOutputs:\n")
+                    f.write(f"  Video: {output_video}\n")
+                    f.write(f"  CSV: {output_csv}\n")
+                    f.write(f"  JSON Report: {output_json}\n")
+                    f.write(f"\nStatus: Completed\n")
+                    f.write(f"\nNote: Detailed logs are in the JSON report.\n")
 
         else:
             # Standard detection without zones
@@ -247,9 +416,20 @@ def process_detection(job_id: str, video_path: str, output_video: str,
 
             # Components are either pre-loaded or will be initialized automatically
 
+            # Multi-stream without zones is not supported (always use zone monitoring for multi-stream)
+            if is_multi_stream:
+                logger.error(f"❌ Multi-stream detection requires zone monitoring enabled")
+                jobs[job_id]["status"] = "failed"
+                jobs[job_id]["message"] = "Multi-stream detection requires zone monitoring. Please enable zone monitoring or use single stream."
+                return
+
+            # Single-stream processing
+            logger.info("📹 Single-stream mode")
+
             # Get total frames from video (will be 0 for streams)
             total_frames = _get_total_frames(video_path)
-            progress_data[job_id]["total_frames"] = total_frames
+            if not is_multi_stream:
+                progress_data[job_id]["total_frames"] = total_frames
 
             # Run detection and tracking with specific output paths
             pipeline.process_video(
@@ -281,6 +461,9 @@ def process_detection(job_id: str, video_path: str, output_video: str,
         if output_json:
             jobs[job_id]["output_json"] = output_json
 
+        # Mark if this is a multi-stream job (for UI to know whether to show ZIP download)
+        jobs[job_id]["is_multi_stream"] = is_multi_stream
+
     except Exception as e:
         # Check if exception was due to cancellation
         if job_id in cancellation_flags and cancellation_flags[job_id].is_set():
@@ -299,12 +482,33 @@ def process_detection(job_id: str, video_path: str, output_video: str,
             del cancellation_flags[job_id]
 
 
-def _update_progress(job_id: str, frame_id: int, tracks: List[dict]):
-    """Update progress data for a job"""
+def _update_progress(job_id: str, frame_id: int, tracks: List[dict], camera_id: Optional[int] = None):
+    """
+    Update progress data for a job (supports both single and multi-camera)
+
+    Args:
+        job_id: Job ID
+        frame_id: Current frame ID
+        tracks: List of track dictionaries
+        camera_id: Camera ID for multi-camera (None for single camera)
+    """
     if job_id in progress_data:
-        progress_data[job_id]["current_frame"] = frame_id
-        progress_data[job_id]["tracks"] = tracks
-        progress_data[job_id]["last_update"] = time.time()
+        if camera_id is not None:
+            # Multi-camera mode
+            if "cameras" not in progress_data[job_id]:
+                progress_data[job_id]["cameras"] = {}
+
+            if camera_id not in progress_data[job_id]["cameras"]:
+                progress_data[job_id]["cameras"][camera_id] = {}
+
+            progress_data[job_id]["cameras"][camera_id]["current_frame"] = frame_id
+            progress_data[job_id]["cameras"][camera_id]["tracks"] = tracks
+            progress_data[job_id]["cameras"][camera_id]["last_update"] = time.time()
+        else:
+            # Single-camera mode (backward compatible)
+            progress_data[job_id]["current_frame"] = frame_id
+            progress_data[job_id]["tracks"] = tracks
+            progress_data[job_id]["last_update"] = time.time()
 
 
 def _add_violation(job_id: str, violation: dict):
@@ -667,7 +871,7 @@ async def get_status(job_id: str):
 
 @app.get("/progress/{job_id}")
 async def get_progress(job_id: str):
-    """Get real-time progress of a detection job"""
+    """Get real-time progress of a detection job (supports both single and multi-camera)"""
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -683,20 +887,52 @@ async def get_progress(job_id: str):
         )
 
     prog = progress_data[job_id]
-    current_frame = prog.get("current_frame", 0)
-    total_frames = prog.get("total_frames", 0)
-    progress_percent = (current_frame / total_frames * 100) if total_frames > 0 else 0
 
-    return ProgressStatus(
-        job_id=job_id,
-        status=jobs[job_id]["status"],
-        current_frame=current_frame,
-        total_frames=total_frames,
-        progress_percent=progress_percent,
-        tracks=prog.get("tracks", []),
-        violations=prog.get("violations", []),
-        message=f"Processing frame {current_frame}/{total_frames}"
-    )
+    # Check if multi-camera mode
+    if "cameras" in prog:
+        # Multi-camera: aggregate progress
+        cameras_data = prog["cameras"]
+        num_cameras = prog.get("num_streams", len(cameras_data))
+
+        # Calculate average frame across all cameras
+        total_frames_processed = sum(cam.get("current_frame", 0) for cam in cameras_data.values())
+        avg_frame = total_frames_processed // num_cameras if num_cameras > 0 else 0
+
+        # Aggregate tracks from all cameras
+        all_tracks = []
+        for cam_id, cam_data in cameras_data.items():
+            for track in cam_data.get("tracks", []):
+                track_copy = track.copy()
+                track_copy["camera_id"] = cam_id
+                all_tracks.append(track_copy)
+
+        return ProgressStatus(
+            job_id=job_id,
+            status=jobs[job_id]["status"],
+            current_frame=avg_frame,
+            total_frames=0,  # Streams don't have total frames
+            progress_percent=0.0,
+            tracks=all_tracks,
+            violations=prog.get("violations", []),
+            message=f"Processing {num_cameras} cameras (avg frame: {avg_frame})",
+            cameras=cameras_data  # Include per-camera data
+        )
+    else:
+        # Single-camera: backward compatible
+        current_frame = prog.get("current_frame", 0)
+        total_frames = prog.get("total_frames", 0)
+        progress_percent = (current_frame / total_frames * 100) if total_frames > 0 else 0
+
+        return ProgressStatus(
+            job_id=job_id,
+            status=jobs[job_id]["status"],
+            current_frame=current_frame,
+            total_frames=total_frames,
+            progress_percent=progress_percent,
+            tracks=prog.get("tracks", []),
+            violations=prog.get("violations", []),
+            message=f"Processing frame {current_frame}/{total_frames}"
+        )
 
 
 @app.get("/download/video/{job_id}")
@@ -782,6 +1018,59 @@ async def download_json(job_id: str):
     )
 
 
+@app.get("/download/zip/{job_id}")
+async def download_all_as_zip(job_id: str):
+    """Download all multi-stream outputs as a ZIP file"""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if jobs[job_id]["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Job not completed yet")
+
+    # Check if this is a multi-stream job
+    if "multi_stream_dir" not in jobs[job_id]:
+        raise HTTPException(status_code=404, detail="Multi-stream output not found. This endpoint is only for multi-stream jobs.")
+
+    multi_stream_dirname = jobs[job_id]["multi_stream_dir"]
+    multi_stream_dir = OUTPUT_DIR / multi_stream_dirname
+
+    if not multi_stream_dir.exists():
+        raise HTTPException(status_code=404, detail=f"Multi-stream directory not found: {multi_stream_dirname}")
+
+    # Create a temporary ZIP file
+    import tempfile
+    import zipfile
+
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    temp_zip_path = temp_zip.name
+    temp_zip.close()
+
+    try:
+        with zipfile.ZipFile(temp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Add all files from multi_stream directory
+            for file_path in multi_stream_dir.rglob('*'):
+                if file_path.is_file():
+                    # Create relative path for ZIP archive
+                    arcname = file_path.relative_to(multi_stream_dir.parent)
+                    zipf.write(file_path, arcname=arcname)
+                    logger.info(f"Added to ZIP: {arcname}")
+
+        # Return the ZIP file with timestamp-based filename
+        return FileResponse(
+            path=temp_zip_path,
+            media_type="application/zip",
+            filename=f"{multi_stream_dirname}_results.zip",
+            background=BackgroundTask(lambda: os.unlink(temp_zip_path))  # Clean up temp file after sending
+        )
+
+    except Exception as e:
+        # Clean up on error
+        if os.path.exists(temp_zip_path):
+            os.unlink(temp_zip_path)
+        logger.error(f"Failed to create ZIP: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create ZIP file: {str(e)}")
+
+
 @app.post("/cancel/{job_id}")
 async def cancel_job(job_id: str):
     """Cancel a running detection job"""
@@ -816,6 +1105,29 @@ async def cancel_job(job_id: str):
         "status": "cancelled",
         "message": "Job cancellation requested"
     })
+
+
+@app.get("/job/{job_id}/status")
+async def get_job_status(job_id: str):
+    """
+    Get the status of a detection job
+
+    Args:
+        job_id: Job ID to check
+
+    Returns:
+        Job status and progress information
+    """
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    job_info = jobs[job_id].copy()
+
+    # Add progress information if available
+    if job_id in progress_data:
+        job_info["progress"] = progress_data[job_id]
+
+    return JSONResponse(content=job_info)
 
 
 if __name__ == "__main__":

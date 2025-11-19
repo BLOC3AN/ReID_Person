@@ -14,6 +14,7 @@ import time
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+from typing import List, Optional, Callable
 from loguru import logger
 
 # Add parent directory to path
@@ -679,6 +680,8 @@ class PersonReIDPipeline:
             folder_info = f" → {person_video_writers[tid]['path'].name}" if tid in person_video_writers else ""
             logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){folder_info}")
         logger.info("="*80)
+
+
 
 
 def main():
