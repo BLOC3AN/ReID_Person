@@ -22,11 +22,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # API endpoints from environment variables
-EXTRACT_API_URL = os.getenv("EXTRACT_API_URL", "http://localhost:8001")
 REGISTER_API_URL = os.getenv("REGISTER_API_URL", "http://localhost:8002")
 DETECTION_API_URL = os.getenv("DETECTION_API_URL", "http://localhost:8003")
 
-logger.info(f"🚀 Starting Person ReID UI - Extract: {EXTRACT_API_URL}, Register: {REGISTER_API_URL}, Detection: {DETECTION_API_URL}")
+logger.info(f"🚀 Starting Person ReID UI - Register: {REGISTER_API_URL}, Detection: {DETECTION_API_URL}")
 
 
 # ============================================================================
@@ -102,211 +101,8 @@ st.markdown("---")
 # Sidebar for navigation
 page = st.sidebar.selectbox(
     "Select Operation",
-    ["Detect & Track", "Register Person", "Extract Objects", "👥 User Management", "ℹ️ About"]
+    ["Detect & Track", "Register Person", "👥 User Management", "ℹ️ About"]
 )
-
-# ============================================================================
-# PAGE 1: EXTRACT OBJECTS
-# ============================================================================
-if page == "Extract Objects":
-    st.header("Extract Individual Objects from Video")
-    st.markdown("Extract separate videos for each tracked person from multi-person footage")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        video_file = st.file_uploader("Upload Video", type=['mp4', 'avi', 'mkv', 'mov'])
-    
-    with col2:
-        st.markdown("### Parameters")
-        model_type = st.selectbox("Model", ["mot17", "yolox"], index=0)
-        min_frames = st.number_input("Min Frames", min_value=1, value=10, help="Minimum frames to save object")
-        padding = st.number_input("Padding (px)", min_value=0, value=10, help="Padding around bbox")
-        conf_thresh = st.slider("Confidence Threshold", 0.0, 1.0, 0.6, 0.05)
-        track_thresh = st.slider("Track Threshold", 0.0, 1.0, 0.5, 0.05)
-    
-    if st.button("🚀 Extract Objects", type="primary"):
-        if video_file is None:
-            st.error("Please upload a video file")
-        else:
-            with st.spinner("Uploading video and starting extraction..."):
-                try:
-                    # Prepare files and data for API call
-                    files = {"video": (video_file.name, video_file.getvalue(), "video/mp4")}
-                    data = {
-                        "model_type": model_type,
-                        "padding": padding,
-                        "conf_thresh": conf_thresh,
-                        "track_thresh": track_thresh,
-                        "min_frames": min_frames
-                    }
-
-                    # Call Extract API
-                    response = requests.post(f"{EXTRACT_API_URL}/extract", files=files, data=data)
-
-                    if response.status_code == 200:
-                        result = response.json()
-                        job_id = result["job_id"]
-
-                        # Store job_id in session state
-                        st.session_state['extract_current_job_id'] = job_id
-
-                        st.info(f"Job ID: {job_id}")
-
-                        # Poll for status
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-
-                        while True:
-                            status_response = requests.get(f"{EXTRACT_API_URL}/status/{job_id}")
-                            if status_response.status_code == 200:
-                                status = status_response.json()
-                                status_text.text(f"Status: {status['status']}")
-
-                                if status["status"] == "completed":
-                                    progress_bar.progress(100)
-                                    st.success("✅ Extraction complete!")
-
-                                    # Get results and cache in session state (for display outside polling loop)
-                                    results_cache_key = f"extract_results_{job_id}"
-                                    if results_cache_key not in st.session_state:
-                                        results_response = requests.get(f"{EXTRACT_API_URL}/results/{job_id}")
-                                        if results_response.status_code == 200:
-                                            st.session_state[results_cache_key] = results_response.json()
-                                            results = results_response.json()
-                                        else:
-                                            results = None
-                                    else:
-                                        results = st.session_state.get(results_cache_key)
-
-                                    # Cache all download data (preview, files, log)
-                                    if results and results['files']:
-                                        # Cache all files (including preview)
-                                        for idx, filename in enumerate(results['files']):
-                                            cache_key = f"extract_file_{job_id}_{filename}"
-                                            if cache_key not in st.session_state:
-                                                try:
-                                                    file_url = f"{EXTRACT_API_URL}/download/{job_id}/{filename}"
-                                                    file_response = requests.get(file_url)
-                                                    if file_response.status_code == 200:
-                                                        st.session_state[cache_key] = file_response.content
-                                                        # Also cache first file as preview
-                                                        if idx == 0:
-                                                            st.session_state[f"extract_preview_{job_id}"] = file_response.content
-                                                except Exception as e:
-                                                    pass
-
-                                        # Cache log
-                                        cache_key = f"extract_log_{job_id}"
-                                        if cache_key not in st.session_state:
-                                            try:
-                                                log_url = f"{EXTRACT_API_URL}/download/log/{job_id}"
-                                                log_response = requests.get(log_url)
-                                                if log_response.status_code == 200:
-                                                    st.session_state[cache_key] = log_response.content
-                                            except Exception as e:
-                                                pass
-
-                                    break
-
-                                elif status["status"] == "failed":
-                                    st.error(f"❌ Extraction failed: {status.get('error', 'Unknown error')}")
-                                    break
-
-                                elif status["status"] == "processing":
-                                    progress_bar.progress(50)
-
-                            time.sleep(2)
-                    else:
-                        st.error(f"Failed to start extraction: {response.text}")
-
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-
-    # Display results if available (after rerun from download button click)
-    if 'extract_current_job_id' in st.session_state:
-        job_id = st.session_state['extract_current_job_id']
-        results_cache_key = f"extract_results_{job_id}"
-
-        if results_cache_key in st.session_state:
-            results = st.session_state[results_cache_key]
-
-            st.markdown("---")
-            st.markdown(f"### 📊 Extraction Results (Job: {job_id[:8]}...)")
-            st.info(f"Found **{results['total_objects']}** objects")
-
-            # Show list of extracted objects
-            st.markdown("#### 📹 Extracted Object Videos:")
-            for filename in results['files']:
-                st.text(f"  • {filename}")
-
-            # Download all as ZIP - CACHE DATA
-            st.markdown("---")
-            st.markdown("### 📦 Download All Objects as ZIP")
-
-            cache_key = f"extract_zip_{job_id}"
-
-            # Fetch ZIP only if not cached
-            if cache_key not in st.session_state:
-                try:
-                    zip_url = f"{EXTRACT_API_URL}/download/zip/{job_id}"
-                    zip_response = requests.get(zip_url)
-                    if zip_response.status_code == 200:
-                        st.session_state[cache_key] = zip_response.content
-                except Exception as e:
-                    st.error(f"Failed to fetch ZIP: {e}")
-
-            # Show download button with cached data
-            if cache_key in st.session_state:
-                st.download_button(
-                    label="📦 Download All (ZIP)",
-                    data=st.session_state[cache_key],
-                    file_name=f"{job_id}_extracted_objects.zip",
-                    mime="application/zip",
-                    key=f"download_zip_{job_id}",
-                    use_container_width=True
-                )
-
-            # Download log - CACHE DATA
-            st.markdown("---")
-            cache_key = f"extract_log_{job_id}"
-
-            # Fetch only if not cached
-            if cache_key not in st.session_state:
-                try:
-                    log_url = f"{EXTRACT_API_URL}/download/log/{job_id}"
-                    log_response = requests.get(log_url)
-                    if log_response.status_code == 200:
-                        st.session_state[cache_key] = log_response.content
-                except Exception as e:
-                    st.error(f"Failed to fetch log: {e}")
-
-            # Show download button with cached data
-            if cache_key in st.session_state:
-                st.download_button(
-                    label="📄 Download Extraction Log",
-                    data=st.session_state[cache_key],
-                    file_name=f"{job_id}_extraction.log",
-                    mime="text/plain",
-                    key=f"download_log_{job_id}",
-                    use_container_width=True
-                )
-
-            # Button to clear results and browse new video
-            st.markdown("---")
-            if st.button("🔄 Clear Results & Browse New Video", type="secondary", use_container_width=True, key=f"clear_extract_{job_id}"):
-                # Clear all extraction-related session state
-                if 'extract_current_job_id' in st.session_state:
-                    job_id_to_clear = st.session_state['extract_current_job_id']
-                    st.session_state.pop('extract_current_job_id', None)
-                    st.session_state.pop(f"extract_results_{job_id_to_clear}", None)
-                    st.session_state.pop(f"extract_zip_{job_id_to_clear}", None)
-                    st.session_state.pop(f"extract_log_{job_id_to_clear}", None)
-                    # Clear individual file caches
-                    for key in list(st.session_state.keys()):
-                        if key.startswith(f"extract_file_{job_id_to_clear}"):
-                            st.session_state.pop(key, None)
-                st.rerun()
 
 # PAGE 2: REGISTER PERSON
 # ============================================================================
@@ -948,7 +744,7 @@ elif page == "Detect & Track":
             zone_workers = st.number_input(
                 "Zone Worker Threads",
                 min_value=1,
-                max_value=8,
+                max_value=32,
                 value=None,  # None = auto-detect (capped at 4)
                 step=1,
                 help="Number of threads for zone processing. None = auto-detect (capped at 4). Higher values = faster processing but more CPU usage."
@@ -971,7 +767,7 @@ elif page == "Detect & Track":
         alert_threshold = st.number_input(
             "Alert Threshold (seconds)",
             min_value=0,
-            max_value=300,
+            max_value=10000,
             value=0,
             step=5,
             help="Time (in seconds) a person must be outside their authorized zone before triggering an alert. 0 = immediate alert."

@@ -87,7 +87,6 @@ sudo docker compose down
 ## 🌐 Access Points
 
 - **Web UI**: http://localhost:8501
-- **Extract API**: http://localhost:8001/docs
 - **Register API**: http://localhost:8002/docs
 - **Detection API**: http://localhost:8003/docs
 - **Qdrant** (External): http://localhost:6333/dashboard
@@ -96,7 +95,7 @@ sudo docker compose down
 
 All services share these volumes:
 
-- `../outputs` - Generated outputs (videos, CSV, extracted objects)
+- `../outputs` - Generated outputs (videos, CSV, tracking data)
 - `../data` - Input data and uploads
 - `../logs` - Application logs
 - `../configs` - Configuration files (.env)

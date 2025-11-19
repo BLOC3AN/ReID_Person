@@ -263,7 +263,6 @@ QDRANT_COLLECTION=cross_camera_matching_id
 QDRANT_PORT=6333
 
 # Optional: Service URLs (for Docker)
-EXTRACT_API_URL=http://extract:8001
 REGISTER_API_URL=http://register:8002
 DETECTION_API_URL=http://detection:8003
 ```
