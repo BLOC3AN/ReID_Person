@@ -137,6 +137,21 @@ async def stats():
     }
 
 
+@app.get("/messages/recent")
+async def get_recent_messages(limit: int = 10):
+    """
+    Get recent Kafka messages from buffer
+
+    Args:
+        limit: Number of recent messages to return (default: 10, max: 100)
+    """
+    limit = min(limit, MAX_BUFFER_SIZE)
+    return {
+        "messages": message_buffer[-limit:],
+        "total_in_buffer": len(message_buffer)
+    }
+
+
 @app.websocket("/ws/alerts")
 async def websocket_alerts(websocket: WebSocket):
     """

@@ -864,6 +864,47 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     # Initialize zone monitor with camera count
     zone_monitor = ZoneMonitor(zone_config_path, iou_threshold, zone_opacity, num_cameras=num_cameras)
 
+    # Load users_dict (global_id -> name mapping) BEFORE starting zone service
+    # Initialize Redis Track Manager first
+    redis_host = os.getenv('REDIS_HOST', 'localhost')
+    redis_port = int(os.getenv('REDIS_PORT', 6379))
+    redis_ttl = int(os.getenv('REDIS_TTL', 300))
+
+    redis_manager_temp = None
+    try:
+        redis_manager_temp = RedisTrackManager(host=redis_host, port=redis_port, ttl=redis_ttl)
+        logger.info(f"✅ Redis connected for users_dict loading")
+    except Exception as e:
+        logger.warning(f"⚠️  Redis not available for users_dict: {e}")
+
+    users_dict = {}
+    if redis_manager_temp:
+        # Try to get from Redis cache first
+        users_dict = redis_manager_temp.get_users_dict()
+        if users_dict:
+            logger.info(f"✅ Loaded {len(users_dict)} users from Redis cache")
+
+    # If not in Redis, load from database and cache it
+    if not users_dict:
+        try:
+            from services.database.postgres_manager import PostgresManager
+            db_manager = PostgresManager()
+            if db_manager.connect():
+                users_dict = db_manager.get_users_dict()
+                logger.info(f"✅ Loaded {len(users_dict)} users from database")
+                db_manager.disconnect()
+
+                # Cache in Redis for future use
+                if redis_manager_temp and users_dict:
+                    redis_manager_temp.set_users_dict(users_dict, ttl=3600)  # Cache for 1 hour
+        except Exception as e:
+            logger.warning(f"⚠️  Could not load users from database: {e}")
+            users_dict = {}
+
+    # Update zone_monitor with users_dict BEFORE starting zone service
+    zone_monitor.users_dict = users_dict
+    logger.info(f"✅ Zone monitor initialized with {len(users_dict)} users: {users_dict}")
+
     # Load Kafka configuration from config
     kafka_config = None
     config_file_to_use = reid_config_path
@@ -912,14 +953,10 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     )
     zone_service.start()
 
-    # Initialize Redis Track Manager
-    redis_host = os.getenv('REDIS_HOST', 'localhost')
-    redis_port = int(os.getenv('REDIS_PORT', 6379))
-    redis_ttl = int(os.getenv('REDIS_TTL', 300))
-
+    # Initialize Redis Track Manager for track persistence
     try:
-        redis_manager = RedisTrackManager(host=redis_host, port=redis_port, ttl=redis_ttl)
-        logger.info(f"✅ Redis Track Manager initialized")
+        redis_manager = redis_manager_temp  # Reuse the connection from users_dict loading
+        logger.info(f"✅ Redis Track Manager initialized (reusing connection)")
     except Exception as e:
         logger.warning(f"⚠️  Redis not available: {e}. Using in-memory storage only.")
         redis_manager = None

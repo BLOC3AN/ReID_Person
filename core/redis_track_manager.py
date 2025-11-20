@@ -170,7 +170,7 @@ class RedisTrackManager:
     def get_stats(self) -> Dict:
         """
         Get Redis statistics
-        
+
         Returns:
             Dictionary with stats
         """
@@ -185,5 +185,46 @@ class RedisTrackManager:
             }
         except Exception as e:
             logger.error(f"❌ Failed to get stats: {e}")
+            return {}
+
+    def set_users_dict(self, users_dict: Dict[int, str], ttl: int = 3600) -> bool:
+        """
+        Cache users dictionary (global_id -> name mapping) in Redis
+
+        Args:
+            users_dict: Dictionary mapping global_id to person name
+            ttl: Time-to-live in seconds (default: 3600s = 1 hour)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            key = "users:dict"
+            # Convert int keys to strings for Redis
+            data_to_store = {str(k): v for k, v in users_dict.items()}
+            self.redis.hset(key, mapping=data_to_store)
+            self.redis.expire(key, ttl)
+            logger.info(f"✅ Cached {len(users_dict)} users in Redis (TTL={ttl}s)")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to cache users dict: {e}")
+            return False
+
+    def get_users_dict(self) -> Dict[int, str]:
+        """
+        Get cached users dictionary from Redis
+
+        Returns:
+            Dictionary mapping global_id to person name, or empty dict if not found
+        """
+        try:
+            key = "users:dict"
+            data = self.redis.hgetall(key)
+            if not data:
+                return {}
+            # Convert string keys back to int
+            return {int(k): v for k, v in data.items()}
+        except Exception as e:
+            logger.error(f"❌ Failed to get users dict: {e}")
             return {}
 

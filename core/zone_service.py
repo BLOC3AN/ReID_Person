@@ -349,13 +349,25 @@ class ZoneMonitoringService:
         tracker = self.violation_tracker[zone_id]
         violation_duration = frame_time - tracker['start_time']
 
-        # Get missing person names
+        # Get missing person names from multiple sources
         missing_names = []
+
         for pid in missing_persons:
+            name = None
+
+            # 1. Try to get name from person_locations first (if person was detected)
             if pid in self.zone_monitor.person_locations:
-                missing_names.append(self.zone_monitor.person_locations[pid]['name'])
-            else:
-                missing_names.append(f"Person {pid}")
+                name = self.zone_monitor.person_locations[pid]['name']
+
+            # 2. Try to get from users_dict (database cache)
+            elif pid in self.zone_monitor.users_dict:
+                name = self.zone_monitor.users_dict[pid]
+
+            # 3. Fallback to generic name
+            if name is None:
+                name = f"Person {pid}"
+
+            missing_names.append(name)
 
         # ALWAYS publish to Kafka EVERY FRAME (don't wait for threshold)
         # Consumer will handle threshold-based filtering and deduplication
