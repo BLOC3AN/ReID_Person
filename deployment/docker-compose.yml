@@ -119,6 +119,7 @@ services:
       - QDRANT_PORT=6333
       - NVIDIA_VISIBLE_DEVICES=all
       - TRITON_URL=localhost:8101
+      - KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092
     env_file:
       - ../configs/.env
     restart: unless-stopped
@@ -132,6 +133,26 @@ services:
       timeout: 7s
       retries: 3
       start_period: 30s
+
+  # Kafka Consumer Service (for UI alerts)
+  kafka_consumer:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile.kafka_consumer
+    container_name: person_reid_kafka_consumer
+    network_mode: "host"
+    volumes:
+      - ../logs:/app/logs
+      - ../configs:/app/configs
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
 # Volumes for persistent storage
 volumes:

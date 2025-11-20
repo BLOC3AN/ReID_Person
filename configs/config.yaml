@@ -102,3 +102,9 @@ visualization:
   - 128
   - 128
   - 128
+kafka:
+  # Kafka configuration for realtime alerts
+  enable: true  # Enable/disable Kafka alerts
+  bootstrap_servers: localhost:9092  # Kafka broker address
+  topic: person_reid_alerts  # Topic name for alerts
+  alert_threshold: 0.0  # Time threshold (seconds) before triggering alert (0 = immediate)

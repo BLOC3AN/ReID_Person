@@ -25,3 +25,6 @@ loguru>=0.6.0
 pyyaml>=6.0
 python-dotenv>=0.19.0
 
+# WebSocket Client
+websockets>=11.0
+

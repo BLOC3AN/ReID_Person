@@ -809,11 +809,13 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                              output_dir=None, max_frames=None, max_duration_seconds=None,
                              output_video_path=None, output_csv_path=None, output_json_path=None,
                              progress_callback=None, cancellation_flag=None,
-                             violation_callback=None, alert_threshold=0, zone_workers=None):
+                             violation_callback=None, alert_threshold=0, zone_workers=None, camera_idx=0, frame_id_offset=0):
     """
     Process video with zone monitoring integrated into ReID pipeline
 
     Args:
+        camera_idx: Camera index for multi-stream processing (default: 0)
+        frame_id_offset: Offset for frame IDs to make them unique across cameras (default: 0)
         zone_workers: Number of worker threads for zone processing (default: auto-detect, capped at 4)
                      Set to 1 for single-threaded mode, or higher for faster processing
 
@@ -862,9 +864,52 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     # Initialize zone monitor with camera count
     zone_monitor = ZoneMonitor(zone_config_path, iou_threshold, zone_opacity, num_cameras=num_cameras)
 
+    # Load Kafka configuration from config
+    kafka_config = None
+    config_file_to_use = reid_config_path
+
+    logger.info(f"🔍 Kafka config loading: reid_config_path={reid_config_path}")
+
+    # If no config path provided, use default config
+    if not config_file_to_use:
+        from pathlib import Path
+        default_config = Path(__file__).parent.parent / "configs" / "config.yaml"
+        if default_config.exists():
+            config_file_to_use = str(default_config)
+            logger.info(f"📝 Using default config: {config_file_to_use}")
+        else:
+            logger.warning(f"⚠️ Default config not found: {default_config}")
+
+    if config_file_to_use:
+        try:
+            import yaml
+            logger.info(f"📖 Loading config from: {config_file_to_use}")
+            with open(config_file_to_use, 'r') as f:
+                config = yaml.safe_load(f)
+                if 'kafka' in config:
+                    kafka_enabled = config['kafka'].get('enable', False)
+                    logger.info(f"📊 Kafka in config: enable={kafka_enabled}")
+                    if kafka_enabled:
+                        kafka_config = config['kafka']
+                        logger.info(f"✅ Kafka enabled: {kafka_config.get('bootstrap_servers')} -> {kafka_config.get('topic')}")
+                    else:
+                        logger.info("⚠️ Kafka disabled in config")
+                else:
+                    logger.warning("⚠️ No 'kafka' section in config")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load Kafka config: {e}")
+    else:
+        logger.warning("⚠️ No config file found")
+
     # Initialize zone monitoring service (thread pool)
     # zone_workers: number of worker threads (default: auto-detect, capped at 4)
-    zone_service = ZoneMonitoringService(zone_monitor, max_queue_size=100, num_workers=zone_workers)
+    zone_service = ZoneMonitoringService(
+        zone_monitor,
+        max_queue_size=100,
+        num_workers=zone_workers,
+        kafka_config=kafka_config,
+        alert_threshold=alert_threshold
+    )
     zone_service.start()
 
     # Initialize Redis Track Manager
@@ -1256,12 +1301,12 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
         # Submit zone monitoring task to service thread
         # Zone service will update zone status and detect violations
         zone_task = ZoneTask(
-            frame_id=frame_id,
+            frame_id=frame_id + frame_id_offset,
             frame_time=frame_time,
             tracks=tracks,
             reid_results=track_labels.copy(),
             zone_ids=zone_ids_for_service.copy(),
-            camera_idx=0
+            camera_idx=camera_idx
         )
         zone_service.submit_task(zone_task)
 
@@ -1573,6 +1618,10 @@ def process_multi_stream_with_zones(
                 if progress_callback:
                     progress_callback(camera_idx, frame_id, tracks)
 
+            # Calculate frame_id_offset for this camera (to make frame_ids unique across cameras)
+            # Each camera gets a unique offset: camera_0 = 0, camera_1 = 1000000, camera_2 = 2000000, etc.
+            frame_id_offset = camera_idx * 1000000
+
             # Process with zone monitoring
             process_video_with_zones(
                 video_path=stream_url,
@@ -1590,7 +1639,9 @@ def process_multi_stream_with_zones(
                 violation_callback=violation_callback,
                 cancellation_flag=cancellation_flag,
                 alert_threshold=alert_threshold,
-                zone_workers=zone_workers
+                zone_workers=zone_workers,
+                camera_idx=camera_idx,
+                frame_id_offset=frame_id_offset
             )
 
             logger.info(f"✅ [Camera {camera_idx}] Completed")

@@ -55,6 +55,8 @@ progress_data = {}
 cancellation_flags = {}  # {job_id: threading.Event()}
 # WebSocket connections for real-time violation logs
 websocket_connections: Dict[str, List[WebSocket]] = {}  # {job_id: [websocket1, websocket2, ...]}
+# Event loop for async operations from worker threads
+event_loop = None
 
 
 # Helper functions
@@ -113,8 +115,13 @@ def _get_total_frames(video_path: str) -> int:
 @app.on_event("startup")
 async def startup_event():
     """Initialize pre-loaded components at service startup"""
+    global event_loop
     logger.info("🚀 Detection Service starting up...")
     try:
+        # Save event loop for worker threads to use
+        event_loop = asyncio.get_event_loop()
+        logger.info(f"✅ Event loop saved for worker threads")
+
         # Ensure output directories exist (important for Docker volume mounts)
         _ensure_output_directories()
         logger.info(f"✅ Output directories ready: {OUTPUT_DIR}")
@@ -530,9 +537,9 @@ def _add_violation(job_id: str, violation: dict):
 
         # Broadcast to WebSocket clients (schedule in event loop)
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.run_coroutine_threadsafe(_broadcast_violation(job_id, violation), loop)
+            global event_loop
+            if event_loop and event_loop.is_running():
+                asyncio.run_coroutine_threadsafe(_broadcast_violation(job_id, violation), event_loop)
         except Exception as e:
             logger.debug(f"Could not broadcast violation to WebSocket: {e}")
 

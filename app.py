@@ -12,6 +12,11 @@ import logging
 import yaml
 from pathlib import Path
 from datetime import datetime
+import asyncio
+import websockets
+import json
+import threading
+from queue import Queue
 
 # Setup logging
 logging.basicConfig(
@@ -86,6 +91,47 @@ def fetch_users_dict():
     except Exception as e:
         logger.error(f"Error fetching users dict from database: {e}")
         return {}
+
+
+# ============================================================================
+# WEBSOCKET CLIENT FOR REALTIME VIOLATION LOGS
+# ============================================================================
+
+def websocket_client_thread(job_id: str, message_queue: Queue, detection_api_url: str):
+    """
+    WebSocket client thread to receive realtime violation logs
+    Runs in background and puts messages in queue for UI to display
+    """
+    async def connect_and_listen():
+        ws_url = f"ws://{detection_api_url.replace('http://', '')}/ws/violations/{job_id}"
+        logger.info(f"🔌 WebSocket connecting to: {ws_url}")
+        try:
+            async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10) as websocket:
+                logger.info(f"✅ WebSocket connected to {ws_url}")
+                message_queue.put({"type": "connection", "status": "connected"})
+
+                while True:
+                    try:
+                        message = await asyncio.wait_for(websocket.recv(), timeout=30)
+                        data = json.loads(message)
+                        logger.debug(f"📨 WebSocket message received: {data.get('zone', 'Unknown')}")
+                        message_queue.put({"type": "violation", "data": data})
+                    except asyncio.TimeoutError:
+                        # Keep-alive timeout, continue
+                        continue
+                    except Exception as e:
+                        logger.debug(f"WebSocket receive error: {e}")
+                        break
+        except Exception as e:
+            logger.warning(f"⚠️ WebSocket connection failed: {e}")
+            message_queue.put({"type": "connection", "status": "failed", "error": str(e)})
+
+    # Run async event loop in thread
+    try:
+        asyncio.run(connect_and_listen())
+    except Exception as e:
+        logger.error(f"WebSocket thread error: {e}")
+        message_queue.put({"type": "connection", "status": "error", "error": str(e)})
 
 # Page config
 st.set_page_config(
@@ -1181,20 +1227,90 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                         progress_text = st.empty()
                         tracks_container = st.empty()
 
-                        # Violation logs viewer (scrollable container)
-                        st.markdown("### 🚨 Zone Violation Logs")
-                        violations_container = st.container()
-                        with violations_container:
-                            violation_logs = st.empty()
+                        # Initialize session state for WebSocket logs
+                        if 'ws_logs' not in st.session_state:
+                            st.session_state.ws_logs = []
+                        if 'ws_connected' not in st.session_state:
+                            st.session_state.ws_connected = False
+                        if 'ws_queue' not in st.session_state:
+                            st.session_state.ws_queue = Queue()
+
+                        # WebSocket Realtime Violation Logs viewer
+                        st.markdown("### 🔴 Realtime Violation Logs (WebSocket)")
+                        st.caption("Live zone violation alerts as they occur")
+
+                        ws_container = st.container()
+                        with ws_container:
+                            ws_status = st.empty()
+                            ws_logs_display = st.empty()
+
+                        # Kafka Realtime Alerts viewer
+                        st.markdown("### 📡 Kafka Realtime Alerts")
+                        st.caption("Realtime zone violation alerts streamed via Kafka")
+
+                        kafka_alerts_container = st.container()
+                        with kafka_alerts_container:
+                            kafka_alerts_display = st.empty()
+                            kafka_status = st.empty()
 
                         stop_button_container = st.empty()
 
                         poll_count = 0
                         user_cancelled = False
-                        violation_log_lines = []  # Store log lines for display
-                        last_violation_count = 0  # Track how many violations we've processed
+                        kafka_alert_lines = []  # Store Kafka alert lines for display
+                        last_kafka_check = time.time()
+                        kafka_consumer_url = "http://localhost:8004"
+
+                        # Start WebSocket client thread (only once per job)
+                        if not st.session_state.ws_connected and not hasattr(st.session_state, f'ws_thread_{job_id}'):
+                            ws_message_queue = st.session_state.ws_queue
+                            ws_thread = threading.Thread(
+                                target=websocket_client_thread,
+                                args=(job_id, ws_message_queue, DETECTION_API_URL),
+                                daemon=True
+                            )
+                            ws_thread.start()
+                            setattr(st.session_state, f'ws_thread_{job_id}', ws_thread)
+                            logger.info(f"🔌 WebSocket client thread started for job {job_id}")
 
                         while True:
+                            # Process WebSocket messages from queue
+                            try:
+                                while not st.session_state.ws_queue.empty():
+                                    msg = st.session_state.ws_queue.get_nowait()
+
+                                    if msg["type"] == "connection":
+                                        if msg["status"] == "connected":
+                                            st.session_state.ws_connected = True
+                                            ws_status.success("✅ WebSocket Connected - Receiving realtime logs")
+                                            logger.info(f"✅ WebSocket connected for job {job_id}")
+                                        elif msg["status"] == "failed":
+                                            ws_status.warning(f"⚠️ WebSocket connection failed: {msg.get('error', 'Unknown error')}")
+                                            logger.warning(f"⚠️ WebSocket failed: {msg.get('error')}")
+                                        else:
+                                            ws_status.error(f"❌ WebSocket error: {msg.get('error', 'Unknown error')}")
+
+                                    elif msg["type"] == "violation":
+                                        violation_data = msg["data"]
+                                        # Format: {timestamp, level, zone, message, frame}
+                                        log_entry = f"[{violation_data.get('timestamp', '??:??:??')}] **{violation_data.get('zone', 'Unknown')}**: {violation_data.get('message', 'Unknown violation')} (Frame {violation_data.get('frame', 0)})"
+                                        st.session_state.ws_logs.append(log_entry)
+
+                                        # Keep only last 50 logs
+                                        if len(st.session_state.ws_logs) > 50:
+                                            st.session_state.ws_logs.pop(0)
+
+                                        logger.debug(f"📨 WebSocket violation received: {violation_data.get('zone')} - {violation_data.get('message')}")
+                            except Exception as e:
+                                logger.debug(f"WebSocket queue error: {e}")
+
+                            # Display WebSocket logs
+                            if st.session_state.ws_logs:
+                                logs_text = "\n\n".join(st.session_state.ws_logs[-10:])  # Show last 10 logs
+                                ws_logs_display.markdown(logs_text)
+                            elif st.session_state.ws_connected:
+                                ws_logs_display.info("⏳ Waiting for zone violations...")
+
                             # Show stop button while processing
                             if stop_button_container.button("🛑 Stop Processing", type="secondary", key=f"stop_{job_id}_{poll_count}"):
                                 logger.info(f"🛑 [Detect & Track] User requested to stop job: {job_id}")
@@ -1291,44 +1407,51 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                                 tracks_info += f"{color} Track {track['track_id']}: **{track['label']}** (sim: {track['similarity']:.3f})\n"
                                             tracks_container.markdown(tracks_info)
 
-                                    # Display real-time violations as log lines (ZONE-CENTRIC LOGIC)
-                                    if progress.get('violations'):
-                                        violations = progress['violations']
+                                    # Fetch Kafka alerts from consumer service (every 2 seconds)
+                                    current_time = time.time()
+                                    if current_time - last_kafka_check >= 2.0:
+                                        last_kafka_check = current_time
+                                        try:
+                                            # Check Kafka consumer service health
+                                            health_response = requests.get(f"{kafka_consumer_url}/health", timeout=1)
+                                            if health_response.status_code == 200:
+                                                health_data = health_response.json()
+                                                kafka_enabled = health_data.get('kafka_enabled', False)
+                                                kafka_running = health_data.get('kafka_running', False)
+                                                messages_received = health_data.get('messages_received', 0)
 
-                                        # Process only new violations
-                                        if len(violations) > last_violation_count:
-                                            new_violations = violations[last_violation_count:]
-
-                                            for violation in new_violations:
-                                                # Format timestamp
-                                                timestamp = datetime.now().strftime("%H:%M:%S")
-
-                                                # Handle both zone-centric and legacy person-centric violations
-                                                if violation.get('type') == 'zone_incomplete':
-                                                    # Zone-centric violation
-                                                    missing_str = ", ".join(violation['missing_names'])
-                                                    log_line = f"[{timestamp}] 🔴 Frame {violation['frame_id']:4d} | Zone **{violation['zone_name']}** incomplete: Missing {missing_str}"
-
-                                                    logger.warning(f"🚨 [Detect & Track] ZONE VIOLATION: Zone '{violation['zone_name']}' "
-                                                                 f"incomplete - Missing: {missing_str} at frame {violation['frame_id']}")
+                                                # Update status
+                                                if kafka_enabled and kafka_running:
+                                                    kafka_status.success(f"✅ Kafka Connected | Messages: {messages_received}")
+                                                elif kafka_enabled:
+                                                    kafka_status.warning("⚠️ Kafka Enabled but not running")
                                                 else:
-                                                    # Legacy person-centric violation (backward compatibility)
-                                                    log_line = f"[{timestamp}] 🔴 Frame {violation['frame_id']:4d} | {violation.get('person_name', 'Unknown')} entered unauthorized zone **{violation['zone_name']}**"
+                                                    kafka_status.info("ℹ️ Kafka Disabled (enable in config.yaml)")
 
-                                                    logger.warning(f"🚨 [Detect & Track] VIOLATION: {violation.get('person_name', 'Unknown')} "
-                                                                 f"entered unauthorized zone '{violation['zone_name']}' at frame {violation['frame_id']}")
+                                                # Note: In production, you would use WebSocket for realtime updates
+                                                # For now, we show the status and message count
+                                                # The actual alerts are sent via Kafka and can be consumed by external systems
 
-                                                # Add to log lines (keep last 50 lines)
-                                                violation_log_lines.append(log_line)
-                                                if len(violation_log_lines) > 50:
-                                                    violation_log_lines.pop(0)
-
-                                            last_violation_count = len(violations)
-
-                                        # Display log lines in reverse order (newest first)
-                                        if violation_log_lines:
-                                            log_text = "\n\n".join(reversed(violation_log_lines))
-                                            violation_logs.markdown(log_text)
+                                                if messages_received > 0:
+                                                    kafka_alerts_display.info(
+                                                        f"📊 **Kafka Alert System Active**\n\n"
+                                                        f"Total alerts sent to Kafka: **{messages_received}**\n\n"
+                                                        f"Alerts are being streamed to Kafka topic: `person_reid_alerts`\n\n"
+                                                        f"**Alert Schema:**\n"
+                                                        f"- user_id, user_name, camera_id, zone_id, zone_name\n"
+                                                        f"- iop (Intersection over Person), threshold, status, timestamp\n\n"
+                                                        f"💡 Connect your Kafka consumer to receive realtime alerts!"
+                                                    )
+                                                else:
+                                                    kafka_alerts_display.info(
+                                                        "⏳ Waiting for zone violations to generate Kafka alerts..."
+                                                    )
+                                            else:
+                                                kafka_status.error("❌ Kafka Consumer Service not available")
+                                        except requests.exceptions.RequestException:
+                                            kafka_status.warning("⚠️ Kafka Consumer Service not reachable (http://localhost:8004)")
+                                        except Exception as e:
+                                            logger.debug(f"Kafka check error: {e}")
                             except Exception as e:
                                 logger.warning(f"⚠️ [Detect & Track] Progress fetch error: {e}")
                                 pass
