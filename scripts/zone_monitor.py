@@ -809,7 +809,8 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                              output_dir=None, max_frames=None, max_duration_seconds=None,
                              output_video_path=None, output_csv_path=None, output_json_path=None,
                              progress_callback=None, cancellation_flag=None,
-                             violation_callback=None, alert_threshold=0, zone_workers=None, camera_idx=0, frame_id_offset=0):
+                             violation_callback=None, alert_threshold=0, zone_workers=None, camera_idx=0, frame_id_offset=0,
+                             enable_livestream=False, livestream_dir=None):
     """
     Process video with zone monitoring integrated into ReID pipeline
 
@@ -840,6 +841,8 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
         cancellation_flag: Optional threading.Event() to signal cancellation
         violation_callback: Optional callback(violation_dict) called when violation occurs
         alert_threshold: Time threshold (seconds) before showing alert (default: 0)
+        enable_livestream: Enable real-time HLS livestream output (default: False)
+        livestream_dir: Directory to save HLS livestream files (required if enable_livestream=True)
     """
     from detect_and_track import PersonReIDPipeline
     from utils.multi_stream_reader import MultiStreamReader, parse_stream_urls
@@ -1028,9 +1031,43 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
         logger.error(f"Failed to open video/stream: {e}")
         return
 
-    # Video writer
+    # Video writer (MP4 file)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     vid_writer = cv2.VideoWriter(str(output_video), fourcc, int(fps), (width, height))
+
+    # Livestream writer (HLS)
+    livestream_writer = None
+    if enable_livestream and livestream_dir:
+        try:
+            from utils.live_stream_writer import LiveStreamWriter
+            import json
+            from pathlib import Path
+
+            # Load HLS config
+            config_file = Path("/app/outputs/livestream/config.json")
+            if config_file.exists():
+                with open(config_file, 'r') as f:
+                    hls_config = json.load(f)
+                hls_segment_time = hls_config.get('hls_segment_time', 6)
+                hls_list_size = hls_config.get('hls_list_size', 10)
+            else:
+                hls_segment_time = 6
+                hls_list_size = 10
+
+            livestream_writer = LiveStreamWriter(
+                output_dir=livestream_dir,
+                width=width,
+                height=height,
+                fps=fps,
+                hls_segment_time=hls_segment_time,
+                hls_list_size=hls_list_size
+            )
+            logger.info(f"✅ Livestream enabled: {livestream_dir}")
+            logger.info(f"   HLS config: {hls_segment_time}s segments, {hls_list_size} playlist size")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize livestream writer: {e}")
+            logger.warning("⚠️ Continuing without livestream")
+            livestream_writer = None
 
     # CSV writer (ZONE-CENTRIC LOGIC)
     csv_file = open(output_csv, 'w', newline='')
@@ -1405,8 +1442,12 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                 cv2.putText(frame, frame_text, (10, 65),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
-        # Write frame
+        # Write frame to MP4 file
         vid_writer.write(frame)
+
+        # Write frame to livestream (if enabled)
+        if livestream_writer and livestream_writer.is_alive():
+            livestream_writer.write(frame)
 
         # Call progress callback if provided
         if progress_callback and frame_id % 5 == 0:  # Update every 5 frames to reduce overhead
@@ -1437,6 +1478,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     stream_reader.release()
     vid_writer.release()
     csv_file.close()
+
+    # Cleanup livestream writer
+    if livestream_writer:
+        livestream_writer.release()
+        logger.info("✅ Livestream writer stopped")
 
     # Summary of person frame folders
     logger.info("")
@@ -1549,7 +1595,9 @@ def process_multi_stream_with_zones(
     violation_callback: callable = None,
     cancellation_flag: threading.Event = None,
     alert_threshold: float = 0,
-    zone_workers: int = None
+    zone_workers: int = None,
+    enable_livestream: bool = False,
+    livestream_dir: str = None
 ):
     """
     Process multiple video streams with zone monitoring in parallel
@@ -1659,6 +1707,12 @@ def process_multi_stream_with_zones(
             # Each camera gets a unique offset: camera_0 = 0, camera_1 = 1000000, camera_2 = 2000000, etc.
             frame_id_offset = camera_idx * 1000000
 
+            # Setup livestream directory for this camera
+            camera_livestream_dir = None
+            if enable_livestream and livestream_dir:
+                camera_livestream_dir = Path(livestream_dir) / f"camera_{camera_idx}"
+                camera_livestream_dir.mkdir(parents=True, exist_ok=True)
+
             # Process with zone monitoring
             process_video_with_zones(
                 video_path=stream_url,
@@ -1678,7 +1732,9 @@ def process_multi_stream_with_zones(
                 alert_threshold=alert_threshold,
                 zone_workers=zone_workers,
                 camera_idx=camera_idx,
-                frame_id_offset=frame_id_offset
+                frame_id_offset=frame_id_offset,
+                enable_livestream=enable_livestream,
+                livestream_dir=str(camera_livestream_dir) if camera_livestream_dir else None
             )
 
             logger.info(f"✅ [Camera {camera_idx}] Completed")

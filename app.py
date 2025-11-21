@@ -1058,6 +1058,18 @@ elif page == "Detect & Track":
             help="Time (in seconds) a person must be outside their authorized zone before triggering an alert. 0 = immediate alert."
         )
 
+        # Livestream settings
+        st.markdown("### 📡 Live Preview Settings")
+        enable_livestream = st.checkbox(
+            "Enable Live Preview",
+            value=False,
+            help="Enable real-time HLS livestream of AI-processed video (with bounding boxes, tracking, labels). View at http://localhost:3900"
+        )
+
+        if enable_livestream:
+            st.info("📡 Live preview will be available at: **http://localhost:3900** during processing. The stream shows real-time AI detection with bounding boxes and tracking.")
+            st.caption("💡 You can adjust buffer settings (segment duration, playlist size) in the livestream dashboard.")
+
     # Advanced Parameters
     with st.expander("⚙️ Advanced Parameters", expanded=False):
         st.markdown("### Detection & Tracking Parameters")
@@ -1175,7 +1187,8 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                         "similarity_threshold": str(similarity_threshold),
                         "iou_threshold": str(iou_threshold),
                         "zone_opacity": str(zone_opacity),
-                        "alert_threshold": str(alert_threshold)
+                        "alert_threshold": str(alert_threshold),
+                        "enable_livestream": str(enable_livestream).lower()  # Convert bool to "true"/"false"
                     }
 
                     # Add optional parameters
@@ -1220,6 +1233,52 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                         st.session_state['detect_current_job_id'] = job_id
 
                         st.info(f"Job ID: {job_id}")
+
+                        # Show livestream player if enabled
+                        if enable_livestream and 'livestream_url' in result:
+                            livestream_url = result['livestream_url']
+                            st.markdown("### 📡 Live Preview")
+                            st.info(f"🎬 Livestream URL: {livestream_url}")
+
+                            # Embed HLS player
+                            hls_player_html = f"""
+                            <div style="margin: 20px 0;">
+                                <video id="video" controls autoplay muted style="width: 100%; max-width: 1200px; background: #000;"></video>
+                                <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+                                <script>
+                                    var video = document.getElementById('video');
+                                    var videoSrc = '{livestream_url}';
+
+                                    if (Hls.isSupported()) {{
+                                        var hls = new Hls({{
+                                            enableWorker: true,
+                                            lowLatencyMode: true,
+                                            backBufferLength: 90
+                                        }});
+                                        hls.loadSource(videoSrc);
+                                        hls.attachMedia(video);
+                                        hls.on(Hls.Events.MANIFEST_PARSED, function() {{
+                                            video.play();
+                                        }});
+                                        hls.on(Hls.Events.ERROR, function(event, data) {{
+                                            if (data.fatal) {{
+                                                console.error('HLS error:', data);
+                                                setTimeout(function() {{
+                                                    hls.loadSource(videoSrc);
+                                                }}, 3000);
+                                            }}
+                                        }});
+                                    }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+                                        video.src = videoSrc;
+                                        video.addEventListener('loadedmetadata', function() {{
+                                            video.play();
+                                        }});
+                                    }}
+                                </script>
+                            </div>
+                            """
+                            st.components.v1.html(hls_player_html, height=600)
+                            st.caption("📡 Latency: ~2-5 seconds | 🤖 Real-time AI detection with bounding boxes and tracking")
 
                         # Create placeholders for real-time updates
                         progress_bar = st.progress(0)

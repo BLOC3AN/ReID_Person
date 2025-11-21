@@ -37,7 +37,8 @@ COPY . .
 RUN mkdir -p /app/data/uploads \
     /app/outputs/videos \
     /app/outputs/csv \
-    /app/outputs/logs
+    /app/outputs/logs \
+    /app/outputs/livestream
 
 EXPOSE 8003
 
