@@ -169,9 +169,12 @@ class StreamReader:
                 source_url = f"{self.source}&reuse=1"
 
         # Build ffmpeg command to decode and output raw BGR24 frames
-        # Optimized for faster startup with UDP streams
+        # Optimized for faster startup with UDP streams + GPU decoding
+        # Note: GPU decodes, then transfers to CPU for rawvideo output (necessary for pipe)
         ffmpeg_cmd = [
             'ffmpeg',
+            '-hwaccel', 'cuda',  # Enable NVIDIA GPU hardware acceleration for decoding
+            '-hwaccel_device', '0',  # Use GPU 0 (can be configured)
             '-timeout', '5000000',  # 5 second timeout (reduced from 10s)
             '-fflags', '+genpts+discardcorrupt+nobuffer+igndts',  # Added igndts for corrupted streams
             '-flags', 'low_delay',
@@ -181,13 +184,13 @@ class StreamReader:
             '-i', source_url,
             '-vsync', '0',  # Pass through timestamps, don't wait for missing frames
             '-f', 'rawvideo',
-            '-pix_fmt', 'bgr24',
+            '-pix_fmt', 'bgr24',  # Output format (GPU->CPU transfer happens here)
             '-an',  # No audio
             '-sn',  # No subtitles
             'pipe:1'
         ]
 
-        logger.info(f"Starting ffmpeg subprocess (optimized for fast startup)...")
+        logger.info(f"Starting ffmpeg subprocess (GPU decoding enabled)...")
         logger.debug(f"Command: {' '.join(ffmpeg_cmd)}")
 
         # Start ffmpeg process with stderr capture for debugging

@@ -1035,11 +1035,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     vid_writer = cv2.VideoWriter(str(output_video), fourcc, int(fps), (width, height))
 
-    # Livestream writer (HLS)
+    # Livestream writer (GStreamer + HLS)
     livestream_writer = None
     if enable_livestream and livestream_dir:
         try:
-            from utils.live_stream_writer import LiveStreamWriter
+            from utils.gstreamer_writer import GStreamerWriter
             import json
             from pathlib import Path
 
@@ -1050,22 +1050,27 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                     hls_config = json.load(f)
                 hls_segment_time = hls_config.get('hls_segment_time', 6)
                 hls_list_size = hls_config.get('hls_list_size', 10)
+                max_files = hls_config.get('max_files', 10)
             else:
                 hls_segment_time = 6
                 hls_list_size = 10
+                max_files = 10
 
-            livestream_writer = LiveStreamWriter(
+            livestream_writer = GStreamerWriter(
                 output_dir=livestream_dir,
                 width=width,
                 height=height,
                 fps=fps,
                 hls_segment_time=hls_segment_time,
-                hls_list_size=hls_list_size
+                hls_list_size=hls_list_size,
+                max_files=max_files
             )
-            logger.info(f"✅ Livestream enabled: {livestream_dir}")
-            logger.info(f"   HLS config: {hls_segment_time}s segments, {hls_list_size} playlist size")
+            logger.info(f"✅ Livestream enabled (GStreamer + HLS): {livestream_dir}")
+            logger.info(f"   HLS config: {hls_segment_time}s segments, {hls_list_size} playlist size, max {max_files} files")
         except Exception as e:
+            import traceback
             logger.error(f"❌ Failed to initialize livestream writer: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             logger.warning("⚠️ Continuing without livestream")
             livestream_writer = None
 

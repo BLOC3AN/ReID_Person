@@ -1,7 +1,7 @@
 # Detection Service Dockerfile
 FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
-# Install system dependencies
+# Install system dependencies including GStreamer
 RUN apt-get update && apt-get install -y \
     python3.10 \
     python3-pip \
@@ -13,6 +13,18 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     curl \
     ffmpeg \
+    gstreamer1.0-tools \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
+    gstreamer1.0-libav \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    libgirepository1.0-dev \
+    libcairo2-dev \
+    python3-gi \
+    python3-gst-1.0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create symlink for python
@@ -38,7 +50,13 @@ RUN mkdir -p /app/data/uploads \
     /app/outputs/videos \
     /app/outputs/csv \
     /app/outputs/logs \
-    /app/outputs/livestream
+    /app/outputs/livestream \
+    /tmp/runtime-root
+
+# Set environment variables for GStreamer
+ENV XDG_RUNTIME_DIR=/tmp/runtime-root
+ENV GST_DEBUG=2
+ENV GST_PLUGIN_PATH=/usr/lib/x86_64-linux-gnu/gstreamer-1.0
 
 EXPOSE 8003
 

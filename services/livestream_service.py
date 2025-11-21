@@ -40,7 +40,8 @@ def load_config():
     # Default config
     return {
         "hls_segment_time": 6,
-        "hls_list_size": 10
+        "hls_list_size": 10,
+        "max_files": 10
     }
 
 def save_config(config):
@@ -238,6 +239,16 @@ INDEX_TEMPLATE = """
             background: #e0e0e0;
         }
 
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+            transform: scale(1.05);
+        }
+
         .empty-state {
             background: rgba(255, 255, 255, 0.95);
             border-radius: 15px;
@@ -356,6 +367,9 @@ INDEX_TEMPLATE = """
                     <a href="{{ job.hls_url }}" class="btn btn-secondary" onclick="event.stopPropagation()">
                         📄 Playlist
                     </a>
+                    <button class="btn btn-danger" onclick="deleteJob('{{ job.job_id }}', event)">
+                        🗑️ Delete
+                    </button>
                 </div>
             </div>
             {% endfor %}
@@ -380,6 +394,31 @@ INDEX_TEMPLATE = """
     </a>
 
     <script>
+        // Delete job function
+        function deleteJob(jobId, event) {
+            event.stopPropagation();
+
+            if (!confirm(`Are you sure you want to delete job ${jobId.substring(0, 8)}...?\\n\\nThis will permanently delete all HLS segments and cannot be undone.`)) {
+                return;
+            }
+
+            fetch(`/api/delete/${jobId}`, {
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('✅ Job deleted successfully!');
+                    location.reload();
+                } else {
+                    alert('❌ Failed to delete job: ' + data.error);
+                }
+            })
+            .catch(error => {
+                alert('❌ Error deleting job: ' + error);
+            });
+        }
+
         // Auto-refresh every 5 seconds
         setTimeout(function() {
             location.reload();
@@ -452,23 +491,96 @@ PLAYER_TEMPLATE = """
         const status = document.getElementById('status');
         const streamUrl = '/hls/{{ job_id }}/stream.m3u8';
 
+        let isPlaying = false;
+        let playAttempts = 0;
+        const maxPlayAttempts = 5;
+
+        // Helper function to safely play video with retry
+        function playVideo() {
+            if (isPlaying || playAttempts >= maxPlayAttempts) {
+                return;
+            }
+
+            playAttempts++;
+            const playPromise = video.play();
+
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    isPlaying = true;
+                    playAttempts = 0;
+                    status.textContent = '✅ Stream connected - Playing';
+                    status.className = 'status playing';
+                }).catch(error => {
+                    console.log('Play attempt', playAttempts, 'failed:', error.name);
+
+                    if (error.name === 'AbortError') {
+                        // Video was interrupted, retry after a short delay
+                        setTimeout(() => {
+                            playVideo();
+                        }, 500);
+                    } else if (error.name === 'NotAllowedError') {
+                        // Autoplay blocked by browser
+                        status.textContent = '▶️ Click to play';
+                        status.className = 'status loading';
+                        video.addEventListener('click', () => {
+                            playAttempts = 0;
+                            playVideo();
+                        }, { once: true });
+                    } else {
+                        // Other errors, retry
+                        setTimeout(() => {
+                            playVideo();
+                        }, 1000);
+                    }
+                });
+            }
+        }
+
+        // Listen for video events
+        video.addEventListener('playing', () => {
+            isPlaying = true;
+            status.textContent = '✅ Stream connected - Playing';
+            status.className = 'status playing';
+        });
+
+        video.addEventListener('pause', () => {
+            isPlaying = false;
+        });
+
+        video.addEventListener('waiting', () => {
+            status.textContent = '⏳ Buffering...';
+            status.className = 'status loading';
+        });
+
+        video.addEventListener('canplay', () => {
+            if (!isPlaying) {
+                playVideo();
+            }
+        });
+
         if (Hls.isSupported()) {
             const hls = new Hls({
                 enableWorker: true,
                 lowLatencyMode: true,
-                backBufferLength: 90
+                backBufferLength: 90,
+                maxBufferLength: 30,
+                maxMaxBufferLength: 60,
+                liveSyncDurationCount: 3,
+                liveMaxLatencyDurationCount: 10,
+                autoStartLoad: true
             });
 
             hls.loadSource(streamUrl);
             hls.attachMedia(video);
 
             hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                status.textContent = '✅ Stream connected - Playing';
-                status.className = 'status playing';
-                video.play();
+                status.textContent = '⏳ Buffering...';
+                status.className = 'status loading';
+                // Don't call play() here - let autoplay attribute handle it
             });
 
             hls.on(Hls.Events.ERROR, function(event, data) {
+                console.error('HLS error:', data);
                 if (data.fatal) {
                     status.textContent = '❌ Stream error: ' + data.type;
                     status.className = 'status error';
@@ -485,9 +597,9 @@ PLAYER_TEMPLATE = """
             // Native HLS support (Safari)
             video.src = streamUrl;
             video.addEventListener('loadedmetadata', function() {
-                status.textContent = '✅ Stream connected - Playing';
-                status.className = 'status playing';
-                video.play();
+                status.textContent = '⏳ Buffering...';
+                status.className = 'status loading';
+                // Don't call play() - let autoplay attribute handle it
             });
         } else {
             status.textContent = '❌ HLS not supported in this browser';
@@ -749,6 +861,17 @@ SETTINGS_TEMPLATE = """
                 <small style="color: #666;">More segments = larger buffer for stability</small>
             </div>
 
+            <div class="form-group">
+                <label>
+                    Max Segments on Disk
+                    <span class="value-display" id="max-files-value">{{ config.max_files }} segments</span>
+                </label>
+                <input type="range" name="max_files" id="max-files"
+                       min="2" max="20" step="1" value="{{ config.max_files }}"
+                       oninput="updateValues()">
+                <small style="color: #666;">Lower = less disk space & lower latency (old segments auto-deleted)</small>
+            </div>
+
             <div class="info-box">
                 <h3>📊 Current Configuration</h3>
                 <div class="info-row">
@@ -767,25 +890,29 @@ SETTINGS_TEMPLATE = """
                     <span class="info-label">Expected Latency:</span>
                     <span class="info-value" id="info-latency">~{{ config.hls_segment_time * 2 }}-{{ config.hls_segment_time * 3 }}s</span>
                 </div>
+                <div class="info-row">
+                    <span class="info-label">Max Segments on Disk:</span>
+                    <span class="info-value" id="info-max-files">{{ config.max_files }} segments</span>
+                </div>
             </div>
 
             <h3 style="margin: 25px 0 15px 0; color: #333;">🎯 Quick Presets</h3>
             <div class="preset-buttons">
-                <div class="preset-btn" onclick="applyPreset(2, 5)">
+                <div class="preset-btn" onclick="applyPreset(2, 5, 3)">
                     <strong>Low Latency</strong>
-                    <small>2s × 5 = 10s buffer</small>
+                    <small>2s × 5, max 3 on disk</small>
                 </div>
-                <div class="preset-btn" onclick="applyPreset(4, 8)">
+                <div class="preset-btn" onclick="applyPreset(4, 8, 5)">
                     <strong>Balanced</strong>
-                    <small>4s × 8 = 32s buffer</small>
+                    <small>4s × 8, max 5 on disk</small>
                 </div>
-                <div class="preset-btn" onclick="applyPreset(6, 10)">
+                <div class="preset-btn" onclick="applyPreset(6, 10, 10)">
                     <strong>Smooth ⭐</strong>
-                    <small>6s × 10 = 60s buffer</small>
+                    <small>6s × 10, max 10 on disk</small>
                 </div>
-                <div class="preset-btn" onclick="applyPreset(8, 15)">
+                <div class="preset-btn" onclick="applyPreset(8, 15, 15)">
                     <strong>Ultra Smooth</strong>
-                    <small>8s × 15 = 120s buffer</small>
+                    <small>8s × 15, max 15 on disk</small>
                 </div>
             </div>
 
@@ -800,19 +927,23 @@ SETTINGS_TEMPLATE = """
         function updateValues() {
             const segmentTime = parseInt(document.getElementById('segment-time').value);
             const playlistSize = parseInt(document.getElementById('playlist-size').value);
+            const maxFiles = parseInt(document.getElementById('max-files').value);
             const bufferTime = segmentTime * playlistSize;
 
             document.getElementById('segment-value').textContent = segmentTime + 's';
             document.getElementById('playlist-value').textContent = playlistSize + ' segments';
+            document.getElementById('max-files-value').textContent = maxFiles + ' segments';
             document.getElementById('info-segment').textContent = segmentTime + 's';
             document.getElementById('info-playlist').textContent = playlistSize + ' segments';
+            document.getElementById('info-max-files').textContent = maxFiles + ' segments';
             document.getElementById('info-buffer').textContent = bufferTime + 's';
             document.getElementById('info-latency').textContent = '~' + (segmentTime * 2) + '-' + (segmentTime * 3) + 's';
         }
 
-        function applyPreset(segment, playlist) {
+        function applyPreset(segment, playlist, maxFiles) {
             document.getElementById('segment-time').value = segment;
             document.getElementById('playlist-size').value = playlist;
+            document.getElementById('max-files').value = maxFiles;
             updateValues();
         }
     </script>
@@ -882,7 +1013,8 @@ def settings():
         # Save settings
         config = {
             'hls_segment_time': int(request.form.get('hls_segment_time', 6)),
-            'hls_list_size': int(request.form.get('hls_list_size', 10))
+            'hls_list_size': int(request.form.get('hls_list_size', 10)),
+            'max_files': int(request.form.get('max_files', 10))
         }
         save_config(config)
         return redirect(url_for('settings') + '?saved=1')
@@ -917,6 +1049,26 @@ def serve_hls(job_id, filename):
 
     logger.debug(f"Serving HLS file: {job_id}/{filename}")
     return send_from_directory(job_dir, filename)
+
+
+@app.route('/api/delete/<job_id>', methods=['DELETE'])
+def delete_job(job_id):
+    """Delete a job and its HLS files"""
+    import shutil
+
+    job_dir = HLS_BASE_DIR / job_id
+
+    if not job_dir.exists():
+        return jsonify({"success": False, "error": "Job not found"}), 404
+
+    try:
+        # Remove job directory and all files
+        shutil.rmtree(job_dir)
+        logger.info(f"✅ Deleted job: {job_id}")
+        return jsonify({"success": True, "message": f"Job {job_id} deleted"})
+    except Exception as e:
+        logger.error(f"❌ Failed to delete job {job_id}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/health')
