@@ -121,7 +121,7 @@ class StreamReader:
             for i in range(max_attempts):
                 ret, _ = self.cap.read()
                 if ret:
-                    logger.info(f"✓ First frame received after {(i+1)*0.2:.1f}s")
+                    logger.info(f"✅ First frame received after {(i+1)*0.2:.1f}s")
                     break
                 time.sleep(0.2)
 
@@ -141,7 +141,7 @@ class StreamReader:
         if self.fps == 0 or self.fps is None:
             self.fps = 25.0  # Default for streams
 
-        logger.info(f"✓ Opened via OpenCV: {self.width}x{self.height} @ {self.fps:.1f} FPS")
+        logger.info(f"✅ Opened via OpenCV: {self.width}x{self.height} @ {self.fps:.1f} FPS")
         self.using_ffmpeg = False
     
     def _initialize_ffmpeg_udp(self):
@@ -227,7 +227,7 @@ class StreamReader:
                 readable, _, _ = select.select([self.ffmpeg_process.stdout], [], [], 0)
                 if readable:
                     data_detected = True
-                    logger.info(f"✓ Data detected from ffmpeg after {(i+1)*check_interval:.1f}s")
+                    logger.info(f"✅ Data detected from ffmpeg after {(i+1)*check_interval:.1f}s")
                     break
             else:
                 # On Windows, just wait a bit longer
@@ -267,7 +267,7 @@ class StreamReader:
         if self.ffmpeg_process.poll() is not None:
             raise RuntimeError(f"ffmpeg process terminated after restart (exit code: {self.ffmpeg_process.returncode})")
 
-        logger.info(f"✓ Stream opened via ffmpeg subprocess: {self.width}x{self.height} @ {self.fps:.1f} FPS")
+        logger.info(f"✅ Stream opened via ffmpeg subprocess: {self.width}x{self.height} @ {self.fps:.1f} FPS")
         self.using_ffmpeg = True
     
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:

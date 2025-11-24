@@ -100,7 +100,7 @@ class MultiStreamReader:
             thread.start()
             self.reader_threads.append(thread)
 
-        logger.info(f"✓ All {self.num_streams} streams initialized and reading started")
+        logger.info(f"✅ All {self.num_streams} streams initialized and reading started")
 
         # Warmup: Wait for all streams to have at least one valid frame in queue
         # UDP H.264 streams often have decode errors at start (missing PPS/SPS)
@@ -112,7 +112,7 @@ class MultiStreamReader:
         while time.time() - warmup_start < warmup_timeout:
             all_ready = all(not q.empty() for q in self.frame_queues)
             if all_ready:
-                logger.info(f"✓ All streams ready after {time.time() - warmup_start:.1f}s")
+                logger.info(f"✅ All streams ready after {time.time() - warmup_start:.1f}s")
                 break
             time.sleep(0.1)
         else:
@@ -122,7 +122,7 @@ class MultiStreamReader:
                 logger.warning(f"⚠️ Streams {not_ready} not ready after {warmup_timeout}s warmup (may have H.264 decode errors)")
                 logger.info("   This is normal for UDP streams - will retry on first read()")
             else:
-                logger.info("✓ All streams ready")
+                logger.info("✅ All streams ready")
     
     def _read_stream_worker(self, stream_id: int, reader: StreamReader, frame_queue: queue.Queue):
         """
@@ -346,7 +346,7 @@ class MultiStreamReader:
                 except:
                     break
         
-        logger.info("✓ Multi-stream reader released")
+        logger.info("✅ Multi-stream reader released")
     
     def __enter__(self):
         """Context manager entry."""

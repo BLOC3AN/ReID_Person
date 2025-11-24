@@ -346,6 +346,12 @@ INDEX_TEMPLATE = """
                         <span class="info-label">📅 Created:</span>
                         <span class="info-value">{{ job.created_at }}</span>
                     </div>
+                    {% if job.is_multi_camera %}
+                    <div class="info-row">
+                        <span class="info-label">📹 Cameras:</span>
+                        <span class="info-value">{{ job.num_cameras }} cameras</span>
+                    </div>
+                    {% endif %}
                     <div class="info-row">
                         <span class="info-label">🎞️ Segments:</span>
                         <span class="info-value">{{ job.segment_count }}</span>
@@ -357,6 +363,15 @@ INDEX_TEMPLATE = """
                 </div>
 
                 <div class="action-buttons">
+                    {% if job.is_multi_camera %}
+                    <a href="{{ job.player_url }}" class="btn btn-primary" onclick="event.stopPropagation()">
+                        {% if job.status == 'processing' %}
+                        🔴 Watch All ({{ job.num_cameras }})
+                        {% else %}
+                        ▶️ Play All ({{ job.num_cameras }})
+                        {% endif %}
+                    </a>
+                    {% else %}
                     <a href="{{ job.player_url }}" class="btn btn-primary" onclick="event.stopPropagation()">
                         {% if job.status == 'processing' %}
                         🔴 Watch Live
@@ -367,6 +382,7 @@ INDEX_TEMPLATE = """
                     <a href="{{ job.hls_url }}" class="btn btn-secondary" onclick="event.stopPropagation()">
                         📄 Playlist
                     </a>
+                    {% endif %}
                     <button class="btn btn-danger" onclick="deleteJob('{{ job.job_id }}', event)">
                         🗑️ Delete
                     </button>
@@ -477,7 +493,28 @@ PLAYER_TEMPLATE = """
 <body>
     <div class="container">
         <h1>🎬 AI Detection Livestream</h1>
-        <div class="info">Job ID: {{ job_id }}</div>
+        <div class="info">
+            Job ID: {{ job_id }}
+            {% if camera_name %}
+            | {{ camera_name }}
+            {% endif %}
+        </div>
+
+        {% if is_multi_camera and cameras %}
+        <div style="text-align: center; margin: 15px 0;">
+            <select id="camera-selector" style="padding: 10px; font-size: 16px; border-radius: 5px; background: #333; color: #fff; border: 1px solid #555;">
+                {% for cam in cameras %}
+                <option value="{{ cam.camera_idx }}" {% if current_camera == cam.camera_idx %}selected{% endif %}>
+                    Camera {{ cam.camera_idx }}
+                </option>
+                {% endfor %}
+            </select>
+            <button onclick="window.location.href='/player/{{ job_id }}'" style="padding: 10px 20px; margin-left: 10px; font-size: 16px; border-radius: 5px; background: #4CAF50; color: white; border: none; cursor: pointer;">
+                📹 View All Cameras
+            </button>
+        </div>
+        {% endif %}
+
         <div id="status" class="status loading">⏳ Loading stream...</div>
         <video id="video" controls autoplay muted></video>
         <div class="info">
@@ -489,7 +526,19 @@ PLAYER_TEMPLATE = """
     <script>
         const video = document.getElementById('video');
         const status = document.getElementById('status');
+        {% if hls_url %}
+        const streamUrl = '{{ hls_url }}';
+        {% else %}
         const streamUrl = '/hls/{{ job_id }}/stream.m3u8';
+        {% endif %}
+
+        {% if is_multi_camera and cameras %}
+        // Camera selector
+        document.getElementById('camera-selector').addEventListener('change', function(e) {
+            const cameraIdx = e.target.value;
+            window.location.href = '/player/{{ job_id }}/' + cameraIdx;
+        });
+        {% endif %}
 
         let isPlaying = false;
         let playAttempts = 0;
@@ -605,6 +654,209 @@ PLAYER_TEMPLATE = """
             status.textContent = '❌ HLS not supported in this browser';
             status.className = 'status error';
         }
+    </script>
+</body>
+</html>
+"""
+
+# HTML template for multi-camera grid player
+MULTI_CAMERA_PLAYER_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Multi-Camera Livestream - Job {{ job_id }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+            font-family: Arial, sans-serif;
+        }
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            color: #4CAF50;
+            margin-bottom: 10px;
+        }
+        .info {
+            text-align: center;
+            color: #aaa;
+            margin-bottom: 20px;
+        }
+        .camera-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(600px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .camera-container {
+            background: #2a2a2a;
+            border-radius: 10px;
+            padding: 15px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+        .camera-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .camera-title {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #4CAF50;
+        }
+        .camera-status {
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 0.9em;
+        }
+        .camera-status.loading { background: #ff9800; }
+        .camera-status.playing { background: #4CAF50; }
+        .camera-status.error { background: #f44336; }
+        video {
+            width: 100%;
+            background: #000;
+            border-radius: 5px;
+        }
+        .fullscreen-btn {
+            margin-top: 10px;
+            padding: 8px 15px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .fullscreen-btn:hover {
+            background: #5568d3;
+        }
+        .back-btn {
+            display: block;
+            width: 200px;
+            margin: 20px auto;
+            padding: 12px;
+            background: #667eea;
+            color: white;
+            text-align: center;
+            text-decoration: none;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        .back-btn:hover {
+            background: #5568d3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎬 Multi-Camera AI Detection Livestream</h1>
+        <div class="info">Job ID: {{ job_id }} | {{ cameras|length }} Cameras</div>
+
+        <div class="camera-grid">
+            {% for camera in cameras %}
+            <div class="camera-container">
+                <div class="camera-header">
+                    <div class="camera-title">📹 Camera {{ camera.camera_idx }}</div>
+                    <div class="camera-status loading" id="status-{{ camera.camera_idx }}">⏳ Loading...</div>
+                </div>
+                <video id="video-{{ camera.camera_idx }}" controls autoplay muted></video>
+                <button class="fullscreen-btn" onclick="openFullscreen({{ camera.camera_idx }})">
+                    🔍 View Fullscreen
+                </button>
+            </div>
+            {% endfor %}
+        </div>
+
+        <a href="/" class="back-btn">← Back to Dashboard</a>
+    </div>
+
+    <script>
+        const cameras = {{ cameras|tojson }};
+        const hlsPlayers = {};
+
+        function openFullscreen(cameraIdx) {
+            window.location.href = '/player/{{ job_id }}/' + cameraIdx;
+        }
+
+        function initCamera(camera) {
+            const video = document.getElementById('video-' + camera.camera_idx);
+            const status = document.getElementById('status-' + camera.camera_idx);
+            const streamUrl = camera.hls_url;
+
+            if (Hls.isSupported()) {
+                const hls = new Hls({
+                    enableWorker: true,
+                    lowLatencyMode: true,
+                    backBufferLength: 90,
+                    maxBufferLength: 30,
+                    maxMaxBufferLength: 60,
+                    liveSyncDurationCount: 3,
+                    liveMaxLatencyDurationCount: 10,
+                    autoStartLoad: true
+                });
+
+                hls.loadSource(streamUrl);
+                hls.attachMedia(video);
+
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    status.textContent = '⏳ Buffering...';
+                    status.className = 'camera-status loading';
+                });
+
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    console.error('HLS error for camera ' + camera.camera_idx + ':', data);
+                    if (data.fatal) {
+                        status.textContent = '❌ Error';
+                        status.className = 'camera-status error';
+
+                        // Auto-retry after 3 seconds
+                        setTimeout(() => {
+                            status.textContent = '🔄 Retrying...';
+                            status.className = 'camera-status loading';
+                            hls.loadSource(streamUrl);
+                        }, 3000);
+                    }
+                });
+
+                video.addEventListener('playing', () => {
+                    status.textContent = '✅ Playing';
+                    status.className = 'camera-status playing';
+                });
+
+                video.addEventListener('waiting', () => {
+                    status.textContent = '⏳ Buffering...';
+                    status.className = 'camera-status loading';
+                });
+
+                hlsPlayers[camera.camera_idx] = hls;
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Native HLS support (Safari)
+                video.src = streamUrl;
+                video.addEventListener('loadedmetadata', function() {
+                    status.textContent = '⏳ Buffering...';
+                    status.className = 'camera-status loading';
+                });
+                video.addEventListener('playing', () => {
+                    status.textContent = '✅ Playing';
+                    status.className = 'camera-status playing';
+                });
+            } else {
+                status.textContent = '❌ Not supported';
+                status.className = 'camera-status error';
+            }
+        }
+
+        // Initialize all cameras
+        cameras.forEach(camera => {
+            initCamera(camera);
+        });
     </script>
 </body>
 </html>
@@ -961,10 +1213,16 @@ def index():
         for job_dir in sorted(HLS_BASE_DIR.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
             if job_dir.is_dir():
                 job_id = job_dir.name
+
+                # Check for single-camera job (stream.m3u8 at root)
                 playlist_file = job_dir / "stream.m3u8"
 
-                # Check if playlist exists
-                if playlist_file.exists():
+                # Check for multi-camera job (camera_X subdirectories)
+                camera_dirs = sorted([d for d in job_dir.iterdir() if d.is_dir() and d.name.startswith('camera_')])
+
+                is_multi_camera = len(camera_dirs) > 0
+
+                if playlist_file.exists() or is_multi_camera:
                     # Get job info from detection service
                     try:
                         import requests
@@ -980,30 +1238,114 @@ def index():
                         status = 'unknown'
                         created_at = 'N/A'
 
-                    # Count segments
-                    segments = list(job_dir.glob("*.ts"))
-                    segment_count = len(segments)
+                    if is_multi_camera:
+                        # Multi-camera job
+                        cameras = []
+                        total_segments = 0
+                        total_size = 0
 
-                    # Get total size
-                    total_size = sum(f.stat().st_size for f in segments) / (1024 * 1024)  # MB
+                        for camera_dir in camera_dirs:
+                            camera_playlist = camera_dir / "stream.m3u8"
+                            if camera_playlist.exists():
+                                camera_idx = int(camera_dir.name.split('_')[1])
+                                segments = list(camera_dir.glob("*.ts"))
+                                segment_count = len(segments)
+                                size_mb = sum(f.stat().st_size for f in segments) / (1024 * 1024)
 
-                    jobs.append({
-                        'job_id': job_id,
-                        'status': status,
-                        'created_at': created_at,
-                        'segment_count': segment_count,
-                        'total_size_mb': round(total_size, 2),
-                        'player_url': f'/player/{job_id}',
-                        'hls_url': f'/hls/{job_id}/stream.m3u8'
-                    })
+                                cameras.append({
+                                    'camera_idx': camera_idx,
+                                    'camera_name': f'Camera {camera_idx}',
+                                    'segment_count': segment_count,
+                                    'size_mb': round(size_mb, 2),
+                                    'player_url': f'/player/{job_id}/{camera_idx}',
+                                    'hls_url': f'/hls/{job_id}/camera_{camera_idx}/stream.m3u8'
+                                })
+
+                                total_segments += segment_count
+                                total_size += size_mb
+
+                        if cameras:
+                            jobs.append({
+                                'job_id': job_id,
+                                'status': status,
+                                'created_at': created_at,
+                                'is_multi_camera': True,
+                                'num_cameras': len(cameras),
+                                'cameras': cameras,
+                                'segment_count': total_segments,
+                                'total_size_mb': round(total_size, 2),
+                                'player_url': f'/player/{job_id}',  # Multi-camera grid view
+                            })
+                    else:
+                        # Single-camera job
+                        segments = list(job_dir.glob("*.ts"))
+                        segment_count = len(segments)
+                        total_size = sum(f.stat().st_size for f in segments) / (1024 * 1024)  # MB
+
+                        jobs.append({
+                            'job_id': job_id,
+                            'status': status,
+                            'created_at': created_at,
+                            'is_multi_camera': False,
+                            'segment_count': segment_count,
+                            'total_size_mb': round(total_size, 2),
+                            'player_url': f'/player/{job_id}',
+                            'hls_url': f'/hls/{job_id}/stream.m3u8'
+                        })
 
     return render_template_string(INDEX_TEMPLATE, jobs=jobs)
 
 
 @app.route('/player/<job_id>')
-def player(job_id):
-    """Web player for a specific job"""
-    return render_template_string(PLAYER_TEMPLATE, job_id=job_id)
+@app.route('/player/<job_id>/<int:camera_idx>')
+def player(job_id, camera_idx=None):
+    """Web player for a specific job (single or multi-camera)"""
+    job_dir = HLS_BASE_DIR / job_id
+
+    if not job_dir.exists():
+        return jsonify({"error": "Job not found"}), 404
+
+    # Check if multi-camera job
+    camera_dirs = sorted([d for d in job_dir.iterdir() if d.is_dir() and d.name.startswith('camera_')])
+    is_multi_camera = len(camera_dirs) > 0
+
+    if is_multi_camera:
+        # Multi-camera job
+        cameras = []
+        for camera_dir in camera_dirs:
+            camera_playlist = camera_dir / "stream.m3u8"
+            if camera_playlist.exists():
+                cam_idx = int(camera_dir.name.split('_')[1])
+                cameras.append({
+                    'camera_idx': cam_idx,
+                    'camera_name': f'Camera {cam_idx}',
+                    'hls_url': f'/hls/{job_id}/camera_{cam_idx}/stream.m3u8'
+                })
+
+        if camera_idx is not None:
+            # Single camera view
+            camera_info = next((c for c in cameras if c['camera_idx'] == camera_idx), None)
+            if not camera_info:
+                return jsonify({"error": f"Camera {camera_idx} not found"}), 404
+            return render_template_string(PLAYER_TEMPLATE,
+                                         job_id=job_id,
+                                         hls_url=camera_info['hls_url'],
+                                         camera_name=camera_info['camera_name'],
+                                         is_multi_camera=True,
+                                         cameras=cameras,
+                                         current_camera=camera_idx)
+        else:
+            # Multi-camera grid view
+            return render_template_string(MULTI_CAMERA_PLAYER_TEMPLATE,
+                                         job_id=job_id,
+                                         cameras=cameras)
+    else:
+        # Single-camera job
+        hls_url = f'/hls/{job_id}/stream.m3u8'
+        return render_template_string(PLAYER_TEMPLATE,
+                                     job_id=job_id,
+                                     hls_url=hls_url,
+                                     is_multi_camera=False)
 
 
 @app.route('/settings', methods=['GET', 'POST'])
