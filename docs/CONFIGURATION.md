@@ -167,15 +167,20 @@ database:
   qdrant_collection: cross_camera_matching_id
   max_embeddings_per_person: 100            # Max embeddings to store
   embedding_dim: 512                        # Must match reid.feature_dim
+  use_grpc: false                           # Use gRPC protocol (faster for local connections)
 ```
 
 **Parameters:**
 
-- **use_qdrant**: 
+- **use_qdrant**:
   - `true`: Use Qdrant cloud/local (recommended)
   - `false`: In-memory only (for testing)
-  
-- **max_embeddings_per_person**: 
+
+- **use_grpc**:
+  - `true`: Use gRPC protocol (faster for local Qdrant connections)
+  - `false`: Use HTTP protocol (default, works everywhere)
+
+- **max_embeddings_per_person**:
   - `50`: Fewer embeddings, faster search
   - `100`: Balanced (recommended)
   - `200`: More embeddings, better accuracy, slower search

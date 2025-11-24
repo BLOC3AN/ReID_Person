@@ -1,0 +1,69 @@
+# Multi-Camera Zone Configuration
+# Define zones per camera for multi-stream monitoring
+
+# Format: cameras -> zones structure
+# Each camera has its own set of zones with independent coordinates
+
+cameras:
+  camera_1:
+    name: "Camera 1 - Main Entrance"
+    stream_url: "udp://127.0.0.1:1905"  # Optional: for reference only
+    zones:
+      zone1:
+        name: "Assembly Area"
+        # Polygon coordinates relative to this camera's frame
+        polygon:
+          - [100, 100]
+          - [400, 100]
+          - [400, 300]
+          - [100, 300]
+        authorized_ids: [1]  # Duong (ID: 1)
+      
+      zone2:
+        name: "Common Area"
+        polygon:
+          - [100, 350]
+          - [400, 350]
+          - [400, 500]
+          - [100, 500]
+        authorized_ids: [1, 2]  # Both allowed
+  
+  camera_2:
+    name: "Camera 2 - Packaging Area"
+    stream_url: "udp://127.0.0.1:1906"  # Optional: for reference only
+    zones:
+      zone1:
+        name: "Packaging Area"
+        # Polygon coordinates relative to this camera's frame
+        polygon:
+          - [450, 100]
+          - [750, 100]
+          - [750, 300]
+          - [450, 300]
+        authorized_ids: [2]  # Khiem (ID: 2)
+      
+      zone2:
+        name: "Storage Area"
+        polygon:
+          - [450, 350]
+          - [750, 350]
+          - [750, 500]
+          - [450, 500]
+        authorized_ids: [1, 2]  # Both allowed
+
+# Notes:
+# 1. Camera order must match stream URL order in detection
+#    Example: If you pass "udp://127.0.0.1:1905, udp://127.0.0.1:1906"
+#    Then camera_1 = first stream, camera_2 = second stream
+#
+# 2. Coordinates are relative to EACH camera's frame
+#    - Camera 1: (0,0) to (width, height) of camera 1
+#    - Camera 2: (0,0) to (width, height) of camera 2
+#    NOT relative to the combined/stitched frame!
+#
+# 3. Each camera can have different number of zones
+#
+# 4. Backward compatible: Old format (single camera) still works
+#    Old format: zones: { zone1: {...}, zone2: {...} }
+#    New format: cameras: { camera_1: { zones: {...} }, camera_2: {...} }
+

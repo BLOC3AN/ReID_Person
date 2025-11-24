@@ -1,32 +1,79 @@
 detection:
+  # Backend selection: pytorch, tensorrt, or triton
+  # PRIORITY: triton (optimized for multi-camera streaming)
+  backend: triton  # Options: pytorch, tensorrt, triton
+
+  # PyTorch model paths
   model_type: mot17
   model_path_mot17: models/bytetrack_x_mot17.pth.tar
   model_path_yolox: models/yolox_x.pth
+
+  # TensorRT engine paths (used when backend=tensorrt)
+  tensorrt_engine_mot17: models/bytetrack_x_mot17_fp16.trt
+  tensorrt_engine_yolox: models/yolox_x_fp16.trt
+
+  # Triton Inference Server settings (used when backend=triton)
+  triton:
+    url: localhost:8101  # Triton gRPC endpoint (changed from 8001 to avoid conflict)
+    model_name: bytetrack_tensorrt  # Model name in Triton repository
+    model_version: ''  # Empty string = latest version
+    timeout: 20.0  # Request timeout in seconds (increased for multi-stream)
+    verbose: false  # Enable verbose logging
+
+    # Dynamic batching settings (configured in Triton model config)
+    # These are for reference - actual config is in model repository
+    max_batch_size: 8  # Maximum batch size for dynamic batching
+    max_queue_delay_ms: 5  # Max delay to wait for batching (milliseconds)
+    preferred_batch_sizes: [1, 2, 4, 8]  # Preferred batch sizes
+
+  # Detection parameters
   conf_threshold: 0.5
   nms_threshold: 0.45
   test_size:
   - 640
   - 640
   device: cuda
-  fp16: true
+  fp16: true  # Only for PyTorch backend (TensorRT/Triton use engine precision)
 tracking:
-  track_thresh: 0.5
-  track_buffer: 30
-  match_thresh: 0.8
-  aspect_ratio_thresh: 1.6
-  min_box_area: 10
-  mot20: false
+  # ByteTrack: Multi-object tracking with IoU + Kalman Filter
+  # Robust tracker for person tracking with high/low confidence detections
+  track_thresh: 0.5       # Tracking confidence threshold
+  track_buffer: 30        # Frames to keep lost tracks
+  match_thresh: 0.8       # Matching threshold for association
+  aspect_ratio_thresh: 1.6  # Aspect ratio threshold for filtering
+  min_box_area: 10        # Minimum box area for filtering
+  mot20: false            # Use MOT20 settings
 reid:
-  # ArcFace face recognition settings
+  # ArcFace backend selection: insightface or triton_pipeline
+  # - insightface: InsightFace with built-in face detection (slower, CPU/GPU)
+  # - triton_pipeline: SCRFD face detector + ArcFace via Triton (RECOMMENDED for production)
+  backend: triton_pipeline  # Options: insightface, triton_pipeline
+
+  # InsightFace settings (used when backend=insightface)
   arcface_model_name: buffalo_l  # Options: buffalo_l, buffalo_s, antelopev2
   feature_dim: 512
   use_cuda: true
+
+  # Triton settings (used when backend=triton_pipeline)
+  triton:
+    url: localhost:8101  # Triton gRPC endpoint (same as detection)
+
+    # ArcFace model
+    arcface_model: arcface_onnx  # Model name in Triton repository (switched from TensorRT to ONNX due to TensorRT bug)
+    model_version: ''  # Empty string = latest version
+    timeout: 5.0  # Request timeout in seconds
+    feature_dim: 512  # Embedding dimension
+
+    # Face detector model (only for triton_pipeline)
+    face_detector_model: scrfd_10g
+    face_conf_threshold: 0.5  # Confidence threshold for face detection
 database:
   use_qdrant: true
   qdrant_url: ''
   qdrant_collection: cross_camera_matching_id
   max_embeddings_per_person: 100
   embedding_dim: 512
+  use_grpc: false  # Set to true to use gRPC protocol instead of HTTP
 matching:
   similarity_threshold: 0.8
   metric: cosine

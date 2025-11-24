@@ -99,8 +99,30 @@ class MultiStreamReader:
             )
             thread.start()
             self.reader_threads.append(thread)
-        
+
         logger.info(f"✓ All {self.num_streams} streams initialized and reading started")
+
+        # Warmup: Wait for all streams to have at least one valid frame in queue
+        # UDP H.264 streams often have decode errors at start (missing PPS/SPS)
+        # We just need to wait for the first keyframe (I-frame) which typically comes every 1-2 seconds
+        logger.info("⏳ Warming up streams, waiting for first valid frames...")
+        warmup_timeout = 3.0  # 3 seconds is enough for 1-2 keyframes at typical GOP size
+        warmup_start = time.time()
+
+        while time.time() - warmup_start < warmup_timeout:
+            all_ready = all(not q.empty() for q in self.frame_queues)
+            if all_ready:
+                logger.info(f"✓ All streams ready after {time.time() - warmup_start:.1f}s")
+                break
+            time.sleep(0.1)
+        else:
+            # Check which streams are not ready
+            not_ready = [i for i, q in enumerate(self.frame_queues) if q.empty()]
+            if not_ready:
+                logger.warning(f"⚠️ Streams {not_ready} not ready after {warmup_timeout}s warmup (may have H.264 decode errors)")
+                logger.info("   This is normal for UDP streams - will retry on first read()")
+            else:
+                logger.info("✓ All streams ready")
     
     def _read_stream_worker(self, stream_id: int, reader: StreamReader, frame_queue: queue.Queue):
         """
@@ -152,7 +174,7 @@ class MultiStreamReader:
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
         """
         Read synchronized frames from all streams and combine them.
-        
+
         Returns:
             Tuple of (success, combined_frame)
             - success: True if frames were read successfully from all streams
@@ -160,21 +182,36 @@ class MultiStreamReader:
         """
         if not self.running:
             return False, None
-        
+
         frames = []
         timestamps = []
-        
-        # Try to get a frame from each stream
+
+        # Try to get a frame from each stream with retry logic
+        # For UDP streams with H.264 decode errors at start, we need more retries with shorter timeout
+        max_retries = 5  # Increased from 3 to 5
+        timeout_per_try = 2.0  # Reduced from 5.0 to 2.0 seconds (faster retry)
+
         for i, frame_queue in enumerate(self.frame_queues):
-            try:
-                # Wait up to 1 second for a frame
-                timestamp, frame = frame_queue.get(timeout=1.0)
-                frames.append(frame)
-                timestamps.append(timestamp)
-            except queue.Empty:
-                logger.warning(f"Stream {i} queue empty (timeout)")
+            frame_received = False
+
+            for retry in range(max_retries):
+                try:
+                    # Wait up to 2 seconds for a frame
+                    timestamp, frame = frame_queue.get(timeout=timeout_per_try)
+                    frames.append(frame)
+                    timestamps.append(timestamp)
+                    frame_received = True
+                    break
+                except queue.Empty:
+                    if retry < max_retries - 1:
+                        logger.debug(f"Stream {i} queue empty (retry {retry + 1}/{max_retries})")
+                    else:
+                        logger.warning(f"Stream {i} queue empty after {max_retries} retries (total {max_retries * timeout_per_try}s)")
+
+            if not frame_received:
+                # Only return False if we've exhausted all retries
                 return False, None
-        
+
         # Check if we got frames from all streams
         if len(frames) != self.num_streams:
             return False, None
@@ -200,7 +237,7 @@ class MultiStreamReader:
         """Get combined stream properties."""
         # Calculate combined width (sum of all stream widths)
         combined_width = self.width * self.num_streams
-        
+
         return {
             'width': combined_width,
             'height': self.height,
@@ -209,8 +246,79 @@ class MultiStreamReader:
             'sources': self.sources,
             'is_stream': self.is_stream,
             'using_ffmpeg': any(r.using_ffmpeg for r in self.readers),
-            'num_streams': self.num_streams
+            'num_streams': self.num_streams,
+            'single_camera_width': self.width  # Width of each individual camera
         }
+
+    def get_camera_index(self, x_coord: int) -> int:
+        """
+        Get camera index from x-coordinate in combined frame.
+
+        Args:
+            x_coord: X-coordinate in combined frame
+
+        Returns:
+            Camera index (0-based)
+        """
+        camera_idx = min(x_coord // self.width, self.num_streams - 1)
+        return camera_idx
+
+    def bbox_to_camera_relative(self, bbox: list) -> Tuple[list, int]:
+        """
+        Convert bbox from combined frame coordinates to camera-relative coordinates.
+
+        Args:
+            bbox: [x, y, w, h] or [x1, y1, x2, y2] in combined frame
+
+        Returns:
+            Tuple of (relative_bbox, camera_idx)
+            - relative_bbox: bbox with x-coordinates relative to camera frame
+            - camera_idx: which camera this bbox belongs to
+        """
+        # Detect format
+        if len(bbox) == 4:
+            x1, y1, x2_or_w, y2_or_h = bbox
+
+            # Check if it's xywh or xyxy
+            if x2_or_w < x1 or y2_or_h < y1:
+                # Likely xywh format (w/h are small)
+                is_xywh = True
+            elif x2_or_w > self.width * self.num_streams or y2_or_h > self.height:
+                # x2/y2 are beyond single camera, so it's xyxy
+                is_xywh = False
+            else:
+                # Ambiguous, assume xyxy if x2 > x1
+                is_xywh = x2_or_w <= self.width
+
+            if is_xywh:
+                x, y, w, h = bbox
+                x2 = x + w
+            else:
+                x, y, x2, y2_or_h = bbox
+                w = x2 - x
+                h = y2_or_h - y
+        else:
+            raise ValueError(f"Invalid bbox format: {bbox}")
+
+        # Determine camera index from x-coordinate
+        camera_idx = self.get_camera_index(x)
+
+        # Convert to camera-relative coordinates
+        camera_x_offset = camera_idx * self.width
+        relative_x = x - camera_x_offset
+        relative_x2 = x2 - camera_x_offset
+
+        # Clip to camera bounds
+        relative_x = max(0, min(relative_x, self.width))
+        relative_x2 = max(0, min(relative_x2, self.width))
+
+        # Return in same format as input
+        if is_xywh:
+            relative_bbox = [relative_x, y, relative_x2 - relative_x, h]
+        else:
+            relative_bbox = [relative_x, y, relative_x2, y2_or_h]
+
+        return relative_bbox, camera_idx
     
     def release(self):
         """Release all resources."""

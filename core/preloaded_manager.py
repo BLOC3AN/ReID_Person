@@ -12,6 +12,8 @@ from loguru import logger
 from typing import Optional
 
 from .detector import YOLOXDetector
+from .detector_trt import TensorRTDetector
+from .detector_triton import TritonDetector
 from .tracker import ByteTrackWrapper
 from .feature_extractor import ArcFaceExtractor
 from .vector_db import QdrantVectorDB
@@ -71,24 +73,41 @@ class PreloadedPipelineManager:
             self._loading = True
             
             try:
-                logger.info("🚀 Pre-loading pipeline components...")
-                start_time = time.time()
-                
+                logger.info("=" * 80)
+                logger.info("🚀 PRE-LOADING PIPELINE COMPONENTS")
+                logger.info("=" * 80)
+                overall_start = time.time()
+
                 # Load config
+                config_start = time.time()
                 self._load_config(config_path)
-                
-                # Initialize components in order
+                logger.info(f"✓ Config loaded in {time.time() - config_start:.2f}s")
+
+                # Initialize components in order with timing
+                detector_start = time.time()
                 self._init_detector()
+                logger.info(f"✓ Detector loaded in {time.time() - detector_start:.2f}s")
+
+                tracker_start = time.time()
                 self._init_tracker()
+                logger.info(f"✓ Tracker loaded in {time.time() - tracker_start:.2f}s")
+
+                extractor_start = time.time()
                 self._init_extractor()
+                logger.info(f"✓ Extractor loaded in {time.time() - extractor_start:.2f}s")
+
+                database_start = time.time()
                 self._init_database()
-                
-                load_time = time.time() - start_time
-                logger.info(f"✅ All components loaded in {load_time:.2f}s")
-                logger.info("🎯 Pipeline ready for instant inference")
-                
+                logger.info(f"✓ Database loaded in {time.time() - database_start:.2f}s")
+
+                load_time = time.time() - overall_start
+                logger.info("=" * 80)
+                logger.info(f"✅ ALL COMPONENTS LOADED IN {load_time:.2f}s")
+                logger.info("🎯 Pipeline ready for instant inference!")
+                logger.info("=" * 80)
+
                 self._initialized = True
-                
+
             except Exception as e:
                 logger.error(f"❌ Failed to initialize components: {e}")
                 self._cleanup_partial_init()
@@ -99,79 +118,160 @@ class PreloadedPipelineManager:
     def _load_config(self, config_path: Optional[str]) -> None:
         """Load configuration file"""
         if config_path is None:
-            config_path = Path(__file__).parent.parent / "configs" / "config.yaml"
-        
+            # Priority: configs/config.yaml (for services), then .streamlit/configs/config.yaml (for UI)
+            primary_path = Path(__file__).parent.parent / "configs" / "config.yaml"
+            fallback_path = Path(__file__).parent.parent / ".streamlit" / "configs" / "config.yaml"
+
+            if primary_path.exists():
+                config_path = primary_path
+            elif fallback_path.exists():
+                config_path = fallback_path
+            else:
+                raise FileNotFoundError(f"Config not found at {primary_path} or {fallback_path}")
+
         logger.info(f"Loading config from: {config_path}")
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
     
     def _init_detector(self) -> None:
-        """Initialize YOLOX detector"""
-        logger.info("Loading YOLOX detector...")
+        """Initialize detector (PyTorch, TensorRT, or Triton)"""
         cfg = self.config['detection']
-        
-        model_type = cfg.get('model_type', 'mot17')
-        if model_type == 'mot17':
-            model_path = Path(__file__).parent.parent / cfg['model_path_mot17']
+        backend = cfg.get('backend', 'pytorch').lower()
+
+        logger.info(f"Loading detector with backend: {backend}")
+
+        if backend == 'triton':
+            # Triton Inference Server backend
+            triton_cfg = cfg['triton']
+
+            self.detector = TritonDetector(
+                triton_url=triton_cfg['url'],
+                model_name=triton_cfg['model_name'],
+                model_version=triton_cfg.get('model_version', ''),
+                conf_thresh=cfg['conf_threshold'],
+                nms_thresh=cfg['nms_threshold'],
+                test_size=tuple(cfg['test_size']),
+                timeout=triton_cfg.get('timeout', 10.0),
+                verbose=triton_cfg.get('verbose', False)
+            )
+            logger.info("✓ Triton Detector loaded")
+            logger.info(f"  Server: {triton_cfg['url']}")
+            logger.info(f"  Model: {triton_cfg['model_name']}")
+
+        elif backend == 'tensorrt':
+            # TensorRT backend
+            model_type = cfg.get('model_type', 'mot17')
+            if model_type == 'mot17':
+                engine_path = Path(__file__).parent.parent / cfg['tensorrt_engine_mot17']
+            else:
+                engine_path = Path(__file__).parent.parent / cfg['tensorrt_engine_yolox']
+
+            if not engine_path.exists():
+                logger.error(f"❌ TensorRT engine not found: {engine_path}")
+                logger.info("💡 Please convert ONNX to TensorRT first:")
+                logger.info(f"   python tools/convert_tensorrt.py --onnx <onnx_path>")
+                raise FileNotFoundError(f"TensorRT engine not found: {engine_path}")
+
+            self.detector = TensorRTDetector(
+                engine_path=str(engine_path),
+                conf_thresh=cfg['conf_threshold'],
+                nms_thresh=cfg['nms_threshold'],
+                test_size=tuple(cfg['test_size'])
+            )
+            logger.info("✓ TensorRT Detector loaded")
+
         else:
-            model_path = Path(__file__).parent.parent / cfg['model_path_yolox']
-        
-        self.detector = YOLOXDetector(
-            model_path=str(model_path),
-            model_type=model_type,
-            device=cfg['device'],
-            fp16=cfg['fp16'],
-            conf_thresh=cfg['conf_threshold'],
-            nms_thresh=cfg['nms_threshold'],
-            test_size=tuple(cfg['test_size'])
-        )
-        logger.info("✓ Detector loaded")
+            # PyTorch backend (default)
+            model_type = cfg.get('model_type', 'mot17')
+            if model_type == 'mot17':
+                model_path = Path(__file__).parent.parent / cfg['model_path_mot17']
+            else:
+                model_path = Path(__file__).parent.parent / cfg['model_path_yolox']
+
+            self.detector = YOLOXDetector(
+                model_path=str(model_path),
+                model_type=model_type,
+                device=cfg['device'],
+                fp16=cfg['fp16'],
+                conf_thresh=cfg['conf_threshold'],
+                nms_thresh=cfg['nms_threshold'],
+                test_size=tuple(cfg['test_size'])
+            )
+            logger.info("✓ PyTorch Detector loaded")
     
     def _init_tracker(self) -> None:
         """Initialize ByteTrack tracker"""
         logger.info("Loading ByteTrack tracker...")
         cfg = self.config['tracking']
-        
+
         self.tracker = ByteTrackWrapper(
-            track_thresh=cfg['track_thresh'],
-            track_buffer=cfg['track_buffer'],
-            match_thresh=cfg['match_thresh'],
+            track_thresh=cfg.get('track_thresh', 0.5),
+            track_buffer=cfg.get('track_buffer', 30),
+            match_thresh=cfg.get('match_thresh', 0.8),
             frame_rate=30,
-            mot20=cfg['mot20']
+            mot20=cfg.get('mot20', False)
         )
         logger.info("✓ Tracker loaded")
     
     def _init_extractor(self) -> None:
-        """Initialize ArcFace feature extractor"""
+        """Initialize ArcFace feature extractor (Triton Pipeline, Triton, or InsightFace)"""
         logger.info("Loading ArcFace extractor...")
         cfg = self.config['reid']
-        
-        self.extractor = ArcFaceExtractor(
-            model_name=cfg.get('arcface_model_name', 'buffalo_l'),
-            use_cuda=cfg['use_cuda'],
-            feature_dim=cfg['feature_dim']
-        )
-        logger.info("✓ Extractor loaded")
+        reid_backend = cfg.get('backend', 'insightface')
+        logger.info(f"  Backend: {reid_backend}")
+
+        if reid_backend == 'triton_pipeline':
+            # Triton pipeline: SCRFD face detector + ArcFace
+            from .face_recognition_triton import FaceRecognitionTriton
+
+            triton_cfg = cfg.get('triton', {})
+            triton_url = triton_cfg.get('url', 'localhost:8101')
+            arcface_model = triton_cfg.get('arcface_model', 'arcface_tensorrt')
+            face_detector_model = triton_cfg.get('face_detector_model', 'scrfd_10g')
+            feature_dim = triton_cfg.get('feature_dim', 512)
+            face_conf_threshold = triton_cfg.get('face_conf_threshold', 0.5)
+
+            self.extractor = FaceRecognitionTriton(
+                triton_url=triton_url,
+                face_detector_model=face_detector_model,
+                arcface_model=arcface_model,
+                feature_dim=feature_dim,
+                face_conf_threshold=face_conf_threshold
+            )
+            logger.info("✓ Triton Face Recognition Pipeline loaded")
+            logger.info(f"  Server: {triton_url}")
+            logger.info(f"  Face Detector: {face_detector_model}")
+            logger.info(f"  ArcFace: {arcface_model}")
+
+        else:
+            # InsightFace backend (default)
+            triton_cfg = cfg.get('triton', {})
+            self.extractor = ArcFaceExtractor(
+                model_name=cfg.get('arcface_model_name', 'buffalo_l'),
+                use_cuda=cfg.get('use_cuda', True),
+                feature_dim=cfg.get('feature_dim', 512),
+                face_conf_thresh=triton_cfg.get('face_conf_threshold', 0.5)
+            )
+            logger.info("✓ InsightFace ArcFace Extractor loaded")
     
     def _init_database(self) -> None:
         """Initialize Qdrant vector database"""
         logger.info("Loading vector database...")
         cfg = self.config['database']
-        
+
         self.database = QdrantVectorDB(
             use_qdrant=cfg['use_qdrant'],
             collection_name=cfg['qdrant_collection'],
             max_embeddings_per_person=cfg['max_embeddings_per_person'],
-            embedding_dim=cfg['embedding_dim']
+            embedding_dim=cfg['embedding_dim'],
+            use_grpc=cfg.get('use_grpc', False)
         )
-        
-        # Load existing database
-        db_file = Path(__file__).parent.parent / "data" / "database" / "reid_database.pkl"
-        if db_file.exists():
-            logger.info(f"Loading database from {db_file}")
-            self.database.load_from_file(str(db_file))
-            logger.info(f"Database loaded: {self.database.get_person_count()} persons")
-        
+
+        # Sync metadata from Qdrant (if available)
+        if self.database.client:
+            person_count = self.database.sync_metadata_from_qdrant()
+            logger.info(f"✅ Synced metadata from Qdrant: {person_count} persons")
+
         logger.info("✓ Database loaded")
     
     def _cleanup_partial_init(self) -> None:

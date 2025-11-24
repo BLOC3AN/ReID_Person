@@ -1,0 +1,98 @@
+name: "bytetrack_tensorrt"
+platform: "tensorrt_plan"
+max_batch_size: 1
+
+input [
+  {
+    name: "images"
+    data_type: TYPE_FP16
+    dims: [ 3, 640, 640 ]
+  }
+]
+
+output [
+  {
+    name: "output"
+    data_type: TYPE_FP16
+    dims: [ 8400, 6 ]
+  }
+]
+
+# Dynamic batching configuration
+# Note: TensorRT engine supports max_batch_size=1, so we can only batch single requests
+# For true multi-batch support, need to rebuild TensorRT engine with dynamic shapes
+dynamic_batching {
+  # Only batch size 1 is supported by current TensorRT engine
+  preferred_batch_size: [ 1 ]
+
+  # Maximum queue delay in microseconds (1000us = 1ms)
+  # REDUCED from 5ms to 1ms for lower latency
+  # With 4-8 instances, we want faster dispatch
+  max_queue_delay_microseconds: 1000
+
+  # Preserve ordering disabled for better throughput
+  preserve_ordering: false
+
+  # Queue policy - optimized for multi-stream processing
+  default_queue_policy {
+    timeout_action: REJECT
+    default_timeout_microseconds: 50000  # 50ms timeout (increased for stability)
+    allow_timeout_override: true
+    max_queue_size: 128  # Reduced queue size
+  }
+}
+
+# Instance group configuration
+# Multiple instances enable parallel processing of concurrent requests
+# Each instance uses ~500MB GPU memory
+# OPTIMIZED: 8 instances for 2-4 streams (reduced from 16)
+# Reason: Lower overhead, better GPU utilization, less context switching
+# 8 instances = 8 parallel requests = ~4GB GPU memory
+instance_group [
+  {
+    # Number of instances per GPU
+    # CHANGED: 16 → 8 for better performance with 2-4 streams
+    # Each stream gets 2-4 instances for parallel processing
+    count: 8
+
+    # GPU device
+    kind: KIND_GPU
+
+    # Use GPU 0
+    gpus: [ 0 ]
+  }
+]
+
+# Optimization settings
+optimization {
+  # Enable CUDA graphs for faster inference
+  cuda {
+    graphs: true
+    graph_spec {
+      batch_size: 1
+      input {
+        key: "images"
+        value {
+          dim: [ 3, 640, 640 ]
+        }
+      }
+    }
+  }
+}
+
+# Model warmup
+model_warmup [
+  {
+    name: "batch_size_1"
+    batch_size: 1
+    inputs {
+      key: "images"
+      value {
+        data_type: TYPE_FP16
+        dims: [ 3, 640, 640 ]
+        zero_data: true
+      }
+    }
+  }
+]
+

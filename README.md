@@ -4,6 +4,12 @@ Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tr
 
 ## 🎯 Key Features
 
+### Multiple Detection Backends
+- ✅ **PyTorch** - Standard CPU/GPU inference
+- ✅ **TensorRT** - Optimized GPU inference (2-3x faster)
+- ✅ **Triton Inference Server** - Multi-stream optimization with dynamic batching
+- ✅ **Auto-detection** of decoded model outputs (no manual configuration needed)
+
 ### ArcFace Face Recognition
 - ✅ High accuracy (similarity 0.85-0.95)
 - ✅ Robust to pose/lighting changes
@@ -35,22 +41,50 @@ Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tr
 
 📖 **Documentation**: See [docs/](docs/) for detailed guides
 🔧 **Configuration**: Edit `configs/config.yaml` for model settings
+🎯 **Backend Selection**: See [docs/BACKEND_STRATEGY.md](docs/BACKEND_STRATEGY.md) for choosing PyTorch/TensorRT/Triton
+📡 **Stream Processing**: See [docs/STREAM_STRATEGY.md](docs/STREAM_STRATEGY.md) for frame handling strategies
+⚡ **Triton Optimization**: See [docs/TRITON_OPTIMIZATION.md](docs/TRITON_OPTIMIZATION.md) for resource tuning
 🗺️ **Zone Monitoring**: See [docs/ZONE_MONITORING_GUIDE.md](docs/ZONE_MONITORING_GUIDE.md)
-🎥 **Multi-Camera & Cancellation**: See [docs/MULTI_CAMERA_GUIDE.md](docs/MULTI_CAMERA_GUIDE.md)
-📉 **Frame Drop Analysis**: See [docs/FRAME_DROP_ANALYSIS.md](docs/FRAME_DROP_ANALYSIS.md)
-📊 **Frame Drop Presentation**: See [docs/FRAME_DROP_PRESENTATION.md](docs/FRAME_DROP_PRESENTATION.md)
+🎥 **Multi-Camera**: See [docs/MULTI_CAMERA_GUIDE.md](docs/MULTI_CAMERA_GUIDE.md)
+🚀 **Deployment**: See [deployment/](deployment/) for Docker and Triton setup
 
 ## Pipeline
 
 ```
-Video → YOLOX Detection → ByteTrack Tracking → ArcFace ReID → Qdrant Search → Zone Monitoring → Output
-                                                                      ↓
-                                                            IOU-based Zone Detection
-                                                                      ↓
-                                                            Authorization Check
-                                                                      ↓
-                                                            Time Tracking + Violations
+Video → Detection (PyTorch/TensorRT/Triton) → ByteTrack Tracking → ArcFace ReID → Qdrant Search → Zone Monitoring → Output
+                                                                                            ↓
+                                                                                  IOU-based Zone Detection
+                                                                                            ↓
+                                                                                  Authorization Check
+                                                                                            ↓
+                                                                                  Time Tracking + Violations
 ```
+
+### Detection Backend Selection
+
+Configure in `configs/config.yaml`:
+
+```yaml
+detection:
+  backend: triton  # Options: pytorch, tensorrt, triton
+
+  # Triton settings (for multi-stream optimization)
+  triton:
+    url: localhost:8101
+    model_name: bytetrack_tensorrt
+```
+
+**Performance Comparison:**
+
+| Backend | Single Stream | Multi-Stream (4 cams) | Multi-Stream (16 cams) | GPU Memory |
+|---------|---------------|----------------------|------------------------|------------|
+| **PyTorch** | 10-15 FPS | 40-60 FPS total | N/A | ~1.5GB |
+| **TensorRT** | 20-30 FPS | 80-120 FPS total | N/A | ~1.5GB |
+| **Triton (4 instances)** | 15-25 FPS | 120-160 FPS total | N/A | ~2.5GB |
+| **Triton (16 instances)** | 20-30 FPS | 160-200 FPS total | **320-400+ FPS total** | ~8-10GB |
+
+**Current Configuration**: Triton with **16 instances** optimized for 12-16+ camera streams
+- See [docs/TRITON_OPTIMIZATION.md](docs/TRITON_OPTIMIZATION.md) for tuning guide
 
 
 
@@ -221,26 +255,54 @@ outputs/
 ```
 person_reid_system/
 ├── configs/
-│   ├── config.yaml          # Main config
-│   └── .env                 # Qdrant credentials
+│   ├── config.yaml          # Main config (detection backend, thresholds, etc.)
+│   ├── .env                 # Qdrant credentials & service URLs
+│   └── .env.example         # Template for environment variables
 ├── core/
-│   ├── detector.py          # YOLOX detector
+│   ├── detector.py          # PyTorch YOLOX detector
+│   ├── detector_trt.py      # TensorRT detector
+│   ├── detector_triton.py   # Triton Inference Server detector
 │   ├── tracker.py           # ByteTrack tracker
 │   ├── feature_extractor.py # ArcFace face recognition
-│   └── vector_db.py         # Qdrant database
+│   ├── vector_db.py         # Qdrant database
+│   └── preloaded_manager.py # Singleton manager for pre-loaded components
 ├── yolox/                   # ByteTrack YOLOX modules (integrated)
 ├── exps/                    # YOLOX experiment configs
 ├── scripts/
 │   ├── extract_objects.py   # Extract individual objects from video
-│   ├── register_mot17.py    # Register person (USE THIS)
-│   └── detect_and_track.py  # Detection pipeline
+│   ├── register_mot17.py    # Register person
+│   ├── detect_and_track.py  # Detection pipeline
+│   └── zone_monitor.py      # Zone monitoring script
+├── services/                # FastAPI microservices
+│   ├── detection_service.py # Detection API
+│   ├── extract_service.py   # Extraction API
+│   └── register_service.py  # Registration API
+├── deployment/              # Docker deployment configs
+│   ├── docker-compose.yml   # Multi-service deployment
+│   ├── Dockerfile.*         # Service-specific Dockerfiles
+│   └── TRITON_DEPLOYMENT.md # Triton setup guide
+├── triton_model_repository/ # Triton model repository
+│   └── bytetrack_tensorrt/  # TensorRT model for Triton
+├── tools/                   # Utility scripts
+│   ├── export_onnx.py       # Export PyTorch to ONNX
+│   ├── convert_tensorrt.py  # Convert ONNX to TensorRT
+│   └── verify_onnx.py       # Verify ONNX model
+├── utils/
+│   ├── stream_reader.py     # Video/stream reader (UDP, RTSP, files)
+│   └── multi_stream_reader.py # Multi-camera stream reader
 ├── data/
 │   ├── videos/              # Input videos
 │   └── database/            # reid_database.pkl
 ├── models/
-│   ├── bytetrack_x_mot17.pth.tar  # MOT17 model (756 MB)
-│   └── yolox_x.pth                # YOLOX model (756 MB)
-└── outputs/                 # Generated outputs
+│   ├── bytetrack_x_mot17.pth.tar     # PyTorch MOT17 model
+│   ├── bytetrack_x_mot17_fp16.trt    # TensorRT engine
+│   └── bytetrack_x_mot17_fp16.onnx   # ONNX intermediate format
+├── outputs/                 # Generated outputs
+│   ├── videos/              # Annotated videos
+│   ├── csv/                 # Tracking data
+│   └── logs/                # Detailed logs
+├── app.py                   # Streamlit Web UI
+└── README.md                # This file
 ```
 
 ## Important Notes
@@ -253,13 +315,33 @@ person_reid_system/
 
 ## Documentation
 
+### Getting Started
 - **[Installation Guide](docs/INSTALLATION.md)** - Detailed installation steps
+- **[Configuration Guide](docs/CONFIGURATION.md)** - Config file reference
+- **[Deployment Guide](docs/DEPLOYMENT.md)** - Production deployment
+
+### Performance & Optimization
+- **[Backend Strategy](docs/BACKEND_STRATEGY.md)** - Choose PyTorch/TensorRT/Triton backend
+- **[Triton Optimization](docs/TRITON_OPTIMIZATION.md)** - Resource tuning for multi-stream (NEW ⚡)
+- **[Stream Processing Strategy](docs/STREAM_STRATEGY.md)** - Frame reading, buffering, synchronization
+- **[ReID Strategy](docs/REID_STRATEGY.md)** - First-3 + Re-verify strategy
+
+### Features & Guides
+- **[Multi-Camera Guide](docs/MULTI_CAMERA_GUIDE.md)** - Multi-stream processing
+- **[Zone Monitoring Guide](docs/ZONE_MONITORING_GUIDE.md)** - Zone detection setup
+- **[Stream Troubleshooting](docs/STREAM_TROUBLESHOOTING.md)** - UDP/RTSP stream issues
+
+### API & Services
 - **[API Documentation](docs/API.md)** - API reference and examples
-- **[ReID Strategy](docs/REID_STRATEGY.md)** - Detailed explanation of First-3 + Re-verify strategy
-- **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
-- **[Usage Examples](docs/USAGE.txt)** - Quick usage examples
-- **[Package Manifest](docs/MANIFEST.txt)** - Package structure
-- **[Package Info](docs/PACKAGE_INFO.txt)** - Package information
+- **[Services Guide](docs/SERVICES.md)** - Microservices architecture
+- **[Architecture](docs/ARCHITECTURE.md)** - System architecture overview
+
+### Troubleshooting
+- **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+
+### Deployment
+- **[Docker Deployment](deployment/README.md)** - Docker Compose setup
+- **[Triton Deployment](deployment/TRITON_DEPLOYMENT.md)** - Triton Inference Server setup (advanced)
 
 ## License
 

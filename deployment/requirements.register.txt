@@ -1,0 +1,36 @@
+# Person ReID System - Register Service Requirements (Optimized)
+
+# Deep Learning - Core
+torch>=1.10.0
+torchvision>=0.11.0
+
+# Computer Vision
+opencv-python>=4.5.0
+numpy>=1.21.0,<2.0.0
+scipy>=1.7.0
+
+# Face Recognition (ArcFace)
+insightface>=0.7.3
+onnxruntime-gpu==1.15.1
+
+# Vector Database
+qdrant-client>=1.0.0
+
+# Utilities
+loguru>=0.6.0
+pyyaml>=6.0
+python-dotenv>=0.19.0
+
+# ByteTrack Dependencies (minimal for detection)
+scikit-image
+Pillow
+lap
+filterpy
+cython
+cython_bbox
+
+# API Services
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6
+

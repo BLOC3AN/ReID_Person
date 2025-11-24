@@ -110,25 +110,37 @@ class StreamReader:
     def _initialize_opencv(self):
         """Initialize using OpenCV VideoCapture."""
         logger.info(f"Opening {'stream' if self.is_stream else 'video file'}: {self.source}")
-        
+
         if self.is_stream:
             self.cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG)
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            time.sleep(2)  # Wait for stream to stabilize
+
+            # Smart waiting: try to read first frame instead of fixed delay
+            logger.info("Waiting for stream to stabilize (smart detection)...")
+            max_attempts = 10  # Try for ~2 seconds max
+            for i in range(max_attempts):
+                ret, _ = self.cap.read()
+                if ret:
+                    logger.info(f"✓ First frame received after {(i+1)*0.2:.1f}s")
+                    break
+                time.sleep(0.2)
+
+            if not ret:
+                logger.warning("No frame received after 2s, but continuing...")
         else:
             self.cap = cv2.VideoCapture(self.source)
-        
+
         if not self.cap.isOpened():
             raise RuntimeError(f"Failed to open source: {self.source}")
-        
+
         # Get stream properties
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-        
+
         if self.fps == 0 or self.fps is None:
             self.fps = 25.0  # Default for streams
-        
+
         logger.info(f"✓ Opened via OpenCV: {self.width}x{self.height} @ {self.fps:.1f} FPS")
         self.using_ffmpeg = False
     
@@ -149,18 +161,22 @@ class StreamReader:
 
         # Add UDP-specific options to the source URL
         source_url = self.source
-        if 'udp://' in self.source and '?' not in self.source:
-            # Add options to prevent binding and handle packet loss
-            source_url = f"{self.source}?overrun_nonfatal=1&fifo_size=50000000"
+        if 'udp://' in self.source:
+            # Add options to allow multiple readers and handle packet loss
+            if '?' not in self.source:
+                source_url = f"{self.source}?reuse=1&overrun_nonfatal=1&fifo_size=50000000"
+            elif 'reuse=' not in self.source:
+                source_url = f"{self.source}&reuse=1"
 
         # Build ffmpeg command to decode and output raw BGR24 frames
+        # Optimized for faster startup with UDP streams
         ffmpeg_cmd = [
             'ffmpeg',
-            '-timeout', '10000000',  # 10 second timeout for network operations (in microseconds)
-            '-fflags', '+genpts+discardcorrupt',
+            '-timeout', '5000000',  # 5 second timeout (reduced from 10s)
+            '-fflags', '+genpts+discardcorrupt+nobuffer',  # Added nobuffer for faster startup
             '-flags', 'low_delay',
-            '-probesize', '32M',  # Increased probe size
-            '-analyzeduration', '10M',  # Increased analysis duration
+            '-probesize', '4M',  # Reduced from 32M for faster startup
+            '-analyzeduration', '2M',  # Reduced from 10M for faster startup
             '-i', source_url,
             '-vsync', '0',  # Pass through timestamps, don't wait for missing frames
             '-f', 'rawvideo',
@@ -170,11 +186,10 @@ class StreamReader:
             'pipe:1'
         ]
 
-        logger.info(f"Starting ffmpeg subprocess...")
+        logger.info(f"Starting ffmpeg subprocess (optimized for fast startup)...")
         logger.debug(f"Command: {' '.join(ffmpeg_cmd)}")
 
         # Start ffmpeg process with stderr capture for debugging
-        # We'll capture stderr temporarily to diagnose issues
         self.ffmpeg_process = subprocess.Popen(
             ffmpeg_cmd,
             stdout=subprocess.PIPE,
@@ -182,12 +197,18 @@ class StreamReader:
             bufsize=10**8
         )
 
-        # Wait for ffmpeg to start and begin decoding
-        logger.info("Waiting for ffmpeg to start decoding (10 seconds)...")
+        # Smart waiting: check if data is available instead of fixed delay
+        logger.info("Waiting for ffmpeg to start decoding (smart detection)...")
 
-        # Check process status periodically
-        for i in range(10):
-            time.sleep(1)
+        max_wait_time = 3  # Maximum 3 seconds (reduced from 10s)
+        check_interval = 0.2  # Check every 200ms
+        checks = int(max_wait_time / check_interval)
+
+        data_detected = False
+        for i in range(checks):
+            time.sleep(check_interval)
+
+            # Check if process terminated
             if self.ffmpeg_process.poll() is not None:
                 # Process terminated, capture error
                 _, stderr = self.ffmpeg_process.communicate()
@@ -196,7 +217,25 @@ class StreamReader:
                 logger.error(f"ffmpeg stderr: {error_msg}")
                 raise RuntimeError(f"ffmpeg process terminated unexpectedly (exit code: {self.ffmpeg_process.returncode}). Error: {error_msg}")
 
-            logger.debug(f"ffmpeg startup check {i+1}/10...")
+            # Check if data is available on stdout (indicates ffmpeg is outputting frames)
+            if sys.platform != 'win32':
+                # Use select on Unix-like systems
+                readable, _, _ = select.select([self.ffmpeg_process.stdout], [], [], 0)
+                if readable:
+                    data_detected = True
+                    logger.info(f"✓ Data detected from ffmpeg after {(i+1)*check_interval:.1f}s")
+                    break
+            else:
+                # On Windows, just wait a bit longer
+                if i >= 5:  # After 1 second
+                    data_detected = True
+                    break
+
+            if (i + 1) % 5 == 0:  # Log every 1 second
+                logger.debug(f"ffmpeg startup check {i+1}/{checks}...")
+
+        if not data_detected:
+            logger.warning(f"No data detected after {max_wait_time}s, but process is running. Continuing...")
 
         # Process is still running, switch stderr to DEVNULL to prevent buffer overflow
         logger.info("ffmpeg started successfully, switching to production mode...")
@@ -217,8 +256,8 @@ class StreamReader:
         except subprocess.TimeoutExpired:
             old_process.kill()
 
-        # Wait a bit for new process to stabilize
-        time.sleep(2)
+        # Minimal stabilization wait (reduced from 2s to 0.5s)
+        time.sleep(0.5)
 
         # Final check
         if self.ffmpeg_process.poll() is not None:

@@ -28,18 +28,16 @@ from utils.multi_stream_reader import MultiStreamReader, parse_stream_urls
 class PersonReIDPipeline:
     """Main pipeline for person detection, tracking, and re-identification"""
 
-    def __init__(self, config_path=None, use_preloaded=True):
+    def __init__(self, config_path=None):
         """
         Initialize pipeline with configuration
+        Automatically uses preloaded components if available
 
         Args:
             config_path: Path to config file (optional)
-            use_preloaded: Use pre-loaded components if available (default: True)
         """
-        self.use_preloaded = use_preloaded
-
-        # Try to use pre-loaded components first
-        if use_preloaded and preloaded_manager.is_initialized():
+        # Try to use pre-loaded components first (if available)
+        if preloaded_manager.is_initialized():
             logger.info("🚀 Using pre-loaded components (instant ready)")
             self.detector, self.tracker, self.extractor, self.database, self.config = preloaded_manager.get_components()
             self._preloaded = True
@@ -85,7 +83,11 @@ class PersonReIDPipeline:
         logger.info(f"Logging to: {log_file}")
     
     def initialize_detector(self, model_type=None):
-        """Initialize YOLOX detector"""
+        """Initialize YOLOX detector (skip if already loaded)"""
+        if self.detector is not None:
+            logger.debug("Detector already initialized, skipping...")
+            return
+
         cfg = self.config['detection']
 
         # Use model_type from config if not provided
@@ -106,11 +108,15 @@ class PersonReIDPipeline:
             nms_thresh=cfg['nms_threshold'],
             test_size=tuple(cfg['test_size'])
         )
-    
+
     def initialize_tracker(self):
-        """Initialize ByteTrack tracker"""
+        """Initialize ByteTrack tracker (skip if already loaded)"""
+        if self.tracker is not None:
+            logger.debug("Tracker already initialized, skipping...")
+            return
+
         cfg = self.config['tracking']
-        
+
         self.tracker = ByteTrackWrapper(
             track_thresh=cfg['track_thresh'],
             track_buffer=cfg['track_buffer'],
@@ -118,29 +124,59 @@ class PersonReIDPipeline:
             frame_rate=30,
             mot20=cfg['mot20']
         )
-    
-    def initialize_extractor(self):
-        """Initialize ArcFace feature extractor for face recognition"""
-        cfg = self.config['reid']
 
-        logger.info("Initializing ArcFace extractor for face recognition")
-        self.extractor = ArcFaceExtractor(
-            model_name=cfg.get('arcface_model_name', 'buffalo_l'),
-            use_cuda=cfg['use_cuda'],
-            feature_dim=cfg['feature_dim']
-        )
-    
+    def initialize_extractor(self):
+        """Initialize ArcFace feature extractor (skip if already loaded)"""
+        if self.extractor is not None:
+            logger.debug("Extractor already initialized, skipping...")
+            return
+
+        cfg = self.config['reid']
+        reid_backend = cfg.get('backend', 'insightface')
+        logger.info(f"ReID backend: {reid_backend}")
+
+        if reid_backend == 'triton_pipeline':
+            logger.info("Initializing Face Recognition Pipeline (SCRFD + ArcFace)")
+            from core import FaceRecognitionTriton
+
+            triton_cfg = cfg.get('triton', {})
+            self.extractor = FaceRecognitionTriton(
+                triton_url=triton_cfg.get('url', 'localhost:8101'),
+                face_detector_model=triton_cfg.get('face_detector_model', 'scrfd_10g'),
+                arcface_model=triton_cfg.get('arcface_model', 'arcface_tensorrt'),
+                feature_dim=triton_cfg.get('feature_dim', 512),
+                face_conf_threshold=triton_cfg.get('face_conf_threshold', 0.5)
+            )
+            logger.info(f"✅ Using Triton Face Recognition Pipeline")
+            logger.info(f"   Face Detector: {triton_cfg.get('face_detector_model', 'scrfd_10g')}")
+            logger.info(f"   ArcFace: {triton_cfg.get('arcface_model', 'arcface_tensorrt')}")
+
+        else:
+            logger.info("Initializing ArcFace extractor (InsightFace) for face recognition")
+            self.extractor = ArcFaceExtractor(
+                model_name=cfg.get('arcface_model_name', 'buffalo_l'),
+                use_cuda=cfg.get('use_cuda', True),
+                feature_dim=cfg.get('feature_dim', 512),
+                face_conf_thresh=cfg.get('face_conf_threshold', 0.5)
+            )
+            logger.info("✅ Using InsightFace ArcFace")
+
     def initialize_database(self):
-        """Initialize Qdrant vector database"""
+        """Initialize Qdrant vector database (skip if already loaded)"""
+        if self.database is not None:
+            logger.debug("Database already initialized, skipping...")
+            return
+
         cfg = self.config['database']
-        
+
         self.database = QdrantVectorDB(
             use_qdrant=cfg['use_qdrant'],
             collection_name=cfg['qdrant_collection'],
             max_embeddings_per_person=cfg['max_embeddings_per_person'],
-            embedding_dim=cfg['embedding_dim']
+            embedding_dim=cfg['embedding_dim'],
+            use_grpc=cfg.get('use_grpc', False)
         )
-        
+
         # Load existing database
         db_file = Path(__file__).parent.parent / "data" / "database" / "reid_database.pkl"
         if db_file.exists():
@@ -275,7 +311,15 @@ class PersonReIDPipeline:
         output_video.parent.mkdir(parents=True, exist_ok=True)
         output_csv.parent.mkdir(parents=True, exist_ok=True)
         output_log.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        # Create extracted_objects directory for person clips
+        # Use outputs/extracted_objects/ which is mounted in Docker
+        extracted_objects_dir = Path(__file__).parent.parent / "outputs" / "extracted_objects"
+        extracted_objects_dir.mkdir(parents=True, exist_ok=True)
+
+        # Track video writers for each person
+        person_video_writers = {}  # {track_id: {'writer': VideoWriter, 'label': str, 'path': Path}}
+
         # Video writer
         if self.config['output']['save_video']:
             fourcc = cv2.VideoWriter_fourcc(*self.config['output']['video_codec'])
@@ -470,13 +514,109 @@ class PersonReIDPipeline:
                     'similarity': 0.0,
                     'label': 'Unknown'
                 })
-                
+
                 # Write to CSV
                 csv_writer.writerow([
                     frame_id, track_id, x, y, w, h, f"{conf:.4f}",
                     info['global_id'], f"{info['similarity']:.4f}", info['label']
                 ])
-                
+
+                # Save person frames
+                # Create folder for this track if not exists
+                if track_id not in person_video_writers:
+                    # Get label for folder name
+                    person_label = info['label']
+
+                    # Create folder for this person
+                    person_folder = extracted_objects_dir / person_label
+                    person_folder.mkdir(parents=True, exist_ok=True)
+
+                    # Generate unique folder name with timestamp
+                    folder_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds
+                    track_folder_name = f"{person_label}_{folder_timestamp}_track{track_id}"
+                    track_folder_path = person_folder / track_folder_name
+                    track_folder_path.mkdir(parents=True, exist_ok=True)
+
+                    person_video_writers[track_id] = {
+                        'folder': track_folder_path,
+                        'label': person_label,
+                        'path': track_folder_path,
+                        'frame_count': 0
+                    }
+
+                    logger.info(f"  � Created frames folder for {person_label} (Track {track_id}): {track_folder_name}")
+
+                # Save cropped person frame to folder
+                if track_id in person_video_writers:
+                    try:
+                        # Validate bounding box first
+                        if x < 0 or y < 0 or w <= 0 or h <= 0:
+                            logger.warning(f"⚠️ Invalid bbox for track {track_id} at frame {frame_id}: ({x},{y},{w},{h})")
+                            continue
+
+                        # Clip to frame boundaries
+                        frame_h, frame_w = frame.shape[:2]
+                        x_clipped = max(0, x)
+                        y_clipped = max(0, y)
+                        w_clipped = min(w, frame_w - x_clipped)
+                        h_clipped = min(h, frame_h - y_clipped)
+
+                        if w_clipped <= 0 or h_clipped <= 0:
+                            logger.warning(f"⚠️ Bbox outside frame for track {track_id}: ({x},{y},{w},{h}), frame_shape=({frame_h},{frame_w})")
+                            continue
+
+                        # Crop person from frame
+                        person_crop = frame[y_clipped:y_clipped+h_clipped, x_clipped:x_clipped+w_clipped].copy()
+
+                        # Validate crop is not empty
+                        if person_crop.size == 0 or person_crop.shape[0] == 0 or person_crop.shape[1] == 0:
+                            logger.warning(f"⚠️ Empty crop for track {track_id} at frame {frame_id}")
+                            continue
+
+                        # Check if label changed (re-verification updated it)
+                        current_label = info['label']
+                        saved_label = person_video_writers[track_id]['label']
+
+                        if current_label != saved_label:
+                            # Label changed - create new folder
+                            logger.info(f"  🔄 Track {track_id} label changed: {saved_label} → {current_label}")
+
+                            # Create new folder
+                            person_folder = extracted_objects_dir / current_label
+                            person_folder.mkdir(parents=True, exist_ok=True)
+
+                            folder_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                            track_folder_name = f"{current_label}_{folder_timestamp}_track{track_id}"
+                            track_folder_path = person_folder / track_folder_name
+                            track_folder_path.mkdir(parents=True, exist_ok=True)
+
+                            person_video_writers[track_id] = {
+                                'folder': track_folder_path,
+                                'label': current_label,
+                                'path': track_folder_path,
+                                'frame_count': 0
+                            }
+
+                            logger.info(f"  📁 Created new frames folder: {track_folder_name}")
+
+                        # Save frame as image
+                        frame_count = person_video_writers[track_id]['frame_count']
+                        frame_filename = f"frame_{frame_count:06d}.jpg"
+                        frame_path = person_video_writers[track_id]['folder'] / frame_filename
+
+                        # Try to write image
+                        success = cv2.imwrite(str(frame_path), person_crop)
+                        if not success:
+                            logger.error(f"❌ Failed to write image: {frame_path}")
+                        else:
+                            person_video_writers[track_id]['frame_count'] += 1
+
+                    except Exception as e:
+                        logger.error(f"❌ Error saving crop for track {track_id} at frame {frame_id}: {e}")
+                        logger.error(f"   Bbox: ({x},{y},{w},{h}), Frame shape: {frame.shape}")
+                        # Continue processing other tracks
+                        continue
+
                 # Draw on frame
                 if self.config['output']['save_video']:
                     # Use green for known persons, red for unknown
@@ -548,21 +688,30 @@ class PersonReIDPipeline:
             vid_writer.release()
         csv_file.close()
         log_file.close()
-        
+
+        # Summary of saved person frames
+        logger.info("")
+        logger.info("� Person frames summary...")
+        for track_id, writer_info in person_video_writers.items():
+            logger.info(f"  ✅ Track {track_id} ({writer_info['label']}): {writer_info['frame_count']} frames → {writer_info['path'].name}")
+
         logger.info("="*80)
         logger.info("Processing Complete!")
         logger.info("="*80)
         logger.info(f"Output video: {output_video}")
         logger.info(f"Output CSV: {output_csv}")
         logger.info(f"Detailed log: {output_log}")
+        logger.info(f"Person frames saved to: {extracted_objects_dir}")
         logger.info(f"Total frames processed: {frame_id}")
         logger.info(f"Total tracks: {len(track_labels)}")
+        logger.info(f"Total person frame folders: {len(person_video_writers)}")
         logger.info(f"Average FPS: {avg_fps:.2f}")
         logger.info("")
         logger.info("Track Summary:")
         for tid, info in sorted(track_labels.items()):
             votes_info = f" (votes={info['votes']}/3)" if 'votes' in info else ""
-            logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){votes_info}")
+            folder_info = f" → {person_video_writers[tid]['path'].name}" if tid in person_video_writers else ""
+            logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){votes_info}{folder_info}")
         logger.info("="*80)
 
 
@@ -582,13 +731,24 @@ def main():
                        help="Maximum frames to process (for testing)")
     parser.add_argument("--max-duration", type=int, default=None,
                        help="Maximum duration in seconds to process (for streams)")
+    parser.add_argument("--preload", action="store_true",
+                       help="Force preload all components before processing")
 
     args = parser.parse_args()
 
-    # Initialize pipeline
+    # Force preload if requested
+    if args.preload and not preloaded_manager.is_initialized():
+        logger.info("🚀 Preloading components...")
+        try:
+            preloaded_manager.initialize(config_path=args.config)
+        except Exception as e:
+            logger.error(f"❌ Preloading failed: {e}")
+            logger.info("Falling back to lazy loading...")
+
+    # Initialize pipeline (automatically uses preloaded if available)
     pipeline = PersonReIDPipeline(config_path=args.config)
 
-    # Initialize components
+    # Initialize components (will skip if already preloaded)
     pipeline.initialize_detector(model_type=args.model)
     pipeline.initialize_tracker()
     pipeline.initialize_extractor()

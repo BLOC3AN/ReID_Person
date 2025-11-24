@@ -215,6 +215,11 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# ============================================================================
+# Project-specific ignores
+# ============================================================================
+
+# Model files (large binary files)
 models/
 
 outputs/
@@ -223,14 +228,49 @@ data/
 
 .mp4
 
+*.pth
+*.pth.tar
+*.pt
+*.onnx
+*.trt
+*.engine
+*.plan
+*.pb
+*.h5
+*.weights
+
+# Triton model repository (contains large TensorRT engines)
+triton_model_repository/*/1/
+triton_model_repository/*/2/
+triton_model_repository/*/3/
+triton_model_repository/*/*.plan
+triton_model_repository/*/*.onnx
+triton_model_repository/*/*.trt
+
+# Keep config files in Triton repository
+!triton_model_repository/*/config.pbtxt
+!triton_model_repository/*/labels.txt
+
+# Output files
+outputs/
+stores/videos/
+data/videos/
+data/database/
+
+# Video files
+*.mp4
 *.mkv
+*.avi
+*.mov
+*.flv
+*.wmv
+*.webm
 
-.avi
+# Log files
+logs/
+*.log
 
-.mov
-
-.log
-
+# CSV and JSON outputs
 *.csv
 
 *.mp4
@@ -241,3 +281,52 @@ data/
 triton_model_repository/
 
 ~triton_model_repository/config.pbtxt
+results/*.json
+outputs/*.json
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-*
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.pkl
+*.pickle
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+*.ipynb
+
+# Docker volumes
+docker-volumes/
+
+# Environment files (keep .env.example)
+.env
+!.env.example
+
+# Backup files
+*.bak
+*.backup
+*_backup
+*_old
+
+
+uploads/
+
+
+triton_model_repository/

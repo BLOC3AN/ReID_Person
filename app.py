@@ -28,6 +28,66 @@ DETECTION_API_URL = os.getenv("DETECTION_API_URL", "http://localhost:8003")
 
 logger.info(f"🚀 Starting Person ReID UI - Extract: {EXTRACT_API_URL}, Register: {REGISTER_API_URL}, Detection: {DETECTION_API_URL}")
 
+
+# ============================================================================
+# DATABASE CONNECTION
+# ============================================================================
+
+# Import database manager
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from services.database import PostgresManager
+
+# Initialize database manager (singleton pattern)
+@st.cache_resource
+def get_db_manager():
+    """Get or create database manager instance"""
+    try:
+        db_manager = PostgresManager()
+        db_manager.connect()
+        logger.info("✅ Connected to PostgreSQL database")
+        return db_manager
+    except Exception as e:
+        logger.error(f"❌ Failed to connect to database: {e}")
+        return None
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def fetch_users_from_db():
+    """
+    Fetch all users from PostgreSQL database
+    Returns list of users or empty list on error
+    """
+    try:
+        db_manager = get_db_manager()
+        if db_manager:
+            users = db_manager.get_all_users()
+            return [user.dict() for user in users]
+        return []
+    except Exception as e:
+        logger.error(f"Error fetching users from database: {e}")
+        return []
+
+
+def fetch_users_dict():
+    """
+    Fetch users as dictionary mapping global_id to name
+    Returns dict or empty dict on error
+    """
+    try:
+        db_manager = get_db_manager()
+        if db_manager:
+            return db_manager.get_users_dict()
+        return {}
+    except Exception as e:
+        logger.error(f"Error fetching users dict from database: {e}")
+        return {}
+
 # Page config
 st.set_page_config(
     page_title="Person ReID System",
@@ -42,7 +102,7 @@ st.markdown("---")
 # Sidebar for navigation
 page = st.sidebar.selectbox(
     "Select Operation",
-    ["Extract Objects", "Register Person", "Detect & Track", "ℹ️ About"]
+    ["Detect & Track", "Register Person", "Extract Objects", "👥 User Management", "ℹ️ About"]
 )
 
 # ============================================================================
@@ -254,77 +314,218 @@ if page == "Extract Objects":
 elif page == "Register Person":
     st.header("Register Person to Database")
     st.markdown("Register a person using face recognition (ArcFace)")
-    
+
+    # Input type selection
+    input_type = st.radio("Input Type", ["📹 Video", "🖼️ Images"], horizontal=True)
+
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
-        video_file = st.file_uploader("Upload Person Video", type=['mp4', 'avi', 'mkv', 'mov'])
-        st.caption("Video should show clear face for best results")
-    
+        if input_type == "📹 Video":
+            # Toggle between single and batch upload
+            upload_mode = st.radio("Upload Mode", ["Single Video", "Multiple Videos"], horizontal=True)
+
+            if upload_mode == "Single Video":
+                video_files = st.file_uploader("Upload Person Video", type=['mp4', 'avi', 'mkv', 'mov'])
+                if video_files:
+                    video_files = [video_files]
+            else:
+                video_files = st.file_uploader("Upload Person Videos", type=['mp4', 'avi', 'mkv', 'mov'], accept_multiple_files=True)
+
+            st.caption("Video(s) should show clear face for best results")
+            image_files = None
+        else:
+            # Image upload
+            image_files = st.file_uploader("Upload Person Images", type=['jpg', 'jpeg', 'png', 'bmp'], accept_multiple_files=True)
+            st.caption("Upload multiple images showing clear face from different angles")
+            video_files = None
+
     with col2:
         st.markdown("### Parameters")
-        person_name = st.text_input("Person Name", placeholder="e.g., John Doe")
-        global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique ID for this person")
-        sample_rate = st.number_input("Sample Rate", min_value=1, value=5, help="Extract 1 frame every N frames")
-        delete_existing = st.checkbox("Delete Existing Collection", value=False, 
-                                     help="⚠️ This will delete all registered persons!")
-    
-    if st.button("✅ Register Person", type="primary"):
-        if video_file is None:
-            st.error("Please upload a video file")
-        elif not person_name:
-            st.error("Please enter person name")
+
+        # Fetch users from database
+        users_dict = fetch_users_dict()
+
+        if users_dict:
+            # Create options for selectbox: "Name (ID: global_id)"
+            user_options = {f"{name} (ID: {gid})": (gid, name) for gid, name in users_dict.items()}
+            user_options_list = ["➕ Create New User"] + list(user_options.keys())
+
+            selected_option = st.selectbox(
+                "Select User",
+                options=user_options_list,
+                help="Select existing user or create new one"
+            )
+
+            if selected_option == "➕ Create New User":
+                # Manual input for new user
+                person_name = st.text_input("Person Name", placeholder="e.g., John Doe")
+                global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique ID for this person")
+            else:
+                # Use selected user
+                global_id, person_name = user_options[selected_option]
+                st.info(f"✅ Selected: **{person_name}** (Global ID: **{global_id}**)")
         else:
-            with st.spinner(f"Uploading video and registering {person_name}..."):
-                try:
-                    # Prepare files and data for API call
-                    files = {"video": (video_file.name, video_file.getvalue(), "video/mp4")}
-                    data = {
-                        "person_name": person_name,
-                        "global_id": global_id,
-                        "sample_rate": sample_rate,
-                        "delete_existing": delete_existing
-                    }
+            # Fallback to manual input if database is not available
+            st.warning("⚠️ Database not available. Using manual input.")
+            person_name = st.text_input("Person Name", placeholder="e.g., John Doe")
+            global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique ID for this person")
 
-                    # Call Register API
-                    response = requests.post(f"{REGISTER_API_URL}/register", files=files, data=data)
+        if input_type == "📹 Video":
+            sample_rate = st.number_input("Sample Rate", min_value=1, value=5, help="Extract 1 frame every N frames")
+        else:
+            sample_rate = None
 
-                    if response.status_code == 200:
-                        result = response.json()
-                        job_id = result["job_id"]
+        face_conf_thresh = st.slider(
+            "Face Confidence",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.5,
+            step=0.05,
+            help="Face detection confidence threshold (higher = stricter face detection)"
+        )
 
-                        st.info(f"Job ID: {job_id}")
+        delete_existing = st.checkbox("Delete Existing Collection", value=False,
+                                     help="⚠️ This will delete all registered persons!")
 
-                        # Poll for status
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
+    if st.button("✅ Register Person", type="primary"):
+        # Validation
+        if input_type == "📹 Video":
+            if not video_files:
+                st.error("Please upload at least one video file")
+            elif not person_name:
+                st.error("Please enter person name")
+            else:
+                # Video registration
+                with st.spinner(f"Uploading {len(video_files)} video(s) and registering {person_name}..."):
+                    try:
+                        # Prepare files and data for API call
+                        files = [("videos", (vf.name, vf.getvalue(), "video/mp4")) for vf in video_files]
+                        data = {
+                            "person_name": person_name,
+                            "global_id": global_id,
+                            "sample_rate": sample_rate,
+                            "face_conf_thresh": face_conf_thresh,
+                            "delete_existing": delete_existing
+                        }
 
-                        while True:
-                            status_response = requests.get(f"{REGISTER_API_URL}/status/{job_id}")
-                            if status_response.status_code == 200:
-                                status = status_response.json()
-                                status_text.text(f"Status: {status['status']}")
+                        # Call Register API (batch or single)
+                        if len(video_files) == 1:
+                            # Use single endpoint
+                            files_dict = {"video": (video_files[0].name, video_files[0].getvalue(), "video/mp4")}
+                            response = requests.post(f"{REGISTER_API_URL}/register", files=files_dict, data=data)
+                            job_ids = [response.json()["job_id"]] if response.status_code == 200 else []
+                        else:
+                            # Use batch endpoint
+                            response = requests.post(f"{REGISTER_API_URL}/register-batch", files=files, data=data)
+                            job_ids = response.json()["job_ids"] if response.status_code == 200 else []
 
-                                if status["status"] == "completed":
-                                    progress_bar.progress(100)
-                                    st.success(f"✅ {person_name} registered successfully!")
-                                    st.info(f"Global ID: {global_id}")
-                                    st.balloons()
-                                    break
+                        if response.status_code == 200:
+                            st.info(f"Started {len(job_ids)} registration job(s)")
 
-                                elif status["status"] == "failed":
-                                    st.error(f"❌ Registration failed: {status.get('error', 'Unknown error')}")
-                                    break
+                            # Create progress tracking for all jobs
+                            progress_bars = {}
+                            status_texts = {}
 
-                                elif status["status"] == "processing":
-                                    progress_bar.progress(50)
+                            for i, job_id in enumerate(job_ids):
+                                with st.expander(f"Video {i+1} - {video_files[i].name}", expanded=True):
+                                    progress_bars[job_id] = st.progress(0)
+                                    status_texts[job_id] = st.empty()
 
-                            time.sleep(2)
-                    else:
-                        st.error(f"Failed to start registration: {response.text}")
+                            # Poll for status of all jobs
+                            all_completed = False
+                            while not all_completed:
+                                all_completed = True
 
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
+                                for job_id in job_ids:
+                                    status_response = requests.get(f"{REGISTER_API_URL}/status/{job_id}")
+                                    if status_response.status_code == 200:
+                                        status = status_response.json()
+                                        status_texts[job_id].text(f"Status: {status['status']}")
+
+                                        if status["status"] == "completed":
+                                            progress_bars[job_id].progress(100)
+                                        elif status["status"] == "failed":
+                                            status_texts[job_id].error(f"❌ Failed: {status.get('error', 'Unknown error')}")
+                                        elif status["status"] == "processing":
+                                            progress_bars[job_id].progress(50)
+                                            all_completed = False
+                                        else:  # pending
+                                            progress_bars[job_id].progress(25)
+                                            all_completed = False
+
+                                if not all_completed:
+                                    time.sleep(2)
+
+                            st.success(f"✅ {person_name} registered successfully with {len(job_ids)} video(s)!")
+                            st.info(f"Global ID: {global_id}")
+                            st.balloons()
+                        else:
+                            st.error(f"Failed to start registration: {response.text}")
+
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+
+        else:
+            # Image registration
+            if not image_files:
+                st.error("Please upload at least one image file")
+            elif not person_name:
+                st.error("Please enter person name")
+            else:
+                with st.spinner(f"Uploading {len(image_files)} image(s) and registering {person_name}..."):
+                    try:
+                        # Prepare files and data for API call
+                        files = [("images", (img.name, img.getvalue(), "image/jpeg")) for img in image_files]
+                        data = {
+                            "person_name": person_name,
+                            "global_id": global_id,
+                            "face_conf_thresh": face_conf_thresh,
+                            "delete_existing": delete_existing
+                        }
+
+                        # Call Register Images API
+                        response = requests.post(f"{REGISTER_API_URL}/register-images", files=files, data=data)
+
+                        if response.status_code == 200:
+                            job_id = response.json()["job_id"]
+                            st.info(f"Started image registration job")
+
+                            # Create progress tracking
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+
+                            # Poll for status
+                            completed = False
+                            while not completed:
+                                status_response = requests.get(f"{REGISTER_API_URL}/status/{job_id}")
+                                if status_response.status_code == 200:
+                                    status = status_response.json()
+                                    status_text.text(f"Status: {status['status']}")
+
+                                    if status["status"] == "completed":
+                                        progress_bar.progress(100)
+                                        completed = True
+                                    elif status["status"] == "failed":
+                                        status_text.error(f"❌ Failed: {status.get('error', 'Unknown error')}")
+                                        completed = True
+                                    elif status["status"] == "processing":
+                                        progress_bar.progress(50)
+                                    else:  # pending
+                                        progress_bar.progress(25)
+
+                                if not completed:
+                                    time.sleep(2)
+
+                            if status["status"] == "completed":
+                                st.success(f"✅ {person_name} registered successfully with {len(image_files)} image(s)!")
+                                st.info(f"Global ID: {global_id}")
+                                st.balloons()
+                        else:
+                            st.error(f"Failed to start registration: {response.text}")
+
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
 
 # ============================================================================
 # PAGE 3: DETECT & TRACK
@@ -403,18 +604,18 @@ elif page == "Detect & Track":
         # Option to upload or create zones
         zone_input_method = st.radio(
             "Zone Configuration Method",
-            ["Create Zones in UI", "Upload YAML File"],
+            ["Create Zones in UI", "Upload Config File"],
             horizontal=True
         )
 
         zone_config_file = None
         zones_data = None
 
-        if zone_input_method == "Upload YAML File":
+        if zone_input_method == "Upload Config File":
             zone_config_file = st.file_uploader(
-                "Upload Zone Config (YAML)",
-                type=['yaml', 'yml'],
-                help="YAML file defining zones and authorized persons"
+                "Upload Zone Config (YAML/JSON)",
+                type=['yaml', 'yml', 'json'],
+                help="YAML or JSON file defining zones and authorized persons"
             )
 
             if zone_config_file:
@@ -423,107 +624,282 @@ elif page == "Detect & Track":
         else:  # Create Zones in UI
             st.markdown("#### Define Zones")
 
+            # Detect number of cameras from stream URL
+            num_cameras = 1
+            if input_method == "Stream URL (UDP/RTSP)" and stream_url:
+                # Parse stream URLs
+                urls = [u.strip() for u in stream_url.replace('\n', ',').split(',') if u.strip()]
+                num_cameras = len(urls)
+
+                # Debug info
+                st.caption(f"🔍 Debug: Detected {num_cameras} camera(s) from stream URLs")
+
+                if num_cameras > 1:
+                    st.info(f"📹 Detected {num_cameras} cameras. You can configure zones per camera.")
+                    st.caption(f"Stream URLs: {urls}")
+
             # Initialize session state for zones
             if 'zones_config' not in st.session_state:
                 st.session_state.zones_config = []
 
-            # Number of zones
-            num_zones = st.number_input(
-                "Number of Zones",
-                min_value=0,
-                max_value=10,
-                value=len(st.session_state.zones_config) if st.session_state.zones_config else 0,
-                step=1
-            )
+            # Multi-camera mode: organize zones by camera
+            if num_cameras > 1:
+                st.markdown(f"**Configure zones for {num_cameras} cameras**")
 
-            # Adjust zones list
-            while len(st.session_state.zones_config) < num_zones:
-                st.session_state.zones_config.append({
-                    'name': f'Zone {len(st.session_state.zones_config) + 1}',
-                    'polygon': [[100, 100], [200, 100], [200, 200], [100, 200]],
-                    'authorized_ids': []
-                })
-            while len(st.session_state.zones_config) > num_zones:
-                st.session_state.zones_config.pop()
+                # Initialize camera zones structure
+                if 'camera_zones' not in st.session_state:
+                    st.session_state.camera_zones = {f'camera_{i+1}': [] for i in range(num_cameras)}
 
-            # Configure each zone
-            if num_zones > 0:
-                for i, zone in enumerate(st.session_state.zones_config):
-                    with st.expander(f"📍 {zone['name']}", expanded=True):
-                        col1, col2 = st.columns(2)
+                # Ensure we have entries for all cameras
+                for i in range(num_cameras):
+                    camera_key = f'camera_{i+1}'
+                    if camera_key not in st.session_state.camera_zones:
+                        st.session_state.camera_zones[camera_key] = []
 
-                        with col1:
-                            zone['name'] = st.text_input(
-                                "Zone Name",
-                                value=zone['name'],
-                                key=f"zone_name_{i}"
-                            )
+                # Configure zones for each camera
+                for cam_idx in range(num_cameras):
+                    camera_key = f'camera_{cam_idx+1}'
 
-                            # Authorized IDs
-                            auth_ids_str = st.text_input(
-                                "Authorized IDs (comma-separated)",
-                                value=','.join(map(str, zone['authorized_ids'])),
-                                key=f"zone_auth_{i}",
-                                help="Example: 1,2,3"
-                            )
+                    with st.expander(f"📹 Camera {cam_idx+1}", expanded=cam_idx==0):
+                        num_zones_cam = st.number_input(
+                            f"Number of Zones for Camera {cam_idx+1}",
+                            min_value=0,
+                            max_value=10,
+                            value=len(st.session_state.camera_zones[camera_key]),
+                            step=1,
+                            key=f"num_zones_cam_{cam_idx}"
+                        )
 
-                            # Parse authorized IDs
-                            if auth_ids_str.strip():
-                                try:
-                                    zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
-                                except:
-                                    st.warning("Invalid ID format. Use comma-separated numbers.")
-                                    zone['authorized_ids'] = []
-                            else:
-                                zone['authorized_ids'] = []
+                        # Adjust zones list for this camera
+                        while len(st.session_state.camera_zones[camera_key]) < num_zones_cam:
+                            st.session_state.camera_zones[camera_key].append({
+                                'name': f'Zone {len(st.session_state.camera_zones[camera_key]) + 1}',
+                                'polygon': [[100, 100], [200, 100], [200, 200], [100, 200]],
+                                'authorized_ids': []
+                            })
+                        while len(st.session_state.camera_zones[camera_key]) > num_zones_cam:
+                            st.session_state.camera_zones[camera_key].pop()
 
-                        with col2:
-                            st.markdown("**Polygon Coordinates (x,y)**")
-                            st.markdown("*Format: x1,y1; x2,y2; x3,y3; x4,y4*")
+                        # Configure each zone for this camera
+                        for zone_idx, zone in enumerate(st.session_state.camera_zones[camera_key]):
+                            st.markdown(f"**Zone {zone_idx+1}**")
+                            col1, col2 = st.columns(2)
 
-                            # Convert polygon to string
-                            polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                            with col1:
+                                zone['name'] = st.text_input(
+                                    "Zone Name",
+                                    value=zone['name'],
+                                    key=f"zone_name_cam{cam_idx}_z{zone_idx}"
+                                )
 
-                            polygon_input = st.text_area(
-                                "Polygon Points",
-                                value=polygon_str,
-                                key=f"zone_polygon_{i}",
-                                height=100,
-                                help="Enter coordinates as: x1,y1; x2,y2; x3,y3; ..."
-                            )
+                                # Fetch users from database for dropdown
+                                users_dict = fetch_users_dict()
 
-                            # Parse polygon
-                            try:
-                                points = []
-                                for point_str in polygon_input.split(';'):
-                                    point_str = point_str.strip()
-                                    if point_str:
-                                        x, y = map(float, point_str.split(','))
-                                        points.append([int(x), int(y)])
+                                if users_dict:
+                                    # Create options for multiselect: "Name (ID: global_id)"
+                                    user_options = {f"{name} (ID: {gid})": gid for gid, name in users_dict.items()}
 
-                                if len(points) >= 3:
-                                    zone['polygon'] = points
+                                    # Get current selected options
+                                    current_selections = []
+                                    for auth_id in zone['authorized_ids']:
+                                        if auth_id in users_dict:
+                                            current_selections.append(f"{users_dict[auth_id]} (ID: {auth_id})")
+
+                                    selected_users = st.multiselect(
+                                        "Authorized Users",
+                                        options=list(user_options.keys()),
+                                        default=current_selections,
+                                        key=f"zone_auth_cam{cam_idx}_z{zone_idx}",
+                                        help="Select authorized users from database"
+                                    )
+
+                                    # Update authorized_ids based on selection
+                                    zone['authorized_ids'] = [user_options[user] for user in selected_users]
                                 else:
-                                    st.warning("Need at least 3 points for a polygon")
-                            except:
-                                st.warning("Invalid polygon format. Use: x1,y1; x2,y2; ...")
+                                    # Fallback to text input if database is not available
+                                    st.warning("⚠️ Database not available. Using manual input.")
+                                    auth_ids_str = st.text_input(
+                                        "Authorized IDs",
+                                        value=','.join(map(str, zone['authorized_ids'])),
+                                        key=f"zone_auth_cam{cam_idx}_z{zone_idx}",
+                                        help="Comma-separated: 1,2,3"
+                                    )
 
-                        # Show zone info
-                        st.info(f"✅ {len(zone['polygon'])} points, Authorized: {zone['authorized_ids']}")
+                                    if auth_ids_str.strip():
+                                        try:
+                                            zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
+                                        except:
+                                            zone['authorized_ids'] = []
+                                    else:
+                                        zone['authorized_ids'] = []
 
-                # Create YAML content from zones
+                            with col2:
+                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                                polygon_input = st.text_area(
+                                    "Polygon (x,y; x,y; ...)",
+                                    value=polygon_str,
+                                    key=f"zone_polygon_cam{cam_idx}_z{zone_idx}",
+                                    height=80
+                                )
+
+                                try:
+                                    points = []
+                                    for point_str in polygon_input.split(';'):
+                                        point_str = point_str.strip()
+                                        if point_str:
+                                            x, y = map(float, point_str.split(','))
+                                            points.append([int(x), int(y)])
+                                    if len(points) >= 3:
+                                        zone['polygon'] = points
+                                except:
+                                    pass
+
+                            st.caption(f"✅ {len(zone['polygon'])} points, Auth: {zone['authorized_ids']}")
+                            st.divider()
+
+            else:
+                # Single camera mode (original logic)
+                num_zones = st.number_input(
+                    "Number of Zones",
+                    min_value=0,
+                    max_value=10,
+                    value=len(st.session_state.zones_config) if st.session_state.zones_config else 0,
+                    step=1
+                )
+
+                # Adjust zones list
+                while len(st.session_state.zones_config) < num_zones:
+                    st.session_state.zones_config.append({
+                        'name': f'Zone {len(st.session_state.zones_config) + 1}',
+                        'polygon': [[100, 100], [200, 100], [200, 200], [100, 200]],
+                        'authorized_ids': []
+                    })
+                while len(st.session_state.zones_config) > num_zones:
+                    st.session_state.zones_config.pop()
+
+                # Configure each zone (single camera)
+                if num_zones > 0:
+                    for i, zone in enumerate(st.session_state.zones_config):
+                        with st.expander(f"📍 {zone['name']}", expanded=True):
+                            col1, col2 = st.columns(2)
+
+                            with col1:
+                                zone['name'] = st.text_input(
+                                    "Zone Name",
+                                    value=zone['name'],
+                                    key=f"zone_name_{i}"
+                                )
+
+                                # Fetch users from database for dropdown
+                                users_dict = fetch_users_dict()
+
+                                if users_dict:
+                                    # Create options for multiselect: "Name (ID: global_id)"
+                                    user_options = {f"{name} (ID: {gid})": gid for gid, name in users_dict.items()}
+
+                                    # Get current selected options
+                                    current_selections = []
+                                    for auth_id in zone['authorized_ids']:
+                                        if auth_id in users_dict:
+                                            current_selections.append(f"{users_dict[auth_id]} (ID: {auth_id})")
+
+                                    selected_users = st.multiselect(
+                                        "Authorized Users",
+                                        options=list(user_options.keys()),
+                                        default=current_selections,
+                                        key=f"zone_auth_{i}",
+                                        help="Select authorized users from database"
+                                    )
+
+                                    # Update authorized_ids based on selection
+                                    zone['authorized_ids'] = [user_options[user] for user in selected_users]
+                                else:
+                                    # Fallback to text input if database is not available
+                                    st.warning("⚠️ Database not available. Using manual input.")
+                                    auth_ids_str = st.text_input(
+                                        "Authorized IDs (comma-separated)",
+                                        value=','.join(map(str, zone['authorized_ids'])),
+                                        key=f"zone_auth_{i}",
+                                        help="Example: 1,2,3"
+                                    )
+
+                                    # Parse authorized IDs
+                                    if auth_ids_str.strip():
+                                        try:
+                                            zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
+                                        except:
+                                            st.warning("Invalid ID format. Use comma-separated numbers.")
+                                            zone['authorized_ids'] = []
+                                    else:
+                                        zone['authorized_ids'] = []
+
+                            with col2:
+                                st.markdown("**Polygon Coordinates (x,y)**")
+                                st.markdown("*Format: x1,y1; x2,y2; x3,y3; x4,y4*")
+
+                                # Convert polygon to string
+                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+
+                                polygon_input = st.text_area(
+                                    "Polygon Points",
+                                    value=polygon_str,
+                                    key=f"zone_polygon_{i}",
+                                    height=100,
+                                    help="Enter coordinates as: x1,y1; x2,y2; x3,y3; ..."
+                                )
+
+                                # Parse polygon
+                                try:
+                                    points = []
+                                    for point_str in polygon_input.split(';'):
+                                        point_str = point_str.strip()
+                                        if point_str:
+                                            x, y = map(float, point_str.split(','))
+                                            points.append([int(x), int(y)])
+
+                                    if len(points) >= 3:
+                                        zone['polygon'] = points
+                                    else:
+                                        st.warning("Need at least 3 points for a polygon")
+                                except:
+                                    st.warning("Invalid polygon format. Use: x1,y1; x2,y2; ...")
+
+                            # Show zone info
+                            st.info(f"✅ {len(zone['polygon'])} points, Authorized: {zone['authorized_ids']}")
+
+            # Helper function to create zones dict from zone list (DRY)
+            def zones_list_to_dict(zones_list):
+                """Convert list of zones to dict format for YAML."""
                 zones_dict = {}
-                for i, zone in enumerate(st.session_state.zones_config):
-                    zone_id = f"zone{i+1}"
+                for idx, zone in enumerate(zones_list):
+                    zone_id = f"zone{idx+1}"
                     zones_dict[zone_id] = {
                         'name': zone['name'],
                         'polygon': zone['polygon'],
                         'authorized_ids': zone['authorized_ids']
                     }
+                return zones_dict
 
-                zones_data = {'zones': zones_dict}
+            # Create YAML content from zones
+            if num_cameras > 1 and 'camera_zones' in st.session_state:
+                # Multi-camera format
+                cameras_dict = {}
+                for cam_idx in range(num_cameras):
+                    camera_key = f'camera_{cam_idx+1}'
+                    camera_zones = st.session_state.camera_zones.get(camera_key, [])
 
-                # Preview YAML
+                    cameras_dict[camera_key] = {
+                        'name': f'Camera {cam_idx+1}',
+                        'zones': zones_list_to_dict(camera_zones)
+                    }
+
+                zones_data = {'cameras': cameras_dict}
+            else:
+                # Single camera format
+                zones_data = {'zones': zones_list_to_dict(st.session_state.zones_config)}
+
+            # Preview YAML
+            if zones_data and (zones_data.get('zones') or zones_data.get('cameras')):
                 with st.expander("📄 Preview YAML Config", expanded=False):
                     yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
                     st.code(yaml_content, language='yaml')
@@ -532,7 +908,7 @@ elif page == "Detect & Track":
                     st.download_button(
                         label="💾 Download Zone Config",
                         data=yaml_content,
-                        file_name="zones.yaml",
+                        file_name="zones_multi_camera.yaml" if num_cameras > 1 else "zones.yaml",
                         mime="application/x-yaml"
                     )
 
@@ -553,13 +929,24 @@ elif page == "Detect & Track":
 
         with col_zone2:
             zone_opacity = st.slider(
-                "Zone Opacity",
-                min_value=0.05,
-                max_value=0.5,
-                value=0.15,
+                "Zone Border Thickness",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.3,
                 step=0.05,
-                help="Transparency of zone fill (lower = more transparent). 15% recommended for better visibility."
+                help="Zone border line thickness (0.0 = thin, 1.0 = thick). Controls border width from 1-10 pixels. 0.3 (3px) recommended."
             )
+
+        # Alert threshold setting
+        st.markdown("### 🚨 Violation Alert Settings")
+        alert_threshold = st.number_input(
+            "Alert Threshold (seconds)",
+            min_value=0,
+            max_value=300,
+            value=0,
+            step=5,
+            help="Time (in seconds) a person must be outside their authorized zone before triggering an alert. 0 = immediate alert."
+        )
 
     # Advanced Parameters
     with st.expander("⚙️ Advanced Parameters", expanded=False):
@@ -593,6 +980,15 @@ elif page == "Detect & Track":
                 help="Detection confidence threshold (higher = fewer detections)"
             )
 
+            face_conf_thresh = st.slider(
+                "Face Confidence",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.5,
+                step=0.05,
+                help="Face detection confidence threshold (higher = stricter face detection)"
+            )
+
         with col_param2:
             track_thresh = st.slider(
                 "Tracking Threshold",
@@ -608,10 +1004,11 @@ elif page == "Detect & Track":
 Model: {model_type}
 Similarity: {similarity_threshold}
 Detection: {conf_thresh}
+Face Detection: {face_conf_thresh}
 Tracking: {track_thresh}
 Zone Monitoring: {'Enabled' if zone_config_file else 'Disabled'}
 IoP Threshold: {iou_threshold} ({iou_threshold*100:.0f}% of person in zone)
-Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
+Zone Border Thickness: {int(zone_opacity*10)}px
             """)
 
     if st.button("🚀 Start Detection", type="primary"):
@@ -634,7 +1031,7 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                 if max_duration:
                     logger.info(f"⏱️ [Detect & Track] Max duration: {max_duration}s")
 
-            logger.info(f"⚙️ [Detect & Track] Parameters: model={model_type}, similarity={similarity_threshold}, conf={conf_thresh}, track={track_thresh}")
+            logger.info(f"⚙️ [Detect & Track] Parameters: model={model_type}, similarity={similarity_threshold}, conf={conf_thresh}, face_conf={face_conf_thresh}, track={track_thresh}")
 
             # Check if zone monitoring is enabled
             zone_enabled = zone_config_file is not None or zones_data is not None
@@ -642,7 +1039,12 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                 if zone_config_file:
                     logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (uploaded): {zone_config_file.name}")
                 else:
-                    logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {len(zones_data['zones'])} zones")
+                    # Count zones based on format (single camera or multi-camera)
+                    if 'cameras' in zones_data:
+                        total_zones = sum(len(cam_data['zones']) for cam_data in zones_data['cameras'].values())
+                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {total_zones} zones across {len(zones_data['cameras'])} cameras")
+                    else:
+                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {len(zones_data['zones'])} zones")
 
             spinner_text = "Uploading video and starting detection..." if input_method == "Upload Video File" else "Starting stream detection..."
             with st.spinner(spinner_text):
@@ -665,8 +1067,10 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                             "model_type": model_type,
                             "conf_thresh": conf_thresh,
                             "track_thresh": track_thresh,
+                            "face_conf_thresh": face_conf_thresh,
                             "iou_threshold": iou_threshold,
-                            "zone_opacity": zone_opacity
+                            "zone_opacity": zone_opacity,
+                            "alert_threshold": alert_threshold
                         }
 
                         # Call Detection API
@@ -690,7 +1094,8 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                             "stream_url": stream_url,
                             "similarity_threshold": str(similarity_threshold),
                             "iou_threshold": str(iou_threshold),
-                            "zone_opacity": str(zone_opacity)
+                            "zone_opacity": str(zone_opacity),
+                            "alert_threshold": str(alert_threshold)
                         }
 
                         # Add optional parameters only if they have values
@@ -700,6 +1105,8 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                             data["conf_thresh"] = str(conf_thresh)
                         if track_thresh is not None:
                             data["track_thresh"] = str(track_thresh)
+                        if face_conf_thresh is not None:
+                            data["face_conf_thresh"] = str(face_conf_thresh)
                         if max_frames:
                             data["max_frames"] = str(max_frames)
                         if max_duration:
@@ -732,10 +1139,19 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                         status_text = st.empty()
                         progress_text = st.empty()
                         tracks_container = st.empty()
+
+                        # Violation logs viewer (scrollable container)
+                        st.markdown("### 🚨 Zone Violation Logs")
+                        violations_container = st.container()
+                        with violations_container:
+                            violation_logs = st.empty()
+
                         stop_button_container = st.empty()
 
                         poll_count = 0
                         user_cancelled = False
+                        violation_log_lines = []  # Store log lines for display
+                        last_violation_count = 0  # Track how many violations we've processed
 
                         while True:
                             # Show stop button while processing
@@ -790,6 +1206,45 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
                                             color = "🟢" if track['label'] != "Unknown" else "🔴"
                                             tracks_info += f"{color} Track {track['track_id']}: **{track['label']}** (sim: {track['similarity']:.3f})\n"
                                         tracks_container.markdown(tracks_info)
+
+                                    # Display real-time violations as log lines (ZONE-CENTRIC LOGIC)
+                                    if progress.get('violations'):
+                                        violations = progress['violations']
+
+                                        # Process only new violations
+                                        if len(violations) > last_violation_count:
+                                            new_violations = violations[last_violation_count:]
+
+                                            for violation in new_violations:
+                                                # Format timestamp
+                                                timestamp = datetime.now().strftime("%H:%M:%S")
+
+                                                # Handle both zone-centric and legacy person-centric violations
+                                                if violation.get('type') == 'zone_incomplete':
+                                                    # Zone-centric violation
+                                                    missing_str = ", ".join(violation['missing_names'])
+                                                    log_line = f"[{timestamp}] 🔴 Frame {violation['frame_id']:4d} | Zone **{violation['zone_name']}** incomplete: Missing {missing_str}"
+
+                                                    logger.warning(f"🚨 [Detect & Track] ZONE VIOLATION: Zone '{violation['zone_name']}' "
+                                                                 f"incomplete - Missing: {missing_str} at frame {violation['frame_id']}")
+                                                else:
+                                                    # Legacy person-centric violation (backward compatibility)
+                                                    log_line = f"[{timestamp}] 🔴 Frame {violation['frame_id']:4d} | {violation.get('person_name', 'Unknown')} entered unauthorized zone **{violation['zone_name']}**"
+
+                                                    logger.warning(f"🚨 [Detect & Track] VIOLATION: {violation.get('person_name', 'Unknown')} "
+                                                                 f"entered unauthorized zone '{violation['zone_name']}' at frame {violation['frame_id']}")
+
+                                                # Add to log lines (keep last 50 lines)
+                                                violation_log_lines.append(log_line)
+                                                if len(violation_log_lines) > 50:
+                                                    violation_log_lines.pop(0)
+
+                                            last_violation_count = len(violations)
+
+                                        # Display log lines in reverse order (newest first)
+                                        if violation_log_lines:
+                                            log_text = "\n\n".join(reversed(violation_log_lines))
+                                            violation_logs.markdown(log_text)
                             except Exception as e:
                                 logger.warning(f"⚠️ [Detect & Track] Progress fetch error: {e}")
                                 pass
@@ -890,35 +1345,194 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
 
         logger.info(f"📊 [Detect & Track] Cache status - Video: {bool(video_data)}, CSV: {bool(csv_data)}, JSON: {bool(json_data)}")
 
-        # Zone Report Preview (if available)
-        if json_data:
-            st.markdown("### 🗺️ Zone Monitoring Report")
+        # Real-Time Zone Monitoring Dashboard (if zone monitoring was enabled)
+        if json_data and csv_data:
+            st.markdown("### 📊 Real-Time Zone Monitoring Dashboard")
             import json
+            import pandas as pd
             import io
+            from collections import defaultdict
+
             try:
-                logger.info(f"🗺️ [Detect & Track] Parsing zone report...")
+                logger.info(f"📊 [Detect & Track] Parsing zone monitoring data...")
                 zone_report = json.loads(json_data)
+                df = pd.read_csv(io.BytesIO(csv_data))
 
-                # Display summary
-                if "summary" in zone_report:
-                    st.markdown("#### Zone Summary")
-                    for zone_id, zone_info in zone_report["summary"].items():
-                        with st.expander(f"📍 {zone_info['name']} ({zone_id})", expanded=True):
-                            st.markdown(f"**Authorized IDs:** {zone_info['authorized_ids']}")
-                            st.markdown(f"**Current Persons:** {zone_info['count']}")
+                # Tab layout for monitoring
+                tab1, tab2, tab3 = st.tabs(["🗺️ Zone Status", "📈 Statistics", "📋 Raw Data"])
 
-                            if zone_info['current_persons']:
-                                for person in zone_info['current_persons']:
-                                    status_icon = "✅" if person['authorized'] else "⚠️"
-                                    st.markdown(f"{status_icon} **{person['name']}** (ID: {person['id']}) - {person['duration']:.1f}s")
+                # Tab 1: Zone Status (Real-time)
+                with tab1:
+                    st.subheader("Current Zone Status")
 
-                logger.info(f"✅ [Detect & Track] Zone report displayed")
+                    if "summary" in zone_report:
+                        # Metrics row
+                        total_zones = len(zone_report["summary"])
+                        total_persons_in_zones = sum(z['count'] for z in zone_report["summary"].values())
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Total Zones", total_zones)
+                        with col2:
+                            st.metric("Persons in Zones", total_persons_in_zones)
+
+                        st.divider()
+
+                        # Display each zone
+                        for zone_id, zone_info in zone_report["summary"].items():
+                            # Zone color logic:
+                            # Green: Person is IN their authorized zone
+                            # Red: Person is NOT in their authorized zone (but should be)
+                            authorized_ids = zone_info.get('authorized_ids', [])
+                            current_persons = zone_info.get('current_persons', [])
+
+                            # Determine zone status
+                            all_authorized = all(p.get('authorized', False) for p in current_persons) if current_persons else True
+                            zone_color = "🟢" if all_authorized else "🔴"
+
+                            with st.expander(f"{zone_color} **{zone_info['name']}** ({zone_id}) - {zone_info['count']} person(s)", expanded=True):
+                                st.markdown(f"**Authorized IDs:** {', '.join(map(str, authorized_ids)) if authorized_ids else 'None'}")
+
+                                if current_persons:
+                                    st.markdown("**Current Persons:**")
+                                    for person in current_persons:
+                                        # Person status icon
+                                        # Green: Authorized and in correct zone
+                                        # Red: Not authorized for this zone
+                                        person_icon = "🟢" if person.get('authorized', False) else "🔴"
+                                        st.markdown(f"{person_icon} **{person['name']}** (ID: {person['id']}) - Duration: {person['duration']:.1f}s")
+                                else:
+                                    st.info("No persons currently in this zone")
+
+                # Tab 2: Historical Statistics
+                with tab2:
+                    st.subheader("Historical Statistics")
+
+                    # Calculate statistics per person
+                    stats_data = []
+                    persons = df[df['global_id'] > 0].groupby('global_id')
+
+                    for global_id, person_df in persons:
+                        person_name = person_df['person_name'].iloc[0]
+
+                        # Get zones this person was registered in
+                        zones_registered = person_df[person_df['zone_name'].notna() & (person_df['zone_name'] != '')]['zone_name'].unique()
+                        zone_registered = ', '.join(zones_registered) if len(zones_registered) > 0 else "None"
+
+                        # Count zone transitions
+                        person_df_sorted = person_df.sort_values('frame_id')
+                        prev_zone = None
+                        total_in = 0
+                        total_out = 0
+
+                        for _, row in person_df_sorted.iterrows():
+                            current_zone = row['zone_name'] if pd.notna(row['zone_name']) and row['zone_name'] != '' else None
+
+                            if current_zone != prev_zone:
+                                if current_zone is not None and prev_zone is None:
+                                    total_in += 1
+                                elif current_zone is None and prev_zone is not None:
+                                    total_out += 1
+
+                            prev_zone = current_zone
+
+                        # Get current status
+                        latest_person_df = person_df[person_df['frame_id'] == person_df['frame_id'].max()]
+                        if len(latest_person_df) > 0:
+                            latest_row = latest_person_df.iloc[0]
+                            current_zone = latest_row['zone_name'] if pd.notna(latest_row['zone_name']) and latest_row['zone_name'] != '' else None
+                            status = 'in' if current_zone else 'out'
+                        else:
+                            status = 'Null'
+
+                        stats_data.append({
+                            'Name': person_name,
+                            'Zone Registered': zone_registered,
+                            'Status': status,
+                            'Total In': total_in,
+                            'Total Out': total_out
+                        })
+
+                    if stats_data:
+                        stats_df = pd.DataFrame(stats_data)
+                        st.dataframe(stats_df, use_container_width=True, hide_index=True)
+
+                        # Visualizations
+                        st.divider()
+                        st.markdown("#### 📊 Visualizations")
+
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            import plotly.graph_objects as go
+                            fig = go.Figure(data=[
+                                go.Bar(name='Total In', x=stats_df['Name'], y=stats_df['Total In'], marker_color='green'),
+                                go.Bar(name='Total Out', x=stats_df['Name'], y=stats_df['Total Out'], marker_color='red')
+                            ])
+                            fig.update_layout(
+                                title="Zone Entry/Exit Counts",
+                                xaxis_title="Person",
+                                yaxis_title="Count",
+                                barmode='group'
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+                        with col2:
+                            status_counts = stats_df['Status'].value_counts()
+                            fig = go.Figure(data=[go.Pie(labels=status_counts.index, values=status_counts.values)])
+                            fig.update_layout(title="Current Status Distribution")
+                            st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No person statistics available")
+
+                # Tab 3: Raw Data
+                with tab3:
+                    st.subheader("Raw Tracking Data")
+
+                    # Filters
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        filter_person = st.multiselect(
+                            "Filter by Person",
+                            options=df[df['global_id'] > 0]['person_name'].unique().tolist(),
+                            default=[]
+                        )
+
+                    with col2:
+                        filter_zone = st.multiselect(
+                            "Filter by Zone",
+                            options=df[df['zone_name'].notna() & (df['zone_name'] != '')]['zone_name'].unique().tolist(),
+                            default=[]
+                        )
+
+                    with col3:
+                        show_unknown = st.checkbox("Show Unknown Persons", value=False)
+
+                    # Apply filters
+                    filtered_df = df.copy()
+
+                    if not show_unknown:
+                        filtered_df = filtered_df[filtered_df['global_id'] > 0]
+
+                    if filter_person:
+                        filtered_df = filtered_df[filtered_df['person_name'].isin(filter_person)]
+
+                    if filter_zone:
+                        filtered_df = filtered_df[filtered_df['zone_name'].isin(filter_zone)]
+
+                    st.dataframe(filtered_df.head(100), use_container_width=True, hide_index=True)
+                    st.info(f"Showing first 100 of {len(filtered_df)} filtered records (Total: {len(df)} records)")
+
+                logger.info(f"✅ [Detect & Track] Zone monitoring dashboard displayed")
             except Exception as e:
-                logger.error(f"❌ [Detect & Track] Failed to parse zone report: {e}")
-                st.error(f"Failed to parse zone report: {e}")
+                logger.error(f"❌ [Detect & Track] Failed to parse zone monitoring data: {e}")
+                st.error(f"Failed to parse zone monitoring data: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
-        # CSV Preview
-        if csv_data:
+        elif csv_data:
+            # Show CSV preview if no zone monitoring
             st.markdown("### 📊 Tracking Data Preview")
             import pandas as pd
             import io
@@ -996,7 +1610,161 @@ Zone Opacity: {zone_opacity} ({zone_opacity*100:.0f}%)
             st.rerun()
 
 # ============================================================================
-# PAGE 4: ABOUT
+# PAGE 4: USER MANAGEMENT
+# ============================================================================
+elif page == "👥 User Management":
+    st.header("👥 User Management")
+    st.markdown("Manage users in PostgreSQL database")
+
+    # Tabs for different operations
+    tab1, tab2, tab3 = st.tabs(["📋 View Users", "➕ Create User", "✏️ Edit/Delete User"])
+
+    # Tab 1: View Users
+    with tab1:
+        st.subheader("All Users")
+
+        if st.button("🔄 Refresh", key="refresh_users"):
+            st.rerun()
+
+        try:
+            db_manager = get_db_manager()
+            if db_manager:
+                users = db_manager.get_all_users()
+
+                if users:
+                    # Display as table
+                    import pandas as pd
+                    users_data = [user.dict() for user in users]
+                    df = pd.DataFrame(users_data)
+
+                    # Select columns to display
+                    display_cols = ['id', 'global_id', 'name', 'created_at', 'updated_at']
+                    df_display = df[display_cols]
+
+                    st.dataframe(df_display, use_container_width=True, hide_index=True)
+                    st.success(f"✅ Total users: {len(users)}")
+                else:
+                    st.info("No users found in database")
+            else:
+                st.error("Failed to connect to database")
+                st.info("Check PostgreSQL connection settings in configs/.env")
+        except Exception as e:
+            st.error(f"Error connecting to database: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+    # Tab 2: Create User
+    with tab2:
+        st.subheader("Create New User")
+
+        with st.form("create_user_form"):
+            new_global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique global ID for this user")
+            new_name = st.text_input("Name", placeholder="e.g., John Doe")
+
+            submitted = st.form_submit_button("➕ Create User", type="primary")
+
+            if submitted:
+                if not new_name:
+                    st.error("Please enter a name")
+                else:
+                    try:
+                        db_manager = get_db_manager()
+                        if db_manager:
+                            # Check if global_id already exists
+                            existing_user = db_manager.get_user_by_global_id(new_global_id)
+                            if existing_user:
+                                st.error(f"User with global_id {new_global_id} already exists: {existing_user.name}")
+                            else:
+                                from services.database.models import UserCreate
+                                user_data = UserCreate(global_id=new_global_id, name=new_name)
+                                user = db_manager.create_user(user_data)
+
+                                if user:
+                                    st.success(f"✅ User created successfully!")
+                                    st.json(user.dict())
+                                    st.balloons()
+                                else:
+                                    st.error("Failed to create user")
+                        else:
+                            st.error("Database connection not available")
+                    except Exception as e:
+                        st.error(f"Error creating user: {e}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
+    # Tab 3: Edit/Delete User
+    with tab3:
+        st.subheader("Edit or Delete User")
+
+        try:
+            db_manager = get_db_manager()
+            if db_manager:
+                users = db_manager.get_all_users()
+
+                if users:
+                    # Create selection dropdown
+                    user_options = {f"{u.name} (ID: {u.global_id})": u for u in users}
+                    selected_user_str = st.selectbox(
+                        "Select User",
+                        options=list(user_options.keys())
+                    )
+
+                    selected_user = user_options[selected_user_str]
+
+                    st.divider()
+
+                    # Edit section
+                    st.markdown("### ✏️ Edit User")
+                    with st.form("edit_user_form"):
+                        edit_name = st.text_input("Name", value=selected_user.name)
+
+                        submitted_edit = st.form_submit_button("💾 Update User", type="primary")
+
+                        if submitted_edit:
+                            try:
+                                from services.database.models import UserUpdate
+                                user_data = UserUpdate(name=edit_name)
+                                updated_user = db_manager.update_user(selected_user.id, user_data)
+
+                                if updated_user:
+                                    st.success("✅ User updated successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error("Failed to update user")
+                            except Exception as e:
+                                st.error(f"Error updating user: {e}")
+
+                    st.divider()
+
+                    # Delete section
+                    st.markdown("### 🗑️ Delete User")
+                    st.warning(f"⚠️ You are about to delete: **{selected_user.name}** (Global ID: {selected_user.global_id})")
+
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        if st.button("🗑️ Delete User", type="secondary"):
+                            try:
+                                success = db_manager.delete_user(selected_user.id)
+
+                                if success:
+                                    st.success("✅ User deleted successfully!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error("Failed to delete user")
+                            except Exception as e:
+                                st.error(f"Error deleting user: {e}")
+                else:
+                    st.info("No users found in database")
+            else:
+                st.error("Database connection not available")
+        except Exception as e:
+            st.error(f"Error connecting to database: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+# ============================================================================
+# PAGE 5: ABOUT
 # ============================================================================
 elif page == "ℹ️ About":
     st.header("ℹ️ About Person ReID System")

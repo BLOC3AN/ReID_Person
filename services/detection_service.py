@@ -17,14 +17,16 @@ sys.path.insert(0, str(scripts_dir))
 
 import os
 import shutil
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 import uuid
 from loguru import logger
 import threading
 import time
+import asyncio
+import json
 
 # Import modules
 from scripts.detect_and_track import PersonReIDPipeline
@@ -46,6 +48,8 @@ jobs = {}
 progress_data = {}  # {job_id: {"current_frame": int, "total_frames": int, "tracks": [...]}}
 # Cancellation flags
 cancellation_flags = {}  # {job_id: threading.Event()}
+# WebSocket connections for real-time violation logs
+websocket_connections: Dict[str, List[WebSocket]] = {}  # {job_id: [websocket1, websocket2, ...]}
 
 
 @app.on_event("startup")
@@ -53,6 +57,12 @@ async def startup_event():
     """Initialize pre-loaded components at service startup"""
     logger.info("🚀 Detection Service starting up...")
     try:
+        # Ensure output directories exist (important for Docker volume mounts)
+        (OUTPUT_DIR / "videos").mkdir(parents=True, exist_ok=True)
+        (OUTPUT_DIR / "csv").mkdir(parents=True, exist_ok=True)
+        (OUTPUT_DIR / "logs").mkdir(parents=True, exist_ok=True)
+        logger.info(f"✅ Output directories ready: {OUTPUT_DIR}")
+
         # Initialize pre-loaded components
         preloaded_manager.initialize()
         logger.info("✅ Detection Service ready with pre-loaded components")
@@ -80,6 +90,7 @@ class ProgressStatus(BaseModel):
     total_frames: int = 0
     progress_percent: float = 0.0
     tracks: List[dict] = []
+    violations: List[dict] = []  # Real-time violations
     message: Optional[str] = None
 
 
@@ -87,9 +98,10 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                       output_csv: str, output_log: str, config_path: Optional[str],
                       similarity_threshold: float = 0.8, model_type: Optional[str] = None,
                       conf_thresh: Optional[float] = None, track_thresh: Optional[float] = None,
+                      face_conf_thresh: Optional[float] = None,
                       zone_config_path: Optional[str] = None, iou_threshold: float = 0.6,
-                      zone_opacity: float = 0.15, max_frames: Optional[int] = None,
-                      max_duration_seconds: Optional[int] = None):
+                      zone_opacity: float = 0.3, max_frames: Optional[int] = None,
+                      max_duration_seconds: Optional[int] = None, alert_threshold: float = 0):
     """Background task to process detection and tracking with optional zone monitoring"""
     try:
         jobs[job_id]["status"] = "processing"
@@ -103,6 +115,7 @@ def process_detection(job_id: str, video_path: str, output_video: str,
             "current_frame": 0,
             "total_frames": 0,
             "tracks": [],
+            "violations": [],  # Real-time violations
             "last_update": time.time()
         }
 
@@ -135,9 +148,12 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                 output_video_path=output_video,
                 output_csv_path=output_csv,
                 output_json_path=output_json,
-                max_frames=None,
+                max_frames=max_frames,
+                max_duration_seconds=max_duration_seconds,
                 progress_callback=lambda frame_id, tracks: _update_progress(job_id, frame_id, tracks),
-                cancellation_flag=cancellation_flags.get(job_id)
+                violation_callback=lambda violation: _add_violation(job_id, violation),
+                cancellation_flag=cancellation_flags.get(job_id),
+                alert_threshold=alert_threshold
             )
 
             # Create a simple log file for zone monitoring
@@ -178,6 +194,13 @@ def process_detection(job_id: str, video_path: str, output_video: str,
 
             if track_thresh is not None:
                 pipeline.config['tracking']['track_thresh'] = track_thresh
+
+            if face_conf_thresh is not None:
+                pipeline.config['reid']['triton']['face_conf_threshold'] = face_conf_thresh
+                # Update SCRFD client threshold directly (for pre-loaded components)
+                if hasattr(pipeline.extractor, 'face_detector'):
+                    pipeline.extractor.face_detector.conf_threshold = face_conf_thresh
+                    logger.info(f"✅ Updated face confidence threshold to {face_conf_thresh}")
 
             # Components are either pre-loaded or will be initialized automatically
 
@@ -240,6 +263,70 @@ def _update_progress(job_id: str, frame_id: int, tracks: List[dict]):
         progress_data[job_id]["last_update"] = time.time()
 
 
+def _add_violation(job_id: str, violation: dict):
+    """Add violation to progress data for real-time alerts (ZONE-CENTRIC LOGIC)"""
+    if job_id in progress_data:
+        progress_data[job_id]["violations"].append(violation)
+
+        # Format violation message based on type
+        if violation.get('type') == 'zone_incomplete':
+            # Zone-centric violation
+            missing_str = ", ".join([f"{name} (ID:{pid})"
+                                    for pid, name in zip(violation['missing_persons'], violation['missing_names'])])
+            logger.warning(f"🚨 [Job {job_id}] ZONE VIOLATION: Zone '{violation['zone_name']}' "
+                          f"incomplete - Missing: {missing_str} at frame {violation['frame_id']}")
+        else:
+            # Legacy person-centric violation (backward compatibility)
+            logger.warning(f"🚨 [Job {job_id}] VIOLATION: {violation.get('person_name', 'Unknown')} "
+                          f"entered unauthorized zone '{violation['zone_name']}' at frame {violation['frame_id']}")
+
+        # Broadcast to WebSocket clients (schedule in event loop)
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.run_coroutine_threadsafe(_broadcast_violation(job_id, violation), loop)
+        except Exception as e:
+            logger.debug(f"Could not broadcast violation to WebSocket: {e}")
+
+
+async def _broadcast_violation(job_id: str, violation: dict):
+    """Broadcast violation to all connected WebSocket clients for this job"""
+    if job_id in websocket_connections:
+        # Format log message
+        timestamp = time.strftime("%H:%M:%S")
+
+        if violation.get('type') == 'zone_incomplete':
+            missing_str = ", ".join(violation['missing_names'])
+            log_msg = {
+                "timestamp": timestamp,
+                "level": "error",
+                "zone": violation['zone_name'],
+                "message": f"Zone incomplete: Missing {missing_str}",
+                "frame": violation['frame_id']
+            }
+        else:
+            log_msg = {
+                "timestamp": timestamp,
+                "level": "error",
+                "zone": violation['zone_name'],
+                "message": f"{violation.get('person_name', 'Unknown')} entered unauthorized zone",
+                "frame": violation['frame_id']
+            }
+
+        # Send to all connected clients
+        disconnected = []
+        for ws in websocket_connections[job_id]:
+            try:
+                await ws.send_json(log_msg)
+            except Exception as e:
+                logger.debug(f"Failed to send to WebSocket: {e}")
+                disconnected.append(ws)
+
+        # Remove disconnected clients
+        for ws in disconnected:
+            websocket_connections[job_id].remove(ws)
+
+
 @app.get("/")
 async def root():
     return {"service": "Detection Service", "status": "running"}
@@ -248,6 +335,74 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.websocket("/ws/violations/{job_id}")
+async def websocket_violations(websocket: WebSocket, job_id: str):
+    """
+    WebSocket endpoint for real-time violation logs
+
+    Clients connect to this endpoint to receive violation events as they occur.
+    Messages are sent in JSON format:
+    {
+        "timestamp": "HH:MM:SS",
+        "level": "error" | "info",
+        "zone": "Zone_A",
+        "message": "Zone incomplete: Missing Khiem",
+        "frame": 123
+    }
+    """
+    await websocket.accept()
+
+    # Add to connections list
+    if job_id not in websocket_connections:
+        websocket_connections[job_id] = []
+    websocket_connections[job_id].append(websocket)
+
+    logger.info(f"WebSocket client connected for job {job_id}")
+
+    try:
+        # Send initial connection message
+        await websocket.send_json({
+            "timestamp": time.strftime("%H:%M:%S"),
+            "level": "info",
+            "zone": "System",
+            "message": f"Connected to violation logs for job {job_id}",
+            "frame": 0
+        })
+
+        # Keep connection alive and listen for client messages (e.g., ping)
+        while True:
+            try:
+                # Wait for messages from client (or just keep alive)
+                data = await websocket.receive_text()
+
+                # Handle ping/pong or other client messages
+                if data == "ping":
+                    await websocket.send_json({
+                        "timestamp": time.strftime("%H:%M:%S"),
+                        "level": "info",
+                        "zone": "System",
+                        "message": "pong",
+                        "frame": 0
+                    })
+            except WebSocketDisconnect:
+                break
+            except Exception as e:
+                logger.debug(f"WebSocket error: {e}")
+                break
+
+    finally:
+        # Remove from connections list
+        if job_id in websocket_connections:
+            if websocket in websocket_connections[job_id]:
+                websocket_connections[job_id].remove(websocket)
+
+            # Clean up empty lists
+            if not websocket_connections[job_id]:
+                del websocket_connections[job_id]
+
+        logger.info(f"WebSocket client disconnected for job {job_id}")
 
 
 @app.post("/test_stream")
@@ -318,9 +473,11 @@ async def detect_and_track(
     model_type: Optional[str] = Form(None),
     conf_thresh: Optional[float] = Form(None),
     track_thresh: Optional[float] = Form(None),
+    face_conf_thresh: Optional[float] = Form(None),
     zone_config: Optional[UploadFile] = File(None),
     iou_threshold: float = Form(0.6),
-    zone_opacity: float = Form(0.15)
+    zone_opacity: float = Form(0.3),
+    alert_threshold: float = Form(0)
 ):
     """
     Detect, track, and re-identify persons in video with optional zone monitoring
@@ -332,9 +489,11 @@ async def detect_and_track(
         model_type: Detection model type - 'mot17' or 'yolox' (default: from config)
         conf_thresh: Detection confidence threshold 0-1 (default: from config)
         track_thresh: Tracking confidence threshold 0-1 (default: from config)
+        face_conf_thresh: Face detection confidence threshold 0-1 (default: from config)
         zone_config: Optional zone configuration YAML file
         iou_threshold: Zone IoP threshold 0-1 (default: 0.6 = 60%)
-        zone_opacity: Zone fill opacity 0-1 (default: 0.15 = 15%)
+        zone_opacity: Zone border thickness factor 0-1 (default: 0.3 = 3px)
+        alert_threshold: Time threshold (seconds) before showing alert (default: 0)
 
     Returns:
         Job ID for tracking the detection process
@@ -353,7 +512,11 @@ async def detect_and_track(
         # Save zone config if provided
         zone_config_path = None
         if zone_config is not None:
-            zone_config_filename = f"{job_id}_zones.yaml"
+            # Preserve original file extension (.yaml, .yml, or .json)
+            original_ext = Path(zone_config.filename).suffix
+            if original_ext not in ['.yaml', '.yml', '.json']:
+                original_ext = '.yaml'  # Default to .yaml if unknown
+            zone_config_filename = f"{job_id}_zones{original_ext}"
             zone_config_path = UPLOAD_DIR / zone_config_filename
 
             with open(zone_config_path, "wb") as buffer:
@@ -393,9 +556,11 @@ async def detect_and_track(
             model_type=model_type,
             conf_thresh=conf_thresh,
             track_thresh=track_thresh,
+            face_conf_thresh=face_conf_thresh,
             zone_config_path=str(zone_config_path) if zone_config_path else None,
             iou_threshold=iou_threshold,
-            zone_opacity=zone_opacity
+            zone_opacity=zone_opacity,
+            alert_threshold=alert_threshold
         )
         
         return JSONResponse(content={
@@ -418,11 +583,13 @@ async def detect_and_track_stream(
     model_type: Optional[str] = Form(None),
     conf_thresh: Optional[float] = Form(None),
     track_thresh: Optional[float] = Form(None),
+    face_conf_thresh: Optional[float] = Form(None),
     zone_config: Optional[UploadFile] = File(None),
     iou_threshold: float = Form(0.6),
-    zone_opacity: float = Form(0.15),
+    zone_opacity: float = Form(0.3),
     max_frames: Optional[int] = Form(None),
-    max_duration_seconds: Optional[int] = Form(None)
+    max_duration_seconds: Optional[int] = Form(None),
+    alert_threshold: float = Form(0)
 ):
     """
     Detect, track, and re-identify persons from video stream (UDP/RTSP)
@@ -434,11 +601,13 @@ async def detect_and_track_stream(
         model_type: Detection model type - 'mot17' or 'yolox' (default: from config)
         conf_thresh: Detection confidence threshold 0-1 (default: from config)
         track_thresh: Tracking confidence threshold 0-1 (default: from config)
+        face_conf_thresh: Face detection confidence threshold 0-1 (default: from config)
         zone_config: Optional zone configuration YAML file
         iou_threshold: Zone IoP threshold 0-1 (default: 0.6 = 60%)
-        zone_opacity: Zone fill opacity 0-1 (default: 0.15 = 15%)
+        zone_opacity: Zone border thickness factor 0-1 (default: 0.3 = 3px)
         max_frames: Maximum frames to process (None for unlimited)
         max_duration_seconds: Maximum duration in seconds (None for unlimited)
+        alert_threshold: Time threshold (seconds) before showing alert (default: 0)
 
     Returns:
         Job ID for tracking the detection process
@@ -450,7 +619,11 @@ async def detect_and_track_stream(
         # Save zone config if provided
         zone_config_path = None
         if zone_config is not None:
-            zone_config_filename = f"{job_id}_zones.yaml"
+            # Preserve original file extension (.yaml, .yml, or .json)
+            original_ext = Path(zone_config.filename).suffix
+            if original_ext not in ['.yaml', '.yml', '.json']:
+                original_ext = '.yaml'  # Default to .yaml if unknown
+            zone_config_filename = f"{job_id}_zones{original_ext}"
             zone_config_path = UPLOAD_DIR / zone_config_filename
 
             with open(zone_config_path, "wb") as buffer:
@@ -493,11 +666,13 @@ async def detect_and_track_stream(
             model_type=model_type,
             conf_thresh=conf_thresh,
             track_thresh=track_thresh,
+            face_conf_thresh=face_conf_thresh,
             zone_config_path=str(zone_config_path) if zone_config_path else None,
             iou_threshold=iou_threshold,
             zone_opacity=zone_opacity,
             max_frames=max_frames,
-            max_duration_seconds=max_duration_seconds
+            max_duration_seconds=max_duration_seconds,
+            alert_threshold=alert_threshold
         )
 
         return JSONResponse(content={
@@ -536,7 +711,8 @@ async def get_progress(job_id: str):
             current_frame=0,
             total_frames=0,
             progress_percent=0.0,
-            tracks=[]
+            tracks=[],
+            violations=[]
         )
 
     prog = progress_data[job_id]
@@ -551,6 +727,7 @@ async def get_progress(job_id: str):
         total_frames=total_frames,
         progress_percent=progress_percent,
         tracks=prog.get("tracks", []),
+        violations=prog.get("violations", []),
         message=f"Processing frame {current_frame}/{total_frames}"
     )
 
