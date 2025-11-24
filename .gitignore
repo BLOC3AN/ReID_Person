@@ -217,7 +217,7 @@ __marimo__/
 
 models/
 
-outputs/videos/
+outputs/
 
 data/
 
@@ -237,3 +237,7 @@ data/
 
 
 *.json
+
+triton_model_repository/
+
+~triton_model_repository/config.pbtxt
