@@ -1,8 +1,5 @@
-# Multi-Camera Zone Configuration
-# Define zones per camera for multi-stream monitoring
-
-# Format: cameras -> zones structure
-# Each camera has its own set of zones with independent coordinates
+# Multi-Camera Zone Configuration Example
+# This is an example showing how to configure zones for multiple cameras
 
 cameras:
   camera_1:
@@ -11,7 +8,6 @@ cameras:
     zones:
       zone1:
         name: "Assembly Area"
-        # Polygon coordinates relative to this camera's frame
         polygon:
           - [100, 100]
           - [400, 100]
@@ -34,7 +30,6 @@ cameras:
     zones:
       zone1:
         name: "Packaging Area"
-        # Polygon coordinates relative to this camera's frame
         polygon:
           - [450, 100]
           - [750, 100]
@@ -52,18 +47,6 @@ cameras:
         authorized_ids: [1, 2]  # Both allowed
 
 # Notes:
-# 1. Camera order must match stream URL order in detection
-#    Example: If you pass "udp://127.0.0.1:1905, udp://127.0.0.1:1906"
-#    Then camera_1 = first stream, camera_2 = second stream
-#
-# 2. Coordinates are relative to EACH camera's frame
-#    - Camera 1: (0,0) to (width, height) of camera 1
-#    - Camera 2: (0,0) to (width, height) of camera 2
-#    NOT relative to the combined/stitched frame!
-#
-# 3. Each camera can have different number of zones
-#
-# 4. Backward compatible: Old format (single camera) still works
-#    Old format: zones: { zone1: {...}, zone2: {...} }
-#    New format: cameras: { camera_1: { zones: {...} }, camera_2: {...} }
-
+# - Zone IDs will be: camera_1_zone1, camera_1_zone2, camera_2_zone1, camera_2_zone2
+# - Camera order must match stream URL order
+# - Coordinates are relative to EACH camera's frame

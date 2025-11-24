@@ -14,12 +14,13 @@ import time
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+from typing import List, Optional, Callable
 from loguru import logger
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB
+from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB, RedisTrackManager, process_reid_logic
 from core.preloaded_manager import preloaded_manager
 from utils.stream_reader import StreamReader
 from utils.multi_stream_reader import MultiStreamReader, parse_stream_urls
@@ -317,6 +318,18 @@ class PersonReIDPipeline:
         extracted_objects_dir = Path(__file__).parent.parent / "outputs" / "extracted_objects"
         extracted_objects_dir.mkdir(parents=True, exist_ok=True)
 
+        # Initialize Redis Track Manager
+        redis_host = os.getenv('REDIS_HOST', 'localhost')
+        redis_port = int(os.getenv('REDIS_PORT', 6379))
+        redis_ttl = int(os.getenv('REDIS_TTL', 300))
+
+        try:
+            redis_manager = RedisTrackManager(host=redis_host, port=redis_port, ttl=redis_ttl)
+            logger.info(f"✅ Redis Track Manager initialized")
+        except Exception as e:
+            logger.warning(f"⚠️  Redis not available: {e}. Using in-memory storage only.")
+            redis_manager = None
+
         # Track video writers for each person
         person_video_writers = {}  # {track_id: {'writer': VideoWriter, 'label': str, 'path': Path}}
 
@@ -338,9 +351,8 @@ class PersonReIDPipeline:
         
         # Processing loop
         frame_id = 0
-        track_labels = {}  # Cache labels for each track
-        track_frame_count = {}  # Count frames for each track
-        track_embeddings = {}  # Store first 3 embeddings for voting
+        track_labels = {}
+        track_frame_count = {}
 
         # FPS tracking
         fps_history = []
@@ -413,100 +425,31 @@ class PersonReIDPipeline:
                 # Convert to xywh
                 x, y, w, h = int(x1), int(y1), int(x2-x1), int(y2-y1)
 
-                # Initialize track frame count
+                # Initialize track
                 if track_id not in track_frame_count:
                     track_frame_count[track_id] = 0
-                    track_embeddings[track_id] = []
 
                 track_frame_count[track_id] += 1
                 current_frame_count = track_frame_count[track_id]
 
-                # Strategy: First-3 frames + Re-verify every 30 frames
-                should_extract = False
-
-                if current_frame_count <= 3:
-                    # First 3 frames: collect embeddings for voting
-                    should_extract = True
-                    reason = f"first-{current_frame_count}"
-                elif current_frame_count % 30 == 0:
-                    # Re-verify every 30 frames (1 second at 30fps)
-                    should_extract = True
-                    reason = "re-verify"
+                # ReID extraction: Frame 1 + re-verify every 60 frames
+                should_extract = (current_frame_count == 1) or (current_frame_count % 60 == 0)
 
                 if should_extract:
                     bbox = [x, y, w, h]
                     embedding = self.extractor.extract(frame, bbox)
-
-                    if current_frame_count <= 3:
-                        # Store embedding for voting
-                        track_embeddings[track_id].append(embedding)
-
-                        # After 3rd frame, perform majority voting
-                        if current_frame_count == 3:
-                            # Match all 3 embeddings
-                            votes = {}  # {(global_id, name): count}
-                            similarities = {}  # {(global_id, name): max_similarity}
-
-                            for emb in track_embeddings[track_id]:
-                                matches = self.database.find_best_match(emb, threshold=0.0, top_k=1)
-                                if matches:
-                                    gid, sim, name = matches[0]
-                                    key = (gid, name)
-                                    votes[key] = votes.get(key, 0) + 1
-                                    similarities[key] = max(similarities.get(key, 0), sim)
-
-                            # Get majority vote
-                            if votes:
-                                best_key = max(votes.items(), key=lambda x: (x[1], similarities[x[0]]))[0]
-                                global_id, person_name = best_key
-                                similarity = similarities[best_key]
-
-                                # Determine label
-                                if similarity >= similarity_threshold:
-                                    label = person_name
-                                else:
-                                    label = "Unknown"
-
-                                track_labels[track_id] = {
-                                    'global_id': global_id,
-                                    'similarity': similarity,
-                                    'label': label,
-                                    'person_name': person_name,
-                                    'votes': votes[best_key]
-                                }
-
-                                log_msg = f"  Track {track_id} [VOTING]: {votes[best_key]}/3 votes → " \
-                                         f"{label} (sim={similarity:.4f}, gid={global_id})\n"
-                                log_file.write(log_msg)
-                                logger.info(f"  Track {track_id}: {label} (votes={votes[best_key]}/3, sim={similarity:.4f})")
-
-                    else:
-                        # Re-verification
-                        matches = self.database.find_best_match(embedding, threshold=0.0, top_k=1)
-                        if matches:
-                            global_id, similarity, person_name = matches[0]
-
-                            # Update only if confidence is high or current label is Unknown
-                            old_label = track_labels.get(track_id, {}).get('label', 'Unknown')
-
-                            if similarity >= similarity_threshold:
-                                new_label = person_name
-                            else:
-                                new_label = "Unknown"
-
-                            # Update if changed
-                            if new_label != old_label or similarity >= similarity_threshold:
-                                track_labels[track_id] = {
-                                    'global_id': global_id,
-                                    'similarity': similarity,
-                                    'label': new_label,
-                                    'person_name': person_name
-                                }
-
-                                log_msg = f"  Track {track_id} [RE-VERIFY]: {old_label} → {new_label} " \
-                                         f"(sim={similarity:.4f}, frame={current_frame_count})\n"
-                                log_file.write(log_msg)
-                                logger.info(f"  Track {track_id}: Re-verified {old_label} → {new_label} (sim={similarity:.4f})")
+                    process_reid_logic(
+                        track_id=track_id,
+                        frame_id=frame_id,
+                        current_frame_count=current_frame_count,
+                        embedding=embedding,
+                        database=self.database,
+                        similarity_threshold=similarity_threshold,
+                        redis_manager=redis_manager,
+                        track_labels=track_labels,
+                        log_file=log_file,
+                        camera_idx=0
+                    )
                 
                 # Get cached label
                 info = track_labels.get(track_id, {
@@ -633,6 +576,26 @@ class PersonReIDPipeline:
                     cv2.putText(frame, label_text, (x, y-10),
                               cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, 2)
 
+            # Detect lost tracks (tracks not in current frame)
+            current_track_ids = set(int(track[4]) for track in tracks)
+            old_track_ids = set(track_labels.keys())
+            lost_tracks = old_track_ids - current_track_ids
+
+            for lost_track_id in lost_tracks:
+                old_info = track_labels[lost_track_id]
+                log_msg = f"🗑️  Track {lost_track_id}: RESET (was {old_info.get('person_name', 'Unknown')}, best_sim={old_info.get('best_similarity', 0):.4f})\n"
+                log_file.write(log_msg)
+                logger.info(f"🗑️  Track {lost_track_id}: RESET (was {old_info.get('person_name', 'Unknown')}, best_sim={old_info.get('best_similarity', 0):.4f})")
+
+                # Delete from Redis (TTL will auto-expire)
+                if redis_manager:
+                    redis_manager.delete_track(lost_track_id)
+
+                # Delete from in-memory
+                del track_labels[lost_track_id]
+                if lost_track_id in track_frame_count:
+                    del track_frame_count[lost_track_id]
+
             # Calculate FPS
             frame_end_time = time.time()
             frame_time = frame_end_time - frame_start_time
@@ -689,6 +652,11 @@ class PersonReIDPipeline:
         csv_file.close()
         log_file.close()
 
+        # Log Redis stats before cleanup
+        if redis_manager:
+            stats = redis_manager.get_stats()
+            logger.info(f"📊 Redis Stats: {stats['total_tracks']} tracks, {stats['redis_memory_used']} memory used")
+
         # Summary of saved person frames
         logger.info("")
         logger.info("� Person frames summary...")
@@ -709,10 +677,11 @@ class PersonReIDPipeline:
         logger.info("")
         logger.info("Track Summary:")
         for tid, info in sorted(track_labels.items()):
-            votes_info = f" (votes={info['votes']}/3)" if 'votes' in info else ""
             folder_info = f" → {person_video_writers[tid]['path'].name}" if tid in person_video_writers else ""
-            logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){votes_info}{folder_info}")
+            logger.info(f"  Track {tid}: {info['label']} (sim={info['similarity']:.4f}, gid={info['global_id']}){folder_info}")
         logger.info("="*80)
+
+
 
 
 def main():

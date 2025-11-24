@@ -45,7 +45,8 @@ RUN echo "torch>=1.10.0" > requirements.register.txt && \
     echo "tritonclient[grpc]>=2.40.0" >> requirements.register.txt && \
     echo "fastapi>=0.104.0" >> requirements.register.txt && \
     echo "uvicorn>=0.24.0" >> requirements.register.txt && \
-    echo "python-multipart>=0.0.6" >> requirements.register.txt
+    echo "python-multipart>=0.0.6" >> requirements.register.txt &&\
+    echo "redis>=4.5.0" >> requirements.register.txt
 
 # Install Python dependencies with optimizations
 RUN pip3 install --no-cache-dir --upgrade pip && \

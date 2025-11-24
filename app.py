@@ -12,6 +12,11 @@ import logging
 import yaml
 from pathlib import Path
 from datetime import datetime
+import asyncio
+import websockets
+import json
+import threading
+from queue import Queue
 
 # Setup logging
 logging.basicConfig(
@@ -22,11 +27,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # API endpoints from environment variables
-EXTRACT_API_URL = os.getenv("EXTRACT_API_URL", "http://localhost:8001")
 REGISTER_API_URL = os.getenv("REGISTER_API_URL", "http://localhost:8002")
 DETECTION_API_URL = os.getenv("DETECTION_API_URL", "http://localhost:8003")
 
-logger.info(f"🚀 Starting Person ReID UI - Extract: {EXTRACT_API_URL}, Register: {REGISTER_API_URL}, Detection: {DETECTION_API_URL}")
+logger.info(f"🚀 Starting Person ReID UI - Register: {REGISTER_API_URL}, Detection: {DETECTION_API_URL}")
 
 
 # ============================================================================
@@ -88,6 +92,47 @@ def fetch_users_dict():
         logger.error(f"Error fetching users dict from database: {e}")
         return {}
 
+
+# ============================================================================
+# WEBSOCKET CLIENT FOR REALTIME VIOLATION LOGS
+# ============================================================================
+
+def websocket_client_thread(job_id: str, message_queue: Queue, detection_api_url: str):
+    """
+    WebSocket client thread to receive realtime violation logs
+    Runs in background and puts messages in queue for UI to display
+    """
+    async def connect_and_listen():
+        ws_url = f"ws://{detection_api_url.replace('http://', '')}/ws/violations/{job_id}"
+        logger.info(f"🔌 WebSocket connecting to: {ws_url}")
+        try:
+            async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10) as websocket:
+                logger.info(f"✅ WebSocket connected to {ws_url}")
+                message_queue.put({"type": "connection", "status": "connected"})
+
+                while True:
+                    try:
+                        message = await asyncio.wait_for(websocket.recv(), timeout=30)
+                        data = json.loads(message)
+                        logger.debug(f"📨 WebSocket message received: {data.get('zone', 'Unknown')}")
+                        message_queue.put({"type": "violation", "data": data})
+                    except asyncio.TimeoutError:
+                        # Keep-alive timeout, continue
+                        continue
+                    except Exception as e:
+                        logger.debug(f"WebSocket receive error: {e}")
+                        break
+        except Exception as e:
+            logger.warning(f"⚠️ WebSocket connection failed: {e}")
+            message_queue.put({"type": "connection", "status": "failed", "error": str(e)})
+
+    # Run async event loop in thread
+    try:
+        asyncio.run(connect_and_listen())
+    except Exception as e:
+        logger.error(f"WebSocket thread error: {e}")
+        message_queue.put({"type": "connection", "status": "error", "error": str(e)})
+
 # Page config
 st.set_page_config(
     page_title="Person ReID System",
@@ -102,216 +147,13 @@ st.markdown("---")
 # Sidebar for navigation
 page = st.sidebar.selectbox(
     "Select Operation",
-    ["Detect & Track", "Register Person", "Extract Objects", "👥 User Management", "ℹ️ About"]
+    ["Detect & Track", "Register Person", "🗄️ DB Management", "ℹ️ About"]
 )
 
 # ============================================================================
-# PAGE 1: EXTRACT OBJECTS
+# PAGE 1: REGISTER PERSON
 # ============================================================================
-if page == "Extract Objects":
-    st.header("Extract Individual Objects from Video")
-    st.markdown("Extract separate videos for each tracked person from multi-person footage")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        video_file = st.file_uploader("Upload Video", type=['mp4', 'avi', 'mkv', 'mov'])
-    
-    with col2:
-        st.markdown("### Parameters")
-        model_type = st.selectbox("Model", ["mot17", "yolox"], index=0)
-        min_frames = st.number_input("Min Frames", min_value=1, value=10, help="Minimum frames to save object")
-        padding = st.number_input("Padding (px)", min_value=0, value=10, help="Padding around bbox")
-        conf_thresh = st.slider("Confidence Threshold", 0.0, 1.0, 0.6, 0.05)
-        track_thresh = st.slider("Track Threshold", 0.0, 1.0, 0.5, 0.05)
-    
-    if st.button("🚀 Extract Objects", type="primary"):
-        if video_file is None:
-            st.error("Please upload a video file")
-        else:
-            with st.spinner("Uploading video and starting extraction..."):
-                try:
-                    # Prepare files and data for API call
-                    files = {"video": (video_file.name, video_file.getvalue(), "video/mp4")}
-                    data = {
-                        "model_type": model_type,
-                        "padding": padding,
-                        "conf_thresh": conf_thresh,
-                        "track_thresh": track_thresh,
-                        "min_frames": min_frames
-                    }
-
-                    # Call Extract API
-                    response = requests.post(f"{EXTRACT_API_URL}/extract", files=files, data=data)
-
-                    if response.status_code == 200:
-                        result = response.json()
-                        job_id = result["job_id"]
-
-                        # Store job_id in session state
-                        st.session_state['extract_current_job_id'] = job_id
-
-                        st.info(f"Job ID: {job_id}")
-
-                        # Poll for status
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-
-                        while True:
-                            status_response = requests.get(f"{EXTRACT_API_URL}/status/{job_id}")
-                            if status_response.status_code == 200:
-                                status = status_response.json()
-                                status_text.text(f"Status: {status['status']}")
-
-                                if status["status"] == "completed":
-                                    progress_bar.progress(100)
-                                    st.success("✅ Extraction complete!")
-
-                                    # Get results and cache in session state (for display outside polling loop)
-                                    results_cache_key = f"extract_results_{job_id}"
-                                    if results_cache_key not in st.session_state:
-                                        results_response = requests.get(f"{EXTRACT_API_URL}/results/{job_id}")
-                                        if results_response.status_code == 200:
-                                            st.session_state[results_cache_key] = results_response.json()
-                                            results = results_response.json()
-                                        else:
-                                            results = None
-                                    else:
-                                        results = st.session_state.get(results_cache_key)
-
-                                    # Cache all download data (preview, files, log)
-                                    if results and results['files']:
-                                        # Cache all files (including preview)
-                                        for idx, filename in enumerate(results['files']):
-                                            cache_key = f"extract_file_{job_id}_{filename}"
-                                            if cache_key not in st.session_state:
-                                                try:
-                                                    file_url = f"{EXTRACT_API_URL}/download/{job_id}/{filename}"
-                                                    file_response = requests.get(file_url)
-                                                    if file_response.status_code == 200:
-                                                        st.session_state[cache_key] = file_response.content
-                                                        # Also cache first file as preview
-                                                        if idx == 0:
-                                                            st.session_state[f"extract_preview_{job_id}"] = file_response.content
-                                                except Exception as e:
-                                                    pass
-
-                                        # Cache log
-                                        cache_key = f"extract_log_{job_id}"
-                                        if cache_key not in st.session_state:
-                                            try:
-                                                log_url = f"{EXTRACT_API_URL}/download/log/{job_id}"
-                                                log_response = requests.get(log_url)
-                                                if log_response.status_code == 200:
-                                                    st.session_state[cache_key] = log_response.content
-                                            except Exception as e:
-                                                pass
-
-                                    break
-
-                                elif status["status"] == "failed":
-                                    st.error(f"❌ Extraction failed: {status.get('error', 'Unknown error')}")
-                                    break
-
-                                elif status["status"] == "processing":
-                                    progress_bar.progress(50)
-
-                            time.sleep(2)
-                    else:
-                        st.error(f"Failed to start extraction: {response.text}")
-
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-
-    # Display results if available (after rerun from download button click)
-    if 'extract_current_job_id' in st.session_state:
-        job_id = st.session_state['extract_current_job_id']
-        results_cache_key = f"extract_results_{job_id}"
-
-        if results_cache_key in st.session_state:
-            results = st.session_state[results_cache_key]
-
-            st.markdown("---")
-            st.markdown(f"### 📊 Extraction Results (Job: {job_id[:8]}...)")
-            st.info(f"Found **{results['total_objects']}** objects")
-
-            # Show list of extracted objects
-            st.markdown("#### 📹 Extracted Object Videos:")
-            for filename in results['files']:
-                st.text(f"  • {filename}")
-
-            # Download all as ZIP - CACHE DATA
-            st.markdown("---")
-            st.markdown("### 📦 Download All Objects as ZIP")
-
-            cache_key = f"extract_zip_{job_id}"
-
-            # Fetch ZIP only if not cached
-            if cache_key not in st.session_state:
-                try:
-                    zip_url = f"{EXTRACT_API_URL}/download/zip/{job_id}"
-                    zip_response = requests.get(zip_url)
-                    if zip_response.status_code == 200:
-                        st.session_state[cache_key] = zip_response.content
-                except Exception as e:
-                    st.error(f"Failed to fetch ZIP: {e}")
-
-            # Show download button with cached data
-            if cache_key in st.session_state:
-                st.download_button(
-                    label="📦 Download All (ZIP)",
-                    data=st.session_state[cache_key],
-                    file_name=f"{job_id}_extracted_objects.zip",
-                    mime="application/zip",
-                    key=f"download_zip_{job_id}",
-                    use_container_width=True
-                )
-
-            # Download log - CACHE DATA
-            st.markdown("---")
-            cache_key = f"extract_log_{job_id}"
-
-            # Fetch only if not cached
-            if cache_key not in st.session_state:
-                try:
-                    log_url = f"{EXTRACT_API_URL}/download/log/{job_id}"
-                    log_response = requests.get(log_url)
-                    if log_response.status_code == 200:
-                        st.session_state[cache_key] = log_response.content
-                except Exception as e:
-                    st.error(f"Failed to fetch log: {e}")
-
-            # Show download button with cached data
-            if cache_key in st.session_state:
-                st.download_button(
-                    label="📄 Download Extraction Log",
-                    data=st.session_state[cache_key],
-                    file_name=f"{job_id}_extraction.log",
-                    mime="text/plain",
-                    key=f"download_log_{job_id}",
-                    use_container_width=True
-                )
-
-            # Button to clear results and browse new video
-            st.markdown("---")
-            if st.button("🔄 Clear Results & Browse New Video", type="secondary", use_container_width=True, key=f"clear_extract_{job_id}"):
-                # Clear all extraction-related session state
-                if 'extract_current_job_id' in st.session_state:
-                    job_id_to_clear = st.session_state['extract_current_job_id']
-                    st.session_state.pop('extract_current_job_id', None)
-                    st.session_state.pop(f"extract_results_{job_id_to_clear}", None)
-                    st.session_state.pop(f"extract_zip_{job_id_to_clear}", None)
-                    st.session_state.pop(f"extract_log_{job_id_to_clear}", None)
-                    # Clear individual file caches
-                    for key in list(st.session_state.keys()):
-                        if key.startswith(f"extract_file_{job_id_to_clear}"):
-                            st.session_state.pop(key, None)
-                st.rerun()
-
-# ============================================================================
-# PAGE 2: REGISTER PERSON
-# ============================================================================
-elif page == "Register Person":
+if page == "Register Person":
     st.header("Register Person to Database")
     st.markdown("Register a person using face recognition (ArcFace)")
 
@@ -686,11 +528,111 @@ elif page == "Detect & Track":
                             col1, col2 = st.columns(2)
 
                             with col1:
-                                zone['name'] = st.text_input(
+                                # Load zones from database for dropdown
+                                db_zones = []
+                                db_manager = None
+                                try:
+                                    db_manager = get_db_manager()
+                                    if db_manager:
+                                        db_zones = db_manager.get_all_zones()
+                                except Exception as e:
+                                    logger.warning(f"Could not load zones from database: {e}")
+
+                                # Create zone name options
+                                zone_name_options = ["Custom (Manual Input)"] + [f"{z.zone_name} ({z.zone_id})" for z in db_zones]
+
+                                # Initialize session state for this zone's selection if not exists
+                                selection_key = f"zone_selection_cam{cam_idx}_z{zone_idx}"
+                                if selection_key not in st.session_state:
+                                    st.session_state[selection_key] = "Custom (Manual Input)"
+
+                                selected_zone_option = st.selectbox(
                                     "Zone Name",
-                                    value=zone['name'],
-                                    key=f"zone_name_cam{cam_idx}_z{zone_idx}"
+                                    options=zone_name_options,
+                                    index=zone_name_options.index(st.session_state[selection_key]) if st.session_state[selection_key] in zone_name_options else 0,
+                                    key=f"zone_name_select_cam{cam_idx}_z{zone_idx}",
+                                    help="Select from database or create custom zone"
                                 )
+
+                                # Check if selection changed
+                                if selected_zone_option != st.session_state[selection_key]:
+                                    st.session_state[selection_key] = selected_zone_option
+                                    logger.info(f"Zone selection changed to: {selected_zone_option}")
+
+                                    # If database zone selected, auto-fill immediately
+                                    if selected_zone_option != "Custom (Manual Input)":
+                                        zone_id = selected_zone_option.split('(')[-1].rstrip(')')
+                                        logger.info(f"Auto-filling zone_id: {zone_id}")
+
+                                        # Find the selected zone in database
+                                        for z in db_zones:
+                                            if z.zone_id == zone_id:
+                                                # Auto-fill from database
+                                                zone['name'] = z.zone_name
+                                                zone['polygon'] = [
+                                                    [int(z.x1), int(z.y1)],
+                                                    [int(z.x2), int(z.y2)],
+                                                    [int(z.x3), int(z.y3)],
+                                                    [int(z.x4), int(z.y4)]
+                                                ]
+                                                logger.info(f"Auto-filled polygon: {zone['polygon']}")
+
+                                                # Force update polygon widget state
+                                                widget_key = f"zone_polygon_input_cam{cam_idx}_z{zone_idx}"
+                                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                                                st.session_state[widget_key] = polygon_str
+                                                logger.info(f"Updated widget state {widget_key} = {polygon_str}")
+
+                                                # Get authorized users from this zone
+                                                if db_manager:
+                                                    try:
+                                                        users_in_zone = db_manager.get_users_by_zone(zone_id)
+                                                        zone['authorized_ids'] = [u.global_id for u in users_in_zone]
+                                                        logger.info(f"Auto-filled authorized_ids: {zone['authorized_ids']}")
+                                                    except Exception as e:
+                                                        logger.warning(f"Could not load users for zone: {e}")
+                                                break
+                                    st.rerun()
+
+                                # Handle zone selection for display
+                                if selected_zone_option == "Custom (Manual Input)":
+                                    # Manual input
+                                    zone['name'] = st.text_input(
+                                        "Custom Zone Name",
+                                        value=zone.get('name', f'Zone {zone_idx+1}'),
+                                        key=f"zone_name_custom_cam{cam_idx}_z{zone_idx}"
+                                    )
+                                else:
+                                    # Extract zone_id from selection
+                                    zone_id = selected_zone_option.split('(')[-1].rstrip(')')
+
+                                    # Find the selected zone in database and ensure data is loaded
+                                    selected_db_zone = None
+                                    for z in db_zones:
+                                        if z.zone_id == zone_id:
+                                            selected_db_zone = z
+                                            break
+
+                                    if selected_db_zone:
+                                        # Ensure zone data is populated (in case rerun didn't happen)
+                                        if not zone.get('polygon') or zone['polygon'] == [[100, 100], [200, 100], [200, 200], [100, 200]]:
+                                            zone['name'] = selected_db_zone.zone_name
+                                            zone['polygon'] = [
+                                                [int(selected_db_zone.x1), int(selected_db_zone.y1)],
+                                                [int(selected_db_zone.x2), int(selected_db_zone.y2)],
+                                                [int(selected_db_zone.x3), int(selected_db_zone.y3)],
+                                                [int(selected_db_zone.x4), int(selected_db_zone.y4)]
+                                            ]
+
+                                            # Get authorized users from this zone
+                                            if db_manager:
+                                                try:
+                                                    users_in_zone = db_manager.get_users_by_zone(zone_id)
+                                                    zone['authorized_ids'] = [u.global_id for u in users_in_zone]
+                                                except Exception as e:
+                                                    logger.warning(f"Could not load users for zone: {e}")
+
+                                        st.info(f"✅ Zone loaded from database: {len(zone.get('authorized_ids', []))} authorized users")
 
                                 # Fetch users from database for dropdown
                                 users_dict = fetch_users_dict()
@@ -705,6 +647,8 @@ elif page == "Detect & Track":
                                         if auth_id in users_dict:
                                             current_selections.append(f"{users_dict[auth_id]} (ID: {auth_id})")
 
+                                    logger.info(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] current authorized_ids: {zone['authorized_ids']}, current_selections: {current_selections}")
+
                                     selected_users = st.multiselect(
                                         "Authorized Users",
                                         options=list(user_options.keys()),
@@ -713,8 +657,16 @@ elif page == "Detect & Track":
                                         help="Select authorized users from database"
                                     )
 
+                                    logger.info(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] selected_users from widget: {selected_users}")
+
                                     # Update authorized_ids based on selection
-                                    zone['authorized_ids'] = [user_options[user] for user in selected_users]
+                                    # IMPORTANT: Only update if widget is not empty OR if current_selections was also empty
+                                    # This prevents widget reset from clearing authorized_ids
+                                    if selected_users or not current_selections:
+                                        zone['authorized_ids'] = [user_options[user] for user in selected_users]
+                                        logger.info(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] final authorized_ids: {zone['authorized_ids']}")
+                                    else:
+                                        logger.warning(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] Widget returned empty but current_selections was not empty - keeping existing authorized_ids: {zone['authorized_ids']}")
                                 else:
                                     # Fallback to text input if database is not available
                                     st.warning("⚠️ Database not available. Using manual input.")
@@ -734,14 +686,24 @@ elif page == "Detect & Track":
                                         zone['authorized_ids'] = []
 
                             with col2:
-                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                                # Convert current polygon to string
+                                current_polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+
+                                # Use widget key directly - Streamlit will manage the state
+                                widget_key = f"zone_polygon_input_cam{cam_idx}_z{zone_idx}"
+
+                                # Initialize widget with current polygon value if not exists
+                                if widget_key not in st.session_state:
+                                    st.session_state[widget_key] = current_polygon_str
+
                                 polygon_input = st.text_area(
                                     "Polygon (x,y; x,y; ...)",
-                                    value=polygon_str,
-                                    key=f"zone_polygon_cam{cam_idx}_z{zone_idx}",
+                                    value=st.session_state[widget_key],
+                                    key=widget_key,
                                     height=80
                                 )
 
+                                # Parse and update zone polygon from user input
                                 try:
                                     points = []
                                     for point_str in polygon_input.split(';'):
@@ -784,11 +746,111 @@ elif page == "Detect & Track":
                             col1, col2 = st.columns(2)
 
                             with col1:
-                                zone['name'] = st.text_input(
+                                # Load zones from database for dropdown
+                                db_zones = []
+                                db_manager = None
+                                try:
+                                    db_manager = get_db_manager()
+                                    if db_manager:
+                                        db_zones = db_manager.get_all_zones()
+                                except Exception as e:
+                                    logger.warning(f"Could not load zones from database: {e}")
+
+                                # Create zone name options
+                                zone_name_options = ["Custom (Manual Input)"] + [f"{z.zone_name} ({z.zone_id})" for z in db_zones]
+
+                                # Initialize session state for this zone's selection if not exists
+                                selection_key = f"zone_selection_{i}"
+                                if selection_key not in st.session_state:
+                                    st.session_state[selection_key] = "Custom (Manual Input)"
+
+                                selected_zone_option = st.selectbox(
                                     "Zone Name",
-                                    value=zone['name'],
-                                    key=f"zone_name_{i}"
+                                    options=zone_name_options,
+                                    index=zone_name_options.index(st.session_state[selection_key]) if st.session_state[selection_key] in zone_name_options else 0,
+                                    key=f"zone_name_select_{i}",
+                                    help="Select from database or create custom zone"
                                 )
+
+                                # Check if selection changed
+                                if selected_zone_option != st.session_state[selection_key]:
+                                    st.session_state[selection_key] = selected_zone_option
+                                    logger.info(f"Zone selection changed to: {selected_zone_option}")
+
+                                    # If database zone selected, auto-fill immediately
+                                    if selected_zone_option != "Custom (Manual Input)":
+                                        zone_id = selected_zone_option.split('(')[-1].rstrip(')')
+                                        logger.info(f"Auto-filling zone_id: {zone_id}")
+
+                                        # Find the selected zone in database
+                                        for z in db_zones:
+                                            if z.zone_id == zone_id:
+                                                # Auto-fill from database
+                                                zone['name'] = z.zone_name
+                                                zone['polygon'] = [
+                                                    [int(z.x1), int(z.y1)],
+                                                    [int(z.x2), int(z.y2)],
+                                                    [int(z.x3), int(z.y3)],
+                                                    [int(z.x4), int(z.y4)]
+                                                ]
+                                                logger.info(f"Auto-filled polygon: {zone['polygon']}")
+
+                                                # Force update polygon widget state
+                                                widget_key = f"zone_polygon_input_{i}"
+                                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                                                st.session_state[widget_key] = polygon_str
+                                                logger.info(f"Updated widget state {widget_key} = {polygon_str}")
+
+                                                # Get authorized users from this zone
+                                                if db_manager:
+                                                    try:
+                                                        users_in_zone = db_manager.get_users_by_zone(zone_id)
+                                                        zone['authorized_ids'] = [u.global_id for u in users_in_zone]
+                                                        logger.info(f"Auto-filled authorized_ids: {zone['authorized_ids']}")
+                                                    except Exception as e:
+                                                        logger.warning(f"Could not load users for zone: {e}")
+                                                break
+                                    st.rerun()
+
+                                # Handle zone selection for display
+                                if selected_zone_option == "Custom (Manual Input)":
+                                    # Manual input
+                                    zone['name'] = st.text_input(
+                                        "Custom Zone Name",
+                                        value=zone.get('name', f'Zone {i+1}'),
+                                        key=f"zone_name_custom_{i}"
+                                    )
+                                else:
+                                    # Extract zone_id from selection
+                                    zone_id = selected_zone_option.split('(')[-1].rstrip(')')
+
+                                    # Find the selected zone in database and ensure data is loaded
+                                    selected_db_zone = None
+                                    for z in db_zones:
+                                        if z.zone_id == zone_id:
+                                            selected_db_zone = z
+                                            break
+
+                                    if selected_db_zone:
+                                        # Ensure zone data is populated (in case rerun didn't happen)
+                                        if not zone.get('polygon') or zone['polygon'] == [[100, 100], [200, 100], [200, 200], [100, 200]]:
+                                            zone['name'] = selected_db_zone.zone_name
+                                            zone['polygon'] = [
+                                                [int(selected_db_zone.x1), int(selected_db_zone.y1)],
+                                                [int(selected_db_zone.x2), int(selected_db_zone.y2)],
+                                                [int(selected_db_zone.x3), int(selected_db_zone.y3)],
+                                                [int(selected_db_zone.x4), int(selected_db_zone.y4)]
+                                            ]
+
+                                            # Get authorized users from this zone
+                                            if db_manager:
+                                                try:
+                                                    users_in_zone = db_manager.get_users_by_zone(zone_id)
+                                                    zone['authorized_ids'] = [u.global_id for u in users_in_zone]
+                                                except Exception as e:
+                                                    logger.warning(f"Could not load users for zone: {e}")
+
+                                        st.info(f"✅ Zone loaded from database: {len(zone.get('authorized_ids', []))} authorized users")
 
                                 # Fetch users from database for dropdown
                                 users_dict = fetch_users_dict()
@@ -803,6 +865,8 @@ elif page == "Detect & Track":
                                         if auth_id in users_dict:
                                             current_selections.append(f"{users_dict[auth_id]} (ID: {auth_id})")
 
+                                    logger.info(f"[Single-cam Zone {i+1}] current authorized_ids: {zone['authorized_ids']}, current_selections: {current_selections}")
+
                                     selected_users = st.multiselect(
                                         "Authorized Users",
                                         options=list(user_options.keys()),
@@ -811,8 +875,16 @@ elif page == "Detect & Track":
                                         help="Select authorized users from database"
                                     )
 
+                                    logger.info(f"[Single-cam Zone {i+1}] selected_users from widget: {selected_users}")
+
                                     # Update authorized_ids based on selection
-                                    zone['authorized_ids'] = [user_options[user] for user in selected_users]
+                                    # IMPORTANT: Only update if widget is not empty OR if current_selections was also empty
+                                    # This prevents widget reset from clearing authorized_ids
+                                    if selected_users or not current_selections:
+                                        zone['authorized_ids'] = [user_options[user] for user in selected_users]
+                                        logger.info(f"[Single-cam Zone {i+1}] final authorized_ids: {zone['authorized_ids']}")
+                                    else:
+                                        logger.warning(f"[Single-cam Zone {i+1}] Widget returned empty but current_selections was not empty - keeping existing authorized_ids: {zone['authorized_ids']}")
                                 else:
                                     # Fallback to text input if database is not available
                                     st.warning("⚠️ Database not available. Using manual input.")
@@ -837,18 +909,25 @@ elif page == "Detect & Track":
                                 st.markdown("**Polygon Coordinates (x,y)**")
                                 st.markdown("*Format: x1,y1; x2,y2; x3,y3; x4,y4*")
 
-                                # Convert polygon to string
-                                polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+                                # Convert current polygon to string
+                                current_polygon_str = '; '.join([f"{p[0]},{p[1]}" for p in zone['polygon']])
+
+                                # Use widget key directly - Streamlit will manage the state
+                                widget_key = f"zone_polygon_input_{i}"
+
+                                # Initialize widget with current polygon value if not exists
+                                if widget_key not in st.session_state:
+                                    st.session_state[widget_key] = current_polygon_str
 
                                 polygon_input = st.text_area(
                                     "Polygon Points",
-                                    value=polygon_str,
-                                    key=f"zone_polygon_{i}",
+                                    value=st.session_state[widget_key],
+                                    key=widget_key,
                                     height=100,
                                     help="Enter coordinates as: x1,y1; x2,y2; x3,y3; ..."
                                 )
 
-                                # Parse polygon
+                                # Parse and update zone polygon from user input
                                 try:
                                     points = []
                                     for point_str in polygon_input.split(';'):
@@ -878,12 +957,14 @@ elif page == "Detect & Track":
                         'polygon': zone['polygon'],
                         'authorized_ids': zone['authorized_ids']
                     }
+                    logger.info(f"[YAML Export] Zone {zone_id} ({zone['name']}): authorized_ids={zone['authorized_ids']}")
                 return zones_dict
 
-            # Create YAML content from zones
+            # Create YAML content from zones (always use cameras format)
+            cameras_dict = {}
+
             if num_cameras > 1 and 'camera_zones' in st.session_state:
-                # Multi-camera format
-                cameras_dict = {}
+                # Multi-camera: use camera_zones
                 for cam_idx in range(num_cameras):
                     camera_key = f'camera_{cam_idx+1}'
                     camera_zones = st.session_state.camera_zones.get(camera_key, [])
@@ -892,14 +973,17 @@ elif page == "Detect & Track":
                         'name': f'Camera {cam_idx+1}',
                         'zones': zones_list_to_dict(camera_zones)
                     }
-
-                zones_data = {'cameras': cameras_dict}
             else:
-                # Single camera format
-                zones_data = {'zones': zones_list_to_dict(st.session_state.zones_config)}
+                # Single camera: wrap in camera_1
+                cameras_dict['camera_1'] = {
+                    'name': 'Camera 1',
+                    'zones': zones_list_to_dict(st.session_state.zones_config)
+                }
+
+            zones_data = {'cameras': cameras_dict}
 
             # Preview YAML
-            if zones_data and (zones_data.get('zones') or zones_data.get('cameras')):
+            if zones_data and zones_data.get('cameras'):
                 with st.expander("📄 Preview YAML Config", expanded=False):
                     yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
                     st.code(yaml_content, language='yaml')
@@ -908,7 +992,7 @@ elif page == "Detect & Track":
                     st.download_button(
                         label="💾 Download Zone Config",
                         data=yaml_content,
-                        file_name="zones_multi_camera.yaml" if num_cameras > 1 else "zones.yaml",
+                        file_name="zones.yaml",
                         mime="application/x-yaml"
                     )
 
@@ -937,12 +1021,38 @@ elif page == "Detect & Track":
                 help="Zone border line thickness (0.0 = thin, 1.0 = thick). Controls border width from 1-10 pixels. 0.3 (3px) recommended."
             )
 
+        # Zone processing threads
+        st.markdown("### ⚙️ Zone Processing Performance")
+        col_thread1, col_thread2 = st.columns(2)
+
+        with col_thread1:
+            zone_workers = st.number_input(
+                "Zone Worker Threads",
+                min_value=1,
+                max_value=32,
+                value=None,  # None = auto-detect (capped at 4)
+                step=1,
+                help="Number of threads for zone processing. None = auto-detect (capped at 4). Higher values = faster processing but more CPU usage."
+            )
+            if zone_workers is None:
+                st.caption("🔄 Auto-detect (capped at 4 threads)")
+            else:
+                st.caption(f"🔧 Using {zone_workers} thread(s)")
+
+        with col_thread2:
+            st.info(
+                "💡 **Thread Tips:**\n"
+                "- **1 thread**: Low CPU, sequential processing\n"
+                "- **2-4 threads**: Balanced (recommended)\n"
+                "- **>4 threads**: High CPU, parallel processing"
+            )
+
         # Alert threshold setting
         st.markdown("### 🚨 Violation Alert Settings")
         alert_threshold = st.number_input(
             "Alert Threshold (seconds)",
             min_value=0,
-            max_value=300,
+            max_value=10000,
             value=0,
             step=5,
             help="Time (in seconds) a person must be outside their authorized zone before triggering an alert. 0 = immediate alert."
@@ -1039,90 +1149,67 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                 if zone_config_file:
                     logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (uploaded): {zone_config_file.name}")
                 else:
-                    # Count zones based on format (single camera or multi-camera)
-                    if 'cameras' in zones_data:
-                        total_zones = sum(len(cam_data['zones']) for cam_data in zones_data['cameras'].values())
-                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {total_zones} zones across {len(zones_data['cameras'])} cameras")
+                    # Count zones (always cameras format now)
+                    total_zones = sum(len(cam_data['zones']) for cam_data in zones_data['cameras'].values())
+                    num_cams = len(zones_data['cameras'])
+                    if num_cams > 1:
+                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {total_zones} zones across {num_cams} cameras")
                     else:
-                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {len(zones_data['zones'])} zones")
+                        logger.info(f"🗺️ [Detect & Track] Zone monitoring enabled (UI): {total_zones} zones")
 
             spinner_text = "Uploading video and starting detection..." if input_method == "Upload Video File" else "Starting stream detection..."
             with st.spinner(spinner_text):
                 try:
+                    # Prepare files dict for multipart form data
+                    files = {}
+
+                    # Add zone config if provided
+                    if zone_config_file:
+                        files["zone_config"] = (zone_config_file.name, zone_config_file.getvalue(), "application/x-yaml")
+                    elif zones_data:
+                        yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
+                        files["zone_config"] = ("zones.yaml", yaml_content.encode('utf-8'), "application/x-yaml")
+
+                    # Prepare common parameters (all as strings for multipart/form-data)
+                    data = {
+                        "similarity_threshold": str(similarity_threshold),
+                        "iou_threshold": str(iou_threshold),
+                        "zone_opacity": str(zone_opacity),
+                        "alert_threshold": str(alert_threshold)
+                    }
+
+                    # Add optional parameters
+                    if model_type:
+                        data["model_type"] = model_type
+                    if conf_thresh is not None:
+                        data["conf_thresh"] = str(conf_thresh)
+                    if track_thresh is not None:
+                        data["track_thresh"] = str(track_thresh)
+                    if face_conf_thresh is not None:
+                        data["face_conf_thresh"] = str(face_conf_thresh)
+                    if zone_enabled and zone_workers is not None:
+                        data["zone_workers"] = str(zone_workers)
+
+                    # Add input-specific parameters
                     if input_method == "Upload Video File":
-                        # Prepare files and data for API call (existing code)
-                        files = {"video": (video_file.name, video_file.getvalue(), "video/mp4")}
-
-                        # Add zone config if provided
-                        if zone_config_file:
-                            # Use uploaded file
-                            files["zone_config"] = (zone_config_file.name, zone_config_file.getvalue(), "application/x-yaml")
-                        elif zones_data:
-                            # Create YAML from UI data
-                            yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
-                            files["zone_config"] = ("zones.yaml", yaml_content.encode('utf-8'), "application/x-yaml")
-
-                        data = {
-                            "similarity_threshold": similarity_threshold,
-                            "model_type": model_type,
-                            "conf_thresh": conf_thresh,
-                            "track_thresh": track_thresh,
-                            "face_conf_thresh": face_conf_thresh,
-                            "iou_threshold": iou_threshold,
-                            "zone_opacity": zone_opacity,
-                            "alert_threshold": alert_threshold
-                        }
-
-                        # Call Detection API
-                        logger.info(f"🔄 [Detect & Track] Calling detection API: {DETECTION_API_URL}/detect")
-                        response = requests.post(f"{DETECTION_API_URL}/detect", files=files, data=data)
-
+                        # Add video file
+                        files["video"] = (video_file.name, video_file.getvalue(), "video/mp4")
+                        logger.info(f"🔄 [Detect & Track] Calling unified detection API with video file: {video_file.name}")
                     else:  # Stream URL
-                        # Prepare multipart form data for stream API call
-                        files = {}
-                        data = {}
-
-                        # Add zone config if provided
-                        if zone_config_file:
-                            files["zone_config"] = (zone_config_file.name, zone_config_file.getvalue(), "application/x-yaml")
-                        elif zones_data:
-                            yaml_content = yaml.dump(zones_data, default_flow_style=False, sort_keys=False)
-                            files["zone_config"] = ("zones.yaml", yaml_content.encode('utf-8'), "application/x-yaml")
-
-                        # Prepare form data (all parameters must be strings for multipart/form-data)
-                        data = {
-                            "stream_url": stream_url,
-                            "similarity_threshold": str(similarity_threshold),
-                            "iou_threshold": str(iou_threshold),
-                            "zone_opacity": str(zone_opacity),
-                            "alert_threshold": str(alert_threshold)
-                        }
-
-                        # Add optional parameters only if they have values
-                        if model_type:
-                            data["model_type"] = model_type
-                        if conf_thresh is not None:
-                            data["conf_thresh"] = str(conf_thresh)
-                        if track_thresh is not None:
-                            data["track_thresh"] = str(track_thresh)
-                        if face_conf_thresh is not None:
-                            data["face_conf_thresh"] = str(face_conf_thresh)
+                        # Add stream URL and stream-specific parameters
+                        data["stream_url"] = stream_url
                         if max_frames:
                             data["max_frames"] = str(max_frames)
                         if max_duration:
                             data["max_duration_seconds"] = str(max_duration)
-
-                        # Call Stream Detection API
-                        # Always use multipart form-data (files parameter) even if no files are uploaded
-                        # This ensures compatibility with FastAPI Form(...) parameters
-                        logger.info(f"🔄 [Detect & Track] Calling stream detection API: {DETECTION_API_URL}/detect_stream")
-                        logger.info(f"📡 [Detect & Track] Stream URL: {stream_url}")
+                        logger.info(f"🔄 [Detect & Track] Calling unified detection API with stream URL: {stream_url}")
                         if max_frames:
                             logger.info(f"⏱️ [Detect & Track] Max frames: {max_frames}")
                         if max_duration:
                             logger.info(f"⏱️ [Detect & Track] Max duration: {max_duration}s")
 
-                        response = requests.post(f"{DETECTION_API_URL}/detect_stream", files=files, data=data)
+                    # Call unified Detection API (handles both video files and streams)
+                    response = requests.post(f"{DETECTION_API_URL}/detect", files=files, data=data)
 
                     if response.status_code == 200:
                         result = response.json()
@@ -1140,20 +1227,90 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                         progress_text = st.empty()
                         tracks_container = st.empty()
 
-                        # Violation logs viewer (scrollable container)
-                        st.markdown("### 🚨 Zone Violation Logs")
-                        violations_container = st.container()
-                        with violations_container:
-                            violation_logs = st.empty()
+                        # Initialize session state for WebSocket logs
+                        if 'ws_logs' not in st.session_state:
+                            st.session_state.ws_logs = []
+                        if 'ws_connected' not in st.session_state:
+                            st.session_state.ws_connected = False
+                        if 'ws_queue' not in st.session_state:
+                            st.session_state.ws_queue = Queue()
+
+                        # WebSocket Realtime Violation Logs viewer
+                        st.markdown("### 🔴 Realtime Violation Logs (WebSocket)")
+                        st.caption("Live zone violation alerts as they occur")
+
+                        ws_container = st.container()
+                        with ws_container:
+                            ws_status = st.empty()
+                            ws_logs_display = st.empty()
+
+                        # Kafka Realtime Alerts viewer
+                        st.markdown("### 📡 Kafka Realtime Alerts")
+                        st.caption("Realtime zone violation alerts streamed via Kafka")
+
+                        kafka_alerts_container = st.container()
+                        with kafka_alerts_container:
+                            kafka_alerts_display = st.empty()
+                            kafka_status = st.empty()
 
                         stop_button_container = st.empty()
 
                         poll_count = 0
                         user_cancelled = False
-                        violation_log_lines = []  # Store log lines for display
-                        last_violation_count = 0  # Track how many violations we've processed
+                        kafka_alert_lines = []  # Store Kafka alert lines for display
+                        last_kafka_check = time.time()
+                        kafka_consumer_url = "http://localhost:8004"
+
+                        # Start WebSocket client thread (only once per job)
+                        if not st.session_state.ws_connected and not hasattr(st.session_state, f'ws_thread_{job_id}'):
+                            ws_message_queue = st.session_state.ws_queue
+                            ws_thread = threading.Thread(
+                                target=websocket_client_thread,
+                                args=(job_id, ws_message_queue, DETECTION_API_URL),
+                                daemon=True
+                            )
+                            ws_thread.start()
+                            setattr(st.session_state, f'ws_thread_{job_id}', ws_thread)
+                            logger.info(f"🔌 WebSocket client thread started for job {job_id}")
 
                         while True:
+                            # Process WebSocket messages from queue
+                            try:
+                                while not st.session_state.ws_queue.empty():
+                                    msg = st.session_state.ws_queue.get_nowait()
+
+                                    if msg["type"] == "connection":
+                                        if msg["status"] == "connected":
+                                            st.session_state.ws_connected = True
+                                            ws_status.success("✅ WebSocket Connected - Receiving realtime logs")
+                                            logger.info(f"✅ WebSocket connected for job {job_id}")
+                                        elif msg["status"] == "failed":
+                                            ws_status.warning(f"⚠️ WebSocket connection failed: {msg.get('error', 'Unknown error')}")
+                                            logger.warning(f"⚠️ WebSocket failed: {msg.get('error')}")
+                                        else:
+                                            ws_status.error(f"❌ WebSocket error: {msg.get('error', 'Unknown error')}")
+
+                                    elif msg["type"] == "violation":
+                                        violation_data = msg["data"]
+                                        # Format: {timestamp, level, zone, message, frame}
+                                        log_entry = f"[{violation_data.get('timestamp', '??:??:??')}] **{violation_data.get('zone', 'Unknown')}**: {violation_data.get('message', 'Unknown violation')} (Frame {violation_data.get('frame', 0)})"
+                                        st.session_state.ws_logs.append(log_entry)
+
+                                        # Keep only last 50 logs
+                                        if len(st.session_state.ws_logs) > 50:
+                                            st.session_state.ws_logs.pop(0)
+
+                                        logger.debug(f"📨 WebSocket violation received: {violation_data.get('zone')} - {violation_data.get('message')}")
+                            except Exception as e:
+                                logger.debug(f"WebSocket queue error: {e}")
+
+                            # Display WebSocket logs
+                            if st.session_state.ws_logs:
+                                logs_text = "\n\n".join(st.session_state.ws_logs[-10:])  # Show last 10 logs
+                                ws_logs_display.markdown(logs_text)
+                            elif st.session_state.ws_connected:
+                                ws_logs_display.info("⏳ Waiting for zone violations...")
+
                             # Show stop button while processing
                             if stop_button_container.button("🛑 Stop Processing", type="secondary", key=f"stop_{job_id}_{poll_count}"):
                                 logger.info(f"🛑 [Detect & Track] User requested to stop job: {job_id}")
@@ -1176,75 +1333,125 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                 if progress_response.status_code == 200:
                                     progress = progress_response.json()
 
-                                    # Update progress bar
-                                    if progress['total_frames'] > 0:
-                                        progress_bar.progress(min(progress['progress_percent'] / 100, 0.99))
+                                    # Check if multi-camera mode
+                                    is_multi_camera = progress.get('cameras') is not None
+
+                                    if is_multi_camera:
+                                        # Multi-camera progress display
+                                        cameras_data = progress['cameras']
+                                        num_cameras = len(cameras_data)
+
+                                        # Update progress bar (average across cameras)
+                                        progress_bar.progress(0.5)  # Indeterminate for streams
+
+                                        # Update status text
+                                        status_text.text(f"Status: {progress['status']} ({num_cameras} cameras)")
+
+                                        # Update progress text
+                                        avg_frame = sum(cam.get('current_frame', 0) for cam in cameras_data.values()) // num_cameras
+                                        progress_text.text(f"📊 Processing {num_cameras} cameras (avg frame: {avg_frame})")
+
+                                        if poll_count % 10 == 0:
+                                            logger.info(f"📊 [Detect & Track] Multi-camera progress: {num_cameras} cameras, avg frame {avg_frame}")
+
+                                        # Display tracks per camera
+                                        if progress['tracks']:
+                                            tracks_info = "### 🎯 Current Tracks (All Cameras):\n"
+
+                                            # Group tracks by camera
+                                            tracks_by_camera = {}
+                                            for track in progress['tracks']:
+                                                cam_id = track.get('camera_id', 0)
+                                                if cam_id not in tracks_by_camera:
+                                                    tracks_by_camera[cam_id] = []
+                                                tracks_by_camera[cam_id].append(track)
+
+                                            # Display per camera
+                                            for cam_id in sorted(tracks_by_camera.keys()):
+                                                tracks_info += f"\n**📹 Camera {cam_id + 1}** (Frame {cameras_data[cam_id]['current_frame']}):\n"
+                                                for track in tracks_by_camera[cam_id]:
+                                                    color = "🟢" if track['label'] != "Unknown" else "🔴"
+                                                    tracks_info += f"  {color} Track {track['track_id']}: **{track['label']}** (sim: {track['similarity']:.3f})\n"
+
+                                            tracks_container.markdown(tracks_info)
                                     else:
-                                        # For streams, show indeterminate progress
-                                        progress_bar.progress(0.5)
-
-                                    # Update status text
-                                    status_text.text(f"Status: {progress['status']}")
-
-                                    # Update progress text
-                                    if progress['total_frames'] > 0:
-                                        progress_text.text(f"📊 Frame {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
-                                    else:
-                                        # For streams, show only current frame
-                                        progress_text.text(f"📊 Frame {progress['current_frame']} (streaming...)")
-
-                                    if poll_count % 10 == 0:  # Log every 10 polls
+                                        # Single-camera progress display (backward compatible)
+                                        # Update progress bar
                                         if progress['total_frames'] > 0:
-                                            logger.info(f"📊 [Detect & Track] Progress: {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+                                            progress_bar.progress(min(progress['progress_percent'] / 100, 0.99))
                                         else:
-                                            logger.info(f"📊 [Detect & Track] Progress: Frame {progress['current_frame']} (streaming)")
+                                            # For streams, show indeterminate progress
+                                            progress_bar.progress(0.5)
 
-                                    # Display current tracks
-                                    if progress['tracks']:
-                                        tracks_info = "### 🎯 Current Tracks:\n"
-                                        for track in progress['tracks']:
-                                            color = "🟢" if track['label'] != "Unknown" else "🔴"
-                                            tracks_info += f"{color} Track {track['track_id']}: **{track['label']}** (sim: {track['similarity']:.3f})\n"
-                                        tracks_container.markdown(tracks_info)
+                                        # Update status text
+                                        status_text.text(f"Status: {progress['status']}")
 
-                                    # Display real-time violations as log lines (ZONE-CENTRIC LOGIC)
-                                    if progress.get('violations'):
-                                        violations = progress['violations']
+                                        # Update progress text
+                                        if progress['total_frames'] > 0:
+                                            progress_text.text(f"📊 Frame {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+                                        else:
+                                            # For streams, show only current frame
+                                            progress_text.text(f"📊 Frame {progress['current_frame']} (streaming...)")
 
-                                        # Process only new violations
-                                        if len(violations) > last_violation_count:
-                                            new_violations = violations[last_violation_count:]
+                                        if poll_count % 10 == 0:  # Log every 10 polls
+                                            if progress['total_frames'] > 0:
+                                                logger.info(f"📊 [Detect & Track] Progress: {progress['current_frame']}/{progress['total_frames']} ({progress['progress_percent']:.1f}%)")
+                                            else:
+                                                logger.info(f"📊 [Detect & Track] Progress: Frame {progress['current_frame']} (streaming)")
 
-                                            for violation in new_violations:
-                                                # Format timestamp
-                                                timestamp = datetime.now().strftime("%H:%M:%S")
+                                        # Display current tracks
+                                        if progress['tracks']:
+                                            tracks_info = "### 🎯 Current Tracks:\n"
+                                            for track in progress['tracks']:
+                                                color = "🟢" if track['label'] != "Unknown" else "🔴"
+                                                tracks_info += f"{color} Track {track['track_id']}: **{track['label']}** (sim: {track['similarity']:.3f})\n"
+                                            tracks_container.markdown(tracks_info)
 
-                                                # Handle both zone-centric and legacy person-centric violations
-                                                if violation.get('type') == 'zone_incomplete':
-                                                    # Zone-centric violation
-                                                    missing_str = ", ".join(violation['missing_names'])
-                                                    log_line = f"[{timestamp}] 🔴 Frame {violation['frame_id']:4d} | Zone **{violation['zone_name']}** incomplete: Missing {missing_str}"
+                                    # Fetch Kafka alerts from consumer service (every 2 seconds)
+                                    current_time = time.time()
+                                    if current_time - last_kafka_check >= 2.0:
+                                        last_kafka_check = current_time
+                                        try:
+                                            # Check Kafka consumer service health
+                                            health_response = requests.get(f"{kafka_consumer_url}/health", timeout=1)
+                                            if health_response.status_code == 200:
+                                                health_data = health_response.json()
+                                                kafka_enabled = health_data.get('kafka_enabled', False)
+                                                kafka_running = health_data.get('kafka_running', False)
+                                                messages_received = health_data.get('messages_received', 0)
 
-                                                    logger.warning(f"🚨 [Detect & Track] ZONE VIOLATION: Zone '{violation['zone_name']}' "
-                                                                 f"incomplete - Missing: {missing_str} at frame {violation['frame_id']}")
+                                                # Update status
+                                                if kafka_enabled and kafka_running:
+                                                    kafka_status.success(f"✅ Kafka Connected | Messages: {messages_received}")
+                                                elif kafka_enabled:
+                                                    kafka_status.warning("⚠️ Kafka Enabled but not running")
                                                 else:
-                                                    # Legacy person-centric violation (backward compatibility)
-                                                    log_line = f"[{timestamp}] 🔴 Frame {violation['frame_id']:4d} | {violation.get('person_name', 'Unknown')} entered unauthorized zone **{violation['zone_name']}**"
+                                                    kafka_status.info("ℹ️ Kafka Disabled (enable in config.yaml)")
 
-                                                    logger.warning(f"🚨 [Detect & Track] VIOLATION: {violation.get('person_name', 'Unknown')} "
-                                                                 f"entered unauthorized zone '{violation['zone_name']}' at frame {violation['frame_id']}")
+                                                # Note: In production, you would use WebSocket for realtime updates
+                                                # For now, we show the status and message count
+                                                # The actual alerts are sent via Kafka and can be consumed by external systems
 
-                                                # Add to log lines (keep last 50 lines)
-                                                violation_log_lines.append(log_line)
-                                                if len(violation_log_lines) > 50:
-                                                    violation_log_lines.pop(0)
-
-                                            last_violation_count = len(violations)
-
-                                        # Display log lines in reverse order (newest first)
-                                        if violation_log_lines:
-                                            log_text = "\n\n".join(reversed(violation_log_lines))
-                                            violation_logs.markdown(log_text)
+                                                if messages_received > 0:
+                                                    kafka_alerts_display.info(
+                                                        f"📊 **Kafka Alert System Active**\n\n"
+                                                        f"Total alerts sent to Kafka: **{messages_received}**\n\n"
+                                                        f"Alerts are being streamed to Kafka topic: `person_reid_alerts`\n\n"
+                                                        f"**Alert Schema:**\n"
+                                                        f"- user_id, user_name, camera_id, zone_id, zone_name\n"
+                                                        f"- iop (Intersection over Person), threshold, status, timestamp\n\n"
+                                                        f"💡 Connect your Kafka consumer to receive realtime alerts!"
+                                                    )
+                                                else:
+                                                    kafka_alerts_display.info(
+                                                        "⏳ Waiting for zone violations to generate Kafka alerts..."
+                                                    )
+                                            else:
+                                                kafka_status.error("❌ Kafka Consumer Service not available")
+                                        except requests.exceptions.RequestException:
+                                            kafka_status.warning("⚠️ Kafka Consumer Service not reachable (http://localhost:8004)")
+                                        except Exception as e:
+                                            logger.debug(f"Kafka check error: {e}")
                             except Exception as e:
                                 logger.warning(f"⚠️ [Detect & Track] Progress fetch error: {e}")
                                 pass
@@ -1261,49 +1468,33 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                     # Clear stop button
                                     stop_button_container.empty()
 
-                                    # Fetch results ONCE and cache in session state
-                                    video_url = f"{DETECTION_API_URL}/download/video/{job_id}"
-                                    csv_url = f"{DETECTION_API_URL}/download/csv/{job_id}"
+                                    # Always fetch ZIP file (works for both single-stream and multi-stream)
+                                    logger.info(f"📦 [Detect & Track] Fetching ZIP file for job: {job_id}")
+                                    zip_url = f"{DETECTION_API_URL}/download/zip/{job_id}"
+                                    zip_cache_key = f"detect_zip_{job_id}"
+                                    zip_filename_key = f"detect_zip_filename_{job_id}"
 
-                                    # Cache video data
-                                    video_cache_key = f"detect_video_{job_id}"
-                                    if video_cache_key not in st.session_state:
+                                    if zip_cache_key not in st.session_state:
                                         try:
-                                            logger.info(f"📥 [Detect & Track] Fetching video: {video_url}")
-                                            video_response = requests.get(video_url)
-                                            if video_response.status_code == 200:
-                                                st.session_state[video_cache_key] = video_response.content
-                                                logger.info(f"✅ [Detect & Track] Video cached: {len(video_response.content) / (1024*1024):.2f} MB")
+                                            logger.info(f"📥 [Detect & Track] Fetching ZIP: {zip_url}")
+                                            zip_response = requests.get(zip_url)
+                                            if zip_response.status_code == 200:
+                                                st.session_state[zip_cache_key] = zip_response.content
+                                                # Extract filename from Content-Disposition header
+                                                content_disposition = zip_response.headers.get('content-disposition', '')
+                                                if 'filename=' in content_disposition:
+                                                    filename = content_disposition.split('filename=')[1].strip('"')
+                                                    st.session_state[zip_filename_key] = filename
+                                                else:
+                                                    # Fallback to default name
+                                                    st.session_state[zip_filename_key] = f"{job_id}_results.zip"
+                                                logger.info(f"✅ [Detect & Track] ZIP cached: {len(zip_response.content) / (1024*1024):.2f} MB, filename: {st.session_state[zip_filename_key]}")
+                                            else:
+                                                logger.error(f"❌ [Detect & Track] ZIP not available (status {zip_response.status_code})")
+                                                st.error(f"Failed to fetch results ZIP (status {zip_response.status_code})")
                                         except Exception as e:
-                                            logger.error(f"❌ [Detect & Track] Failed to fetch video: {e}")
-                                            st.error(f"Failed to fetch video: {e}")
-
-                                    # Cache CSV data
-                                    csv_cache_key = f"detect_csv_{job_id}"
-                                    if csv_cache_key not in st.session_state:
-                                        try:
-                                            logger.info(f"📥 [Detect & Track] Fetching CSV: {csv_url}")
-                                            csv_response = requests.get(csv_url)
-                                            if csv_response.status_code == 200:
-                                                st.session_state[csv_cache_key] = csv_response.content
-                                                logger.info(f"✅ [Detect & Track] CSV cached: {len(csv_response.content) / 1024:.2f} KB")
-                                        except Exception as e:
-                                            logger.error(f"❌ [Detect & Track] Failed to fetch CSV: {e}")
-                                            st.error(f"Failed to fetch CSV: {e}")
-
-                                    # Cache zone JSON if zone monitoring was enabled
-                                    if status.get("zone_monitoring", False):
-                                        json_url = f"{DETECTION_API_URL}/download/json/{job_id}"
-                                        json_cache_key = f"detect_json_{job_id}"
-                                        if json_cache_key not in st.session_state:
-                                            try:
-                                                logger.info(f"📥 [Detect & Track] Fetching zone report: {json_url}")
-                                                json_response = requests.get(json_url)
-                                                if json_response.status_code == 200:
-                                                    st.session_state[json_cache_key] = json_response.content
-                                                    logger.info(f"✅ [Detect & Track] Zone report cached: {len(json_response.content) / 1024:.2f} KB")
-                                            except Exception as e:
-                                                logger.warning(f"⚠️ [Detect & Track] Failed to fetch zone report: {e}")
+                                            logger.error(f"❌ [Detect & Track] Failed to fetch ZIP: {e}")
+                                            st.error(f"Failed to fetch results: {e}")
 
                                     break
 
@@ -1334,434 +1525,471 @@ Zone Border Thickness: {int(zone_opacity*10)}px
         job_id = st.session_state['detect_current_job_id']
         logger.info(f"📋 [Detect & Track] Displaying results for job: {job_id}")
 
-        # Get cached data (removed log)
-        video_cache_key = f"detect_video_{job_id}"
-        csv_cache_key = f"detect_csv_{job_id}"
-        json_cache_key = f"detect_json_{job_id}"
+        # Get cached ZIP data
+        zip_cache_key = f"detect_zip_{job_id}"
+        zip_filename_key = f"detect_zip_filename_{job_id}"
+        zip_data = st.session_state.get(zip_cache_key)
+        zip_filename = st.session_state.get(zip_filename_key, f"{job_id}_results.zip")
 
-        video_data = st.session_state.get(video_cache_key)
-        csv_data = st.session_state.get(csv_cache_key)
-        json_data = st.session_state.get(json_cache_key)
+        logger.info(f"📊 [Detect & Track] Cache status - ZIP: {bool(zip_data)}")
 
-        logger.info(f"📊 [Detect & Track] Cache status - Video: {bool(video_data)}, CSV: {bool(csv_data)}, JSON: {bool(json_data)}")
+        # If ZIP not cached, fetch it now
+        if not zip_data:
+            logger.info(f"📦 [Detect & Track] ZIP not cached - fetching now")
+            try:
+                zip_url = f"{DETECTION_API_URL}/download/zip/{job_id}"
+                zip_response = requests.get(zip_url)
+                if zip_response.status_code == 200:
+                    st.session_state[zip_cache_key] = zip_response.content
+                    zip_data = zip_response.content
+                    # Extract filename from Content-Disposition header
+                    content_disposition = zip_response.headers.get('content-disposition', '')
+                    if 'filename=' in content_disposition:
+                        filename = content_disposition.split('filename=')[1].strip('"')
+                        st.session_state[zip_filename_key] = filename
+                        zip_filename = filename
+                    logger.info(f"✅ [Detect & Track] ZIP fetched and cached: {len(zip_data) / (1024*1024):.2f} MB")
+                else:
+                    logger.error(f"❌ [Detect & Track] Failed to fetch ZIP: status {zip_response.status_code}")
+                    st.error(f"Failed to fetch results ZIP (status {zip_response.status_code})")
+            except Exception as e:
+                logger.error(f"❌ [Detect & Track] Failed to fetch ZIP: {e}")
+                st.error(f"Failed to fetch results: {e}")
 
-        # Real-Time Zone Monitoring Dashboard (if zone monitoring was enabled)
-        if json_data and csv_data:
-            st.markdown("### 📊 Real-Time Zone Monitoring Dashboard")
-            import json
-            import pandas as pd
-            import io
-            from collections import defaultdict
+        # Show completion message
+        if zip_data:
+            st.success("✅ Processing completed! All outputs are ready for download.")
+            st.info("📦 Download the ZIP file below to get all results (video, CSV, zone reports).")
+
+        # Download ZIP file
+        st.markdown("---")
+        st.markdown("### 📦 Download Results")
+
+        if zip_data:
+            # Show ZIP content structure hint
+            st.markdown("**ZIP File Contents:**")
+            st.markdown("""
+            - 📹 **Video**: Annotated output video with tracking boxes
+            - 📊 **CSV**: Tracking data with person IDs and coordinates
+            - 📋 **JSON**: Zone monitoring report (if enabled)
+
+            For multi-camera jobs, files are organized by camera in separate folders.
+            """)
+
+            # Download button
+            st.download_button(
+                label="📦 Download ZIP",
+                data=zip_data,
+                file_name=zip_filename,
+                mime="application/zip",
+                use_container_width=True
+            )
+            logger.info(f"✅ [Detect & Track] ZIP download button displayed: {zip_filename}")
+        else:
+            st.warning("⚠️ Results not available. Please wait for processing to complete.")
+elif page == "🗄️ DB Management":
+    st.header("🗄️ Database Management")
+    st.markdown("Manage users and working zones in PostgreSQL database")
+
+    # Main sections: User Management and Zone Management
+    main_tab1, main_tab2 = st.tabs(["👥 User Management", "📍 Zone Management"])
+
+    # ============================================================================
+    # USER MANAGEMENT SECTION
+    # ============================================================================
+    with main_tab1:
+        # Tabs for different operations
+        tab1, tab2, tab3 = st.tabs(["📋 View Users", "➕ Create User", "✏️ Edit/Delete User"])
+
+        # Tab 1: View Users
+        with tab1:
+            st.subheader("All Users")
+
+            if st.button("🔄 Refresh", key="refresh_users"):
+                st.rerun()
 
             try:
-                logger.info(f"📊 [Detect & Track] Parsing zone monitoring data...")
-                zone_report = json.loads(json_data)
-                df = pd.read_csv(io.BytesIO(csv_data))
+                db_manager = get_db_manager()
+                if db_manager:
+                    users = db_manager.get_all_users()
 
-                # Tab layout for monitoring
-                tab1, tab2, tab3 = st.tabs(["🗺️ Zone Status", "📈 Statistics", "📋 Raw Data"])
+                    if users:
+                        # Display as table
+                        import pandas as pd
+                        users_data = [user.dict() for user in users]
+                        df = pd.DataFrame(users_data)
 
-                # Tab 1: Zone Status (Real-time)
-                with tab1:
-                    st.subheader("Current Zone Status")
+                        # Select columns to display (including zone_id)
+                        display_cols = ['id', 'global_id', 'name', 'zone_id', 'created_at', 'updated_at']
+                        df_display = df[display_cols]
 
-                    if "summary" in zone_report:
-                        # Metrics row
-                        total_zones = len(zone_report["summary"])
-                        total_persons_in_zones = sum(z['count'] for z in zone_report["summary"].values())
-
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.metric("Total Zones", total_zones)
-                        with col2:
-                            st.metric("Persons in Zones", total_persons_in_zones)
-
-                        st.divider()
-
-                        # Display each zone
-                        for zone_id, zone_info in zone_report["summary"].items():
-                            # Zone color logic:
-                            # Green: Person is IN their authorized zone
-                            # Red: Person is NOT in their authorized zone (but should be)
-                            authorized_ids = zone_info.get('authorized_ids', [])
-                            current_persons = zone_info.get('current_persons', [])
-
-                            # Determine zone status
-                            all_authorized = all(p.get('authorized', False) for p in current_persons) if current_persons else True
-                            zone_color = "🟢" if all_authorized else "🔴"
-
-                            with st.expander(f"{zone_color} **{zone_info['name']}** ({zone_id}) - {zone_info['count']} person(s)", expanded=True):
-                                st.markdown(f"**Authorized IDs:** {', '.join(map(str, authorized_ids)) if authorized_ids else 'None'}")
-
-                                if current_persons:
-                                    st.markdown("**Current Persons:**")
-                                    for person in current_persons:
-                                        # Person status icon
-                                        # Green: Authorized and in correct zone
-                                        # Red: Not authorized for this zone
-                                        person_icon = "🟢" if person.get('authorized', False) else "🔴"
-                                        st.markdown(f"{person_icon} **{person['name']}** (ID: {person['id']}) - Duration: {person['duration']:.1f}s")
-                                else:
-                                    st.info("No persons currently in this zone")
-
-                # Tab 2: Historical Statistics
-                with tab2:
-                    st.subheader("Historical Statistics")
-
-                    # Calculate statistics per person
-                    stats_data = []
-                    persons = df[df['global_id'] > 0].groupby('global_id')
-
-                    for global_id, person_df in persons:
-                        person_name = person_df['person_name'].iloc[0]
-
-                        # Get zones this person was registered in
-                        zones_registered = person_df[person_df['zone_name'].notna() & (person_df['zone_name'] != '')]['zone_name'].unique()
-                        zone_registered = ', '.join(zones_registered) if len(zones_registered) > 0 else "None"
-
-                        # Count zone transitions
-                        person_df_sorted = person_df.sort_values('frame_id')
-                        prev_zone = None
-                        total_in = 0
-                        total_out = 0
-
-                        for _, row in person_df_sorted.iterrows():
-                            current_zone = row['zone_name'] if pd.notna(row['zone_name']) and row['zone_name'] != '' else None
-
-                            if current_zone != prev_zone:
-                                if current_zone is not None and prev_zone is None:
-                                    total_in += 1
-                                elif current_zone is None and prev_zone is not None:
-                                    total_out += 1
-
-                            prev_zone = current_zone
-
-                        # Get current status
-                        latest_person_df = person_df[person_df['frame_id'] == person_df['frame_id'].max()]
-                        if len(latest_person_df) > 0:
-                            latest_row = latest_person_df.iloc[0]
-                            current_zone = latest_row['zone_name'] if pd.notna(latest_row['zone_name']) and latest_row['zone_name'] != '' else None
-                            status = 'in' if current_zone else 'out'
-                        else:
-                            status = 'Null'
-
-                        stats_data.append({
-                            'Name': person_name,
-                            'Zone Registered': zone_registered,
-                            'Status': status,
-                            'Total In': total_in,
-                            'Total Out': total_out
-                        })
-
-                    if stats_data:
-                        stats_df = pd.DataFrame(stats_data)
-                        st.dataframe(stats_df, use_container_width=True, hide_index=True)
-
-                        # Visualizations
-                        st.divider()
-                        st.markdown("#### 📊 Visualizations")
-
-                        col1, col2 = st.columns(2)
-
-                        with col1:
-                            import plotly.graph_objects as go
-                            fig = go.Figure(data=[
-                                go.Bar(name='Total In', x=stats_df['Name'], y=stats_df['Total In'], marker_color='green'),
-                                go.Bar(name='Total Out', x=stats_df['Name'], y=stats_df['Total Out'], marker_color='red')
-                            ])
-                            fig.update_layout(
-                                title="Zone Entry/Exit Counts",
-                                xaxis_title="Person",
-                                yaxis_title="Count",
-                                barmode='group'
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-
-                        with col2:
-                            status_counts = stats_df['Status'].value_counts()
-                            fig = go.Figure(data=[go.Pie(labels=status_counts.index, values=status_counts.values)])
-                            fig.update_layout(title="Current Status Distribution")
-                            st.plotly_chart(fig, use_container_width=True)
+                        st.dataframe(df_display, use_container_width=True, hide_index=True)
+                        st.success(f"✅ Total users: {len(users)}")
                     else:
-                        st.info("No person statistics available")
-
-                # Tab 3: Raw Data
-                with tab3:
-                    st.subheader("Raw Tracking Data")
-
-                    # Filters
-                    col1, col2, col3 = st.columns(3)
-
-                    with col1:
-                        filter_person = st.multiselect(
-                            "Filter by Person",
-                            options=df[df['global_id'] > 0]['person_name'].unique().tolist(),
-                            default=[]
-                        )
-
-                    with col2:
-                        filter_zone = st.multiselect(
-                            "Filter by Zone",
-                            options=df[df['zone_name'].notna() & (df['zone_name'] != '')]['zone_name'].unique().tolist(),
-                            default=[]
-                        )
-
-                    with col3:
-                        show_unknown = st.checkbox("Show Unknown Persons", value=False)
-
-                    # Apply filters
-                    filtered_df = df.copy()
-
-                    if not show_unknown:
-                        filtered_df = filtered_df[filtered_df['global_id'] > 0]
-
-                    if filter_person:
-                        filtered_df = filtered_df[filtered_df['person_name'].isin(filter_person)]
-
-                    if filter_zone:
-                        filtered_df = filtered_df[filtered_df['zone_name'].isin(filter_zone)]
-
-                    st.dataframe(filtered_df.head(100), use_container_width=True, hide_index=True)
-                    st.info(f"Showing first 100 of {len(filtered_df)} filtered records (Total: {len(df)} records)")
-
-                logger.info(f"✅ [Detect & Track] Zone monitoring dashboard displayed")
+                        st.info("No users found in database")
+                else:
+                    st.error("Failed to connect to database")
+                    st.info("Check PostgreSQL connection settings in configs/.env")
             except Exception as e:
-                logger.error(f"❌ [Detect & Track] Failed to parse zone monitoring data: {e}")
-                st.error(f"Failed to parse zone monitoring data: {e}")
+                st.error(f"Error connecting to database: {e}")
                 import traceback
                 st.code(traceback.format_exc())
 
-        elif csv_data:
-            # Show CSV preview if no zone monitoring
-            st.markdown("### 📊 Tracking Data Preview")
-            import pandas as pd
-            import io
-            try:
-                logger.info(f"📊 [Detect & Track] Parsing CSV...")
-                df = pd.read_csv(io.BytesIO(csv_data))
-                st.dataframe(df.head(100), width="stretch")
-                st.info(f"Showing first 100 rows of {len(df)} total detections")
-                logger.info(f"✅ [Detect & Track] CSV displayed: {len(df)} rows")
-            except Exception as e:
-                logger.error(f"❌ [Detect & Track] Failed to parse CSV: {e}")
-                st.error(f"Failed to parse CSV: {e}")
+        # Tab 2: Create User
+        with tab2:
+            st.subheader("Create New User")
 
-        # Download buttons - USE CACHED DATA
-        st.markdown("### 📁 Download Results")
+            with st.form("create_user_form"):
+                new_global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique global ID for this user")
+                new_name = st.text_input("Name", placeholder="e.g., John Doe")
 
-        # Adjust columns based on whether zone report exists (removed log download)
-        if json_data:
-            col1, col2, col3 = st.columns(3)
-        else:
-            col1, col2 = st.columns(2)
-            col3 = None
+                # Zone selection dropdown
+                try:
+                    db_manager = get_db_manager()
+                    zones = db_manager.get_all_zones() if db_manager else []
+                    zone_options = ["None (No Zone)"] + [f"{z.zone_name} ({z.zone_id})" for z in zones]
+                    selected_zone_str = st.selectbox("Assign to Zone (Optional)", options=zone_options)
 
-        with col1:
-            if video_data:
-                if st.download_button(
-                    label="📹 Download Video",
-                    data=video_data,
-                    file_name=f"{job_id}_output.mp4",
-                    mime="video/mp4",
-                    key=f"download_detect_video_{job_id}",
-                    use_container_width=True
-                ):
-                    logger.info(f"📥 [Detect & Track] User downloading video: {job_id}_output.mp4 ({len(video_data) / (1024*1024):.2f} MB)")
-            else:
-                st.warning("Video not available")
+                    # Extract zone_id from selection
+                    if selected_zone_str == "None (No Zone)":
+                        selected_zone_id = None
+                    else:
+                        # Extract zone_id from "Zone Name (ZONE_ID)" format
+                        selected_zone_id = selected_zone_str.split("(")[-1].rstrip(")")
+                except Exception as e:
+                    st.warning(f"Could not load zones: {e}")
+                    selected_zone_id = None
 
-        with col2:
-            if csv_data:
-                if st.download_button(
-                    label="📊 Download CSV",
-                    data=csv_data,
-                    file_name=f"{job_id}_tracking.csv",
-                    mime="text/csv",
-                    key=f"download_detect_csv_{job_id}",
-                    use_container_width=True
-                ):
-                    logger.info(f"📥 [Detect & Track] User downloading CSV: {job_id}_tracking.csv ({len(csv_data) / 1024:.2f} KB)")
-            else:
-                st.warning("CSV not available")
+                submitted = st.form_submit_button("➕ Create User", type="primary")
 
-        if col3 and json_data:
-            if st.download_button(
-                label="🗺️ Download Zone Report",
-                data=json_data,
-                file_name=f"{job_id}_zones.json",
-                mime="application/json",
-                key=f"download_detect_json_{job_id}",
-                use_container_width=True
-            ):
-                logger.info(f"📥 [Detect & Track] User downloading zone report: {job_id}_zones.json ({len(json_data) / 1024:.2f} KB)")
-
-        # Button to clear results and browse new video
-        st.markdown("---")
-        if st.button("🔄 Clear Results & Browse New Video", type="secondary", use_container_width=True):
-            logger.info(f"🔄 [Detect & Track] User clearing results for job: {job_id}")
-            # Clear all detection-related session state
-            if 'detect_current_job_id' in st.session_state:
-                job_id_to_clear = st.session_state['detect_current_job_id']
-                st.session_state.pop('detect_current_job_id', None)
-                st.session_state.pop(f"detect_video_{job_id_to_clear}", None)
-                st.session_state.pop(f"detect_csv_{job_id_to_clear}", None)
-                st.session_state.pop(f"detect_log_{job_id_to_clear}", None)
-                logger.info(f"✅ [Detect & Track] Results cleared, ready for new video")
-            st.rerun()
-
-# ============================================================================
-# PAGE 4: USER MANAGEMENT
-# ============================================================================
-elif page == "👥 User Management":
-    st.header("👥 User Management")
-    st.markdown("Manage users in PostgreSQL database")
-
-    # Tabs for different operations
-    tab1, tab2, tab3 = st.tabs(["📋 View Users", "➕ Create User", "✏️ Edit/Delete User"])
-
-    # Tab 1: View Users
-    with tab1:
-        st.subheader("All Users")
-
-        if st.button("🔄 Refresh", key="refresh_users"):
-            st.rerun()
-
-        try:
-            db_manager = get_db_manager()
-            if db_manager:
-                users = db_manager.get_all_users()
-
-                if users:
-                    # Display as table
-                    import pandas as pd
-                    users_data = [user.dict() for user in users]
-                    df = pd.DataFrame(users_data)
-
-                    # Select columns to display
-                    display_cols = ['id', 'global_id', 'name', 'created_at', 'updated_at']
-                    df_display = df[display_cols]
-
-                    st.dataframe(df_display, use_container_width=True, hide_index=True)
-                    st.success(f"✅ Total users: {len(users)}")
-                else:
-                    st.info("No users found in database")
-            else:
-                st.error("Failed to connect to database")
-                st.info("Check PostgreSQL connection settings in configs/.env")
-        except Exception as e:
-            st.error(f"Error connecting to database: {e}")
-            import traceback
-            st.code(traceback.format_exc())
-
-    # Tab 2: Create User
-    with tab2:
-        st.subheader("Create New User")
-
-        with st.form("create_user_form"):
-            new_global_id = st.number_input("Global ID", min_value=1, value=1, help="Unique global ID for this user")
-            new_name = st.text_input("Name", placeholder="e.g., John Doe")
-
-            submitted = st.form_submit_button("➕ Create User", type="primary")
-
-            if submitted:
-                if not new_name:
-                    st.error("Please enter a name")
-                else:
-                    try:
-                        db_manager = get_db_manager()
-                        if db_manager:
-                            # Check if global_id already exists
-                            existing_user = db_manager.get_user_by_global_id(new_global_id)
-                            if existing_user:
-                                st.error(f"User with global_id {new_global_id} already exists: {existing_user.name}")
-                            else:
+                if submitted:
+                    if not new_name:
+                        st.error("Please enter a name")
+                    else:
+                        try:
+                            db_manager = get_db_manager()
+                            if db_manager:
+                                # Note: global_id can be duplicated, no need to check uniqueness
                                 from services.database.models import UserCreate
-                                user_data = UserCreate(global_id=new_global_id, name=new_name)
+                                user_data = UserCreate(
+                                    global_id=new_global_id,
+                                    name=new_name,
+                                    zone_id=selected_zone_id
+                                )
                                 user = db_manager.create_user(user_data)
 
                                 if user:
-                                    st.success(f"✅ User created successfully!")
+                                    st.success(f"✅ User created successfully! (ID: {user.id}, Global ID: {user.global_id})")
                                     st.json(user.dict())
                                     st.balloons()
                                 else:
                                     st.error("Failed to create user")
-                        else:
-                            st.error("Database connection not available")
-                    except Exception as e:
-                        st.error(f"Error creating user: {e}")
-                        import traceback
-                        st.code(traceback.format_exc())
+                            else:
+                                st.error("Database connection not available")
+                        except Exception as e:
+                            st.error(f"Error creating user: {e}")
+                            import traceback
+                            st.code(traceback.format_exc())
 
-    # Tab 3: Edit/Delete User
-    with tab3:
-        st.subheader("Edit or Delete User")
+        # Tab 3: Edit/Delete User
+        with tab3:
+            st.subheader("Edit or Delete User")
 
-        try:
-            db_manager = get_db_manager()
-            if db_manager:
-                users = db_manager.get_all_users()
+            try:
+                db_manager = get_db_manager()
+                if db_manager:
+                    users = db_manager.get_all_users()
 
-                if users:
-                    # Create selection dropdown
-                    user_options = {f"{u.name} (ID: {u.global_id})": u for u in users}
-                    selected_user_str = st.selectbox(
-                        "Select User",
-                        options=list(user_options.keys())
-                    )
+                    if users:
+                        # Create selection dropdown
+                        user_options = {f"{u.name} (ID: {u.global_id})": u for u in users}
+                        selected_user_str = st.selectbox(
+                            "Select User",
+                            options=list(user_options.keys())
+                        )
 
-                    selected_user = user_options[selected_user_str]
+                        selected_user = user_options[selected_user_str]
 
-                    st.divider()
+                        st.divider()
 
-                    # Edit section
-                    st.markdown("### ✏️ Edit User")
-                    with st.form("edit_user_form"):
-                        edit_name = st.text_input("Name", value=selected_user.name)
+                        # Edit section
+                        st.markdown("### ✏️ Edit User")
+                        with st.form("edit_user_form"):
+                            edit_name = st.text_input("Name", value=selected_user.name)
 
-                        submitted_edit = st.form_submit_button("💾 Update User", type="primary")
+                            # Zone selection dropdown for editing
+                            zones = db_manager.get_all_zones()
+                            zone_options = ["None (No Zone)"] + [f"{z.zone_name} ({z.zone_id})" for z in zones]
 
-                        if submitted_edit:
-                            try:
-                                from services.database.models import UserUpdate
-                                user_data = UserUpdate(name=edit_name)
-                                updated_user = db_manager.update_user(selected_user.id, user_data)
+                            # Find current zone index
+                            current_zone_idx = 0
+                            if selected_user.zone_id:
+                                for idx, opt in enumerate(zone_options):
+                                    if selected_user.zone_id in opt:
+                                        current_zone_idx = idx
+                                        break
 
-                                if updated_user:
-                                    st.success("✅ User updated successfully!")
-                                    st.rerun()
-                                else:
-                                    st.error("Failed to update user")
-                            except Exception as e:
-                                st.error(f"Error updating user: {e}")
+                            selected_zone_str = st.selectbox(
+                                "Assign to Zone (Optional)",
+                                options=zone_options,
+                                index=current_zone_idx
+                            )
 
-                    st.divider()
+                            # Extract zone_id from selection
+                            if selected_zone_str == "None (No Zone)":
+                                edit_zone_id = None
+                            else:
+                                edit_zone_id = selected_zone_str.split("(")[-1].rstrip(")")
 
-                    # Delete section
-                    st.markdown("### 🗑️ Delete User")
-                    st.warning(f"⚠️ You are about to delete: **{selected_user.name}** (Global ID: {selected_user.global_id})")
+                            submitted_edit = st.form_submit_button("💾 Update User", type="primary")
 
-                    col1, col2 = st.columns([1, 3])
-                    with col1:
-                        if st.button("🗑️ Delete User", type="secondary"):
-                            try:
-                                success = db_manager.delete_user(selected_user.id)
+                            if submitted_edit:
+                                try:
+                                    from services.database.models import UserUpdate
+                                    user_data = UserUpdate(name=edit_name, zone_id=edit_zone_id)
+                                    updated_user = db_manager.update_user(selected_user.id, user_data)
 
-                                if success:
-                                    st.success("✅ User deleted successfully!")
-                                    time.sleep(1)
-                                    st.rerun()
-                                else:
-                                    st.error("Failed to delete user")
-                            except Exception as e:
-                                st.error(f"Error deleting user: {e}")
+                                    if updated_user:
+                                        st.success("✅ User updated successfully!")
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to update user")
+                                except Exception as e:
+                                    st.error(f"Error updating user: {e}")
+
+                        st.divider()
+
+                        # Delete section
+                        st.markdown("### 🗑️ Delete User")
+                        st.warning(f"⚠️ You are about to delete: **{selected_user.name}** (Global ID: {selected_user.global_id})")
+
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            if st.button("🗑️ Delete User", type="secondary"):
+                                try:
+                                    success = db_manager.delete_user(selected_user.id)
+
+                                    if success:
+                                        st.success("✅ User deleted successfully!")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to delete user")
+                                except Exception as e:
+                                    st.error(f"Error deleting user: {e}")
+                    else:
+                        st.info("No users found in database")
                 else:
-                    st.info("No users found in database")
-            else:
-                st.error("Database connection not available")
-        except Exception as e:
-            st.error(f"Error connecting to database: {e}")
-            import traceback
-            st.code(traceback.format_exc())
+                    st.error("Database connection not available")
+            except Exception as e:
+                st.error(f"Error connecting to database: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+    # ============================================================================
+    # ZONE MANAGEMENT SECTION
+    # ============================================================================
+    with main_tab2:
+        # Tabs for different operations
+        zone_tab1, zone_tab2, zone_tab3 = st.tabs(["📋 View Zones", "➕ Create Zone", "✏️ Edit/Delete Zone"])
+
+        # Tab 1: View Zones
+        with zone_tab1:
+            st.subheader("All Working Zones")
+
+            if st.button("🔄 Refresh", key="refresh_zones"):
+                st.rerun()
+
+            try:
+                db_manager = get_db_manager()
+                if db_manager:
+                    zones = db_manager.get_all_zones()
+
+                    if zones:
+                        # Display as table with user count
+                        import pandas as pd
+                        zones_data = []
+                        for zone in zones:
+                            zone_dict = zone.dict()
+                            # Get user count for this zone
+                            users_in_zone = db_manager.get_users_by_zone(zone.zone_id)
+                            zone_dict['user_count'] = len(users_in_zone)
+                            zones_data.append(zone_dict)
+
+                        df = pd.DataFrame(zones_data)
+
+                        # Select columns to display (including user_count)
+                        display_cols = ['zone_id', 'zone_name', 'user_count', 'x1', 'y1', 'x2', 'y2', 'x3', 'y3', 'x4', 'y4', 'created_at', 'updated_at']
+                        df_display = df[display_cols]
+
+                        st.dataframe(df_display, use_container_width=True, hide_index=True)
+                        st.success(f"✅ Total zones: {len(zones)}")
+
+                        # Show users in each zone
+                        st.divider()
+                        st.markdown("### 👥 Users in Zones")
+                        for zone in zones:
+                            users_in_zone = db_manager.get_users_by_zone(zone.zone_id)
+                            with st.expander(f"📍 {zone.zone_name} ({zone.zone_id}) - {len(users_in_zone)} users"):
+                                if users_in_zone:
+                                    user_list = [f"- **{u.name}** (Global ID: {u.global_id})" for u in users_in_zone]
+                                    st.markdown("\n".join(user_list))
+                                else:
+                                    st.info("No users assigned to this zone")
+                    else:
+                        st.info("No zones found in database")
+                else:
+                    st.error("Failed to connect to database")
+                    st.info("Check PostgreSQL connection settings in configs/.env")
+            except Exception as e:
+                st.error(f"Error connecting to database: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+
+        # Tab 2: Create Zone
+        with zone_tab2:
+            st.subheader("Create New Working Zone")
+
+            with st.form("create_zone_form"):
+                new_zone_id = st.text_input("Zone ID", placeholder="e.g., ZONE_001", help="Unique zone identifier")
+                new_zone_name = st.text_input("Zone Name", placeholder="e.g., Entrance Area")
+
+                st.markdown("#### Zone Coordinates (4 points)")
+                col1, col2 = st.columns(2)
+                with col1:
+                    x1 = st.number_input("X1", value=0.0, format="%.2f")
+                    y1 = st.number_input("Y1", value=0.0, format="%.2f")
+                    x2 = st.number_input("X2", value=0.0, format="%.2f")
+                    y2 = st.number_input("Y2", value=0.0, format="%.2f")
+                with col2:
+                    x3 = st.number_input("X3", value=0.0, format="%.2f")
+                    y3 = st.number_input("Y3", value=0.0, format="%.2f")
+                    x4 = st.number_input("X4", value=0.0, format="%.2f")
+                    y4 = st.number_input("Y4", value=0.0, format="%.2f")
+
+                submitted = st.form_submit_button("➕ Create Zone", type="primary")
+
+                if submitted:
+                    if not new_zone_id or not new_zone_name:
+                        st.error("Please enter zone ID and name")
+                    else:
+                        try:
+                            db_manager = get_db_manager()
+                            if db_manager:
+                                # Check if zone_id already exists
+                                existing_zone = db_manager.get_zone_by_id(new_zone_id)
+                                if existing_zone:
+                                    st.error(f"Zone with zone_id {new_zone_id} already exists: {existing_zone.zone_name}")
+                                else:
+                                    from services.database.models import WorkingZoneCreate
+                                    zone_data = WorkingZoneCreate(
+                                        zone_id=new_zone_id,
+                                        zone_name=new_zone_name,
+                                        x1=x1, y1=y1, x2=x2, y2=y2,
+                                        x3=x3, y3=y3, x4=x4, y4=y4
+                                    )
+                                    zone = db_manager.create_zone(zone_data)
+
+                                    if zone:
+                                        st.success(f"✅ Zone created successfully!")
+                                        st.json(zone.dict())
+                                        st.balloons()
+                                    else:
+                                        st.error("Failed to create zone")
+                            else:
+                                st.error("Database connection not available")
+                        except Exception as e:
+                            st.error(f"Error creating zone: {e}")
+                            import traceback
+                            st.code(traceback.format_exc())
+
+        # Tab 3: Edit/Delete Zone
+        with zone_tab3:
+            st.subheader("Edit or Delete Working Zone")
+
+            try:
+                db_manager = get_db_manager()
+                if db_manager:
+                    zones = db_manager.get_all_zones()
+
+                    if zones:
+                        # Create selection dropdown
+                        zone_options = {f"{z.zone_name} (ID: {z.zone_id})": z for z in zones}
+                        selected_zone_str = st.selectbox(
+                            "Select Zone",
+                            options=list(zone_options.keys())
+                        )
+
+                        selected_zone = zone_options[selected_zone_str]
+
+                        st.divider()
+
+                        # Edit section
+                        st.markdown("### ✏️ Edit Zone")
+                        with st.form("edit_zone_form"):
+                            edit_zone_name = st.text_input("Zone Name", value=selected_zone.zone_name)
+
+                            st.markdown("#### Zone Coordinates (4 points)")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                edit_x1 = st.number_input("X1", value=float(selected_zone.x1), format="%.2f")
+                                edit_y1 = st.number_input("Y1", value=float(selected_zone.y1), format="%.2f")
+                                edit_x2 = st.number_input("X2", value=float(selected_zone.x2), format="%.2f")
+                                edit_y2 = st.number_input("Y2", value=float(selected_zone.y2), format="%.2f")
+                            with col2:
+                                edit_x3 = st.number_input("X3", value=float(selected_zone.x3), format="%.2f")
+                                edit_y3 = st.number_input("Y3", value=float(selected_zone.y3), format="%.2f")
+                                edit_x4 = st.number_input("X4", value=float(selected_zone.x4), format="%.2f")
+                                edit_y4 = st.number_input("Y4", value=float(selected_zone.y4), format="%.2f")
+
+                            submitted_edit = st.form_submit_button("💾 Update Zone", type="primary")
+
+                            if submitted_edit:
+                                try:
+                                    from services.database.models import WorkingZoneUpdate
+                                    zone_data = WorkingZoneUpdate(
+                                        zone_name=edit_zone_name,
+                                        x1=edit_x1, y1=edit_y1, x2=edit_x2, y2=edit_y2,
+                                        x3=edit_x3, y3=edit_y3, x4=edit_x4, y4=edit_y4
+                                    )
+                                    updated_zone = db_manager.update_zone(selected_zone.zone_id, zone_data)
+
+                                    if updated_zone:
+                                        st.success("✅ Zone updated successfully!")
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to update zone")
+                                except Exception as e:
+                                    st.error(f"Error updating zone: {e}")
+
+                        st.divider()
+
+                        # Delete section
+                        st.markdown("### 🗑️ Delete Zone")
+                        st.warning(f"⚠️ You are about to delete: **{selected_zone.zone_name}** (Zone ID: {selected_zone.zone_id})")
+
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            if st.button("🗑️ Delete Zone", type="secondary"):
+                                try:
+                                    success = db_manager.delete_zone(selected_zone.zone_id)
+
+                                    if success:
+                                        st.success("✅ Zone deleted successfully!")
+                                        time.sleep(1)
+                                        st.rerun()
+                                    else:
+                                        st.error("Failed to delete zone")
+                                except Exception as e:
+                                    st.error(f"Error deleting zone: {e}")
+                    else:
+                        st.info("No zones found in database")
+                else:
+                    st.error("Database connection not available")
+            except Exception as e:
+                st.error(f"Error connecting to database: {e}")
+                import traceback
+                st.code(traceback.format_exc())
 
 # ============================================================================
 # PAGE 5: ABOUT

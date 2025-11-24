@@ -19,16 +19,17 @@ output [
 ]
 
 # Dynamic batching configuration
-# Note: TensorRT engine supports max_batch_size=1, so we can only batch single requests
-# For true multi-batch support, need to rebuild TensorRT engine with dynamic shapes
+# UPDATED: Enabled dynamic batching with batch size 1
+# Note: TensorRT engine only supports max_batch_size=1
+# Triton will queue requests and process them sequentially
 dynamic_batching {
-  # Only batch size 1 is supported by current TensorRT engine
+  # Preferred batch sizes - only batch size 1 supported by TensorRT engine
   preferred_batch_size: [ 1 ]
 
-  # Maximum queue delay in microseconds (1000us = 1ms)
-  # REDUCED from 5ms to 1ms for lower latency
-  # With 4-8 instances, we want faster dispatch
-  max_queue_delay_microseconds: 1000
+  # Maximum queue delay in microseconds (5000us = 5ms)
+  # Allows Triton to collect multiple requests before processing
+  # Even though batch size is 1, this helps with request scheduling
+  max_queue_delay_microseconds: 5000
 
   # Preserve ordering disabled for better throughput
   preserve_ordering: false
@@ -36,24 +37,24 @@ dynamic_batching {
   # Queue policy - optimized for multi-stream processing
   default_queue_policy {
     timeout_action: REJECT
-    default_timeout_microseconds: 50000  # 50ms timeout (increased for stability)
+    default_timeout_microseconds: 100000  # 100ms timeout
     allow_timeout_override: true
-    max_queue_size: 128  # Reduced queue size
+    max_queue_size: 256  # Queue size for request buffering
   }
 }
 
 # Instance group configuration
 # Multiple instances enable parallel processing of concurrent requests
 # Each instance uses ~500MB GPU memory
-# OPTIMIZED: 8 instances for 2-4 streams (reduced from 16)
-# Reason: Lower overhead, better GPU utilization, less context switching
-# 8 instances = 8 parallel requests = ~4GB GPU memory
+# OPTIMIZED: 4 instances for dynamic batching (reduced from 8)
+# Reason: With batch size 8, we need fewer instances
+# 4 instances × batch 8 = 32 concurrent requests capacity
 instance_group [
   {
     # Number of instances per GPU
-    # CHANGED: 16 → 8 for better performance with 2-4 streams
-    # Each stream gets 2-4 instances for parallel processing
-    count: 8
+    # CHANGED: 8 → 4 for dynamic batching
+    # Each instance can now handle batch size up to 8
+    count: 4
 
     # GPU device
     kind: KIND_GPU

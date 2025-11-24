@@ -99,19 +99,24 @@ class QdrantVectorDB:
                     self.client = QdrantClient(url=qdrant_url)
                 logger.info(f"✅ Initialized Qdrant client with HTTP protocol")
 
-            # Create collection if not exists
+            # Test connection and create collection if needed
             try:
                 self.client.get_collection(self.collection_name)
                 logger.info(f"✅ Connected to Qdrant collection: {self.collection_name}")
-            except:
-                self.client.create_collection(
-                    collection_name=self.collection_name,
-                    vectors_config=VectorParams(
-                        size=self.embedding_dim,
-                        distance=Distance.COSINE
+            except Exception as collection_error:
+                logger.debug(f"Collection check failed: {collection_error}")
+                try:
+                    self.client.create_collection(
+                        collection_name=self.collection_name,
+                        vectors_config=VectorParams(
+                            size=self.embedding_dim,
+                            distance=Distance.COSINE
+                        )
                     )
-                )
-                logger.info(f"✅ Created Qdrant collection: {self.collection_name}")
+                    logger.info(f"✅ Created Qdrant collection: {self.collection_name}")
+                except Exception as create_error:
+                    logger.warning(f"⚠️ Failed to create collection: {create_error}. Using in-memory storage.")
+                    self.client = None
         except Exception as e:
             logger.warning(f"⚠️ Failed to init Qdrant: {e}. Using in-memory storage.")
             self.client = None
@@ -183,18 +188,19 @@ class QdrantVectorDB:
         # Use Qdrant if available (preferred)
         if self.client:
             try:
-                results = self.client.search(
+                # Use query_points (new API) instead of search (old API)
+                results = self.client.query_points(
                     collection_name=self.collection_name,
-                    query_vector=embedding.tolist(),
+                    query=embedding.tolist(),
                     limit=top_k * 10,  # Get more results to group by global_id
                     score_threshold=threshold  # Qdrant uses similarity directly
                 )
 
-                logger.debug(f"Qdrant search returned {len(results)} results (threshold={threshold})")
+                logger.debug(f"Qdrant query_points returned {len(results.points)} results (threshold={threshold})")
 
                 # Group by global_id and get best score + name for each person
                 best_per_person = {}
-                for r in results:
+                for r in results.points:
                     global_id = r.payload.get('global_id', r.id)
                     name = r.payload.get('name', f'Person_{global_id}')
                     logger.debug(f"  Result: GID={global_id}, name={name}, score={r.score:.4f}")
@@ -206,7 +212,7 @@ class QdrantVectorDB:
                 logger.debug(f"Best matches: {[(gid, f'{score:.4f}', name) for gid, score, name in matches]}")
                 return matches
             except Exception as e:
-                logger.warning(f"Qdrant search failed: {e}. Falling back to in-memory.")
+                logger.warning(f"Qdrant query_points failed: {e}. Falling back to in-memory.")
 
         # Fallback to in-memory search using cosine similarity
         if len(self.db) == 0:

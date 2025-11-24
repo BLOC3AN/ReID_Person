@@ -14,7 +14,7 @@ from typing import List, Optional
 from loguru import logger
 
 from services.database import PostgresManager, User
-from services.database.models import UserCreate, UserUpdate
+from services.database.models import UserCreate, UserUpdate, WorkingZone, WorkingZoneCreate, WorkingZoneUpdate, WorkingZoneWithUsers
 
 app = FastAPI(title="Database Service", version="1.0.0")
 
@@ -212,6 +212,182 @@ async def get_users_dict():
         return users_dict
     except Exception as e:
         logger.error(f"Error fetching users dict: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/users/by-zone/{zone_id}", response_model=List[User])
+async def get_users_by_zone(zone_id: str):
+    """
+    Get all users in a specific zone (1:N relationship)
+
+    Args:
+        zone_id: Zone ID to filter users
+
+    Returns:
+        List of User objects in the zone
+    """
+    try:
+        users = db_manager.get_users_by_zone(zone_id)
+        return users
+    except Exception as e:
+        logger.error(f"Error fetching users for zone {zone_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# WORKING ZONE ENDPOINTS
+# ============================================================================
+
+@app.get("/zones", response_model=List[WorkingZone])
+async def get_all_zones():
+    """
+    Get all working zones from database
+
+    Returns:
+        List of WorkingZone objects
+    """
+    try:
+        zones = db_manager.get_all_zones()
+        return zones
+    except Exception as e:
+        logger.error(f"Error fetching zones: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/zones/{zone_id}", response_model=WorkingZone)
+async def get_zone(zone_id: str):
+    """
+    Get working zone by ID
+
+    Args:
+        zone_id: Zone ID (primary key)
+
+    Returns:
+        WorkingZone object
+    """
+    try:
+        zone = db_manager.get_zone_by_id(zone_id)
+        if zone is None:
+            raise HTTPException(status_code=404, detail="Zone not found")
+        return zone
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching zone {zone_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/zones/{zone_id}/with-users", response_model=WorkingZoneWithUsers)
+async def get_zone_with_users(zone_id: str):
+    """
+    Get working zone with list of users (1:N relationship)
+
+    Args:
+        zone_id: Zone ID (primary key)
+
+    Returns:
+        WorkingZoneWithUsers object with users list
+    """
+    try:
+        zone_with_users = db_manager.get_zone_with_users(zone_id)
+        if zone_with_users is None:
+            raise HTTPException(status_code=404, detail="Zone not found")
+        return zone_with_users
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching zone with users {zone_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/zones", response_model=WorkingZone)
+async def create_zone(zone_data: WorkingZoneCreate):
+    """
+    Create a new working zone
+
+    Args:
+        zone_data: WorkingZoneCreate object
+
+    Returns:
+        Created WorkingZone object
+    """
+    try:
+        # Check if zone_id already exists
+        existing_zone = db_manager.get_zone_by_id(zone_data.zone_id)
+        if existing_zone:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Zone with zone_id {zone_data.zone_id} already exists"
+            )
+
+        zone = db_manager.create_zone(zone_data)
+        if zone is None:
+            raise HTTPException(status_code=500, detail="Failed to create zone")
+        return zone
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating zone: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/zones/{zone_id}", response_model=WorkingZone)
+async def update_zone(zone_id: str, zone_data: WorkingZoneUpdate):
+    """
+    Update an existing working zone
+
+    Args:
+        zone_id: Zone ID to update
+        zone_data: WorkingZoneUpdate object
+
+    Returns:
+        Updated WorkingZone object
+    """
+    try:
+        # Check if zone exists
+        existing_zone = db_manager.get_zone_by_id(zone_id)
+        if not existing_zone:
+            raise HTTPException(status_code=404, detail="Zone not found")
+
+        zone = db_manager.update_zone(zone_id, zone_data)
+        if zone is None:
+            raise HTTPException(status_code=500, detail="Failed to update zone")
+        return zone
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating zone {zone_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/zones/{zone_id}")
+async def delete_zone(zone_id: str):
+    """
+    Delete a working zone
+
+    Args:
+        zone_id: Zone ID to delete (primary key)
+
+    Returns:
+        Success message
+    """
+    try:
+        # Check if zone exists
+        existing_zone = db_manager.get_zone_by_id(zone_id)
+        if not existing_zone:
+            raise HTTPException(status_code=404, detail="Zone not found")
+
+        success = db_manager.delete_zone(zone_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete zone")
+
+        return JSONResponse(content={
+            "message": f"Zone {zone_id} deleted successfully"
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting zone {zone_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

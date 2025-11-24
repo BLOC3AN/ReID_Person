@@ -12,7 +12,6 @@ from loguru import logger
 from typing import Optional
 
 from .detector import YOLOXDetector
-from .detector_trt import TensorRTDetector
 from .detector_triton import TritonDetector
 from .tracker import ByteTrackWrapper
 from .feature_extractor import ArcFaceExtractor
@@ -157,28 +156,6 @@ class PreloadedPipelineManager:
             logger.info("✓ Triton Detector loaded")
             logger.info(f"  Server: {triton_cfg['url']}")
             logger.info(f"  Model: {triton_cfg['model_name']}")
-
-        elif backend == 'tensorrt':
-            # TensorRT backend
-            model_type = cfg.get('model_type', 'mot17')
-            if model_type == 'mot17':
-                engine_path = Path(__file__).parent.parent / cfg['tensorrt_engine_mot17']
-            else:
-                engine_path = Path(__file__).parent.parent / cfg['tensorrt_engine_yolox']
-
-            if not engine_path.exists():
-                logger.error(f"❌ TensorRT engine not found: {engine_path}")
-                logger.info("💡 Please convert ONNX to TensorRT first:")
-                logger.info(f"   python tools/convert_tensorrt.py --onnx <onnx_path>")
-                raise FileNotFoundError(f"TensorRT engine not found: {engine_path}")
-
-            self.detector = TensorRTDetector(
-                engine_path=str(engine_path),
-                conf_thresh=cfg['conf_threshold'],
-                nms_thresh=cfg['nms_threshold'],
-                test_size=tuple(cfg['test_size'])
-            )
-            logger.info("✓ TensorRT Detector loaded")
 
         else:
             # PyTorch backend (default)

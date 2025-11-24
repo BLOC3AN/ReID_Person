@@ -173,10 +173,11 @@ class StreamReader:
         ffmpeg_cmd = [
             'ffmpeg',
             '-timeout', '5000000',  # 5 second timeout (reduced from 10s)
-            '-fflags', '+genpts+discardcorrupt+nobuffer',  # Added nobuffer for faster startup
+            '-fflags', '+genpts+discardcorrupt+nobuffer+igndts',  # Added igndts for corrupted streams
             '-flags', 'low_delay',
-            '-probesize', '4M',  # Reduced from 32M for faster startup
-            '-analyzeduration', '2M',  # Reduced from 10M for faster startup
+            '-err_detect', 'ignore_err',  # Ignore decoding errors (for streams without SPS/PPS)
+            '-probesize', '10M',  # Increased for streams with missing SPS/PPS headers
+            '-analyzeduration', '10M',  # Increased to wait for keyframe
             '-i', source_url,
             '-vsync', '0',  # Pass through timestamps, don't wait for missing frames
             '-f', 'rawvideo',
@@ -302,13 +303,19 @@ class StreamReader:
         frame_size = self.width * self.height * 3  # BGR24 = 3 bytes per pixel
 
         try:
-            # Check if data is available with timeout (3 seconds)
+            # Check if data is available with timeout (10 seconds for first frame, 3s for subsequent)
             # Use select on Unix-like systems
             if sys.platform != 'win32':
-                ready, _, _ = select.select([self.ffmpeg_process.stdout], [], [], 3.0)
+                # Longer timeout for streams that need to wait for keyframe
+                timeout = 15.0 if not hasattr(self, '_first_frame_read') else 5.0
+                ready, _, _ = select.select([self.ffmpeg_process.stdout], [], [], timeout)
                 if not ready:
-                    logger.warning("No frame available from ffmpeg (3s timeout) - stream may be lagging, skipping")
+                    logger.warning(f"No frame available from ffmpeg ({timeout}s timeout) - stream may be lagging, skipping")
                     return False, None
+
+                # Mark that we've successfully read first frame
+                if not hasattr(self, '_first_frame_read'):
+                    self._first_frame_read = True
 
             # Read raw frame data
             # ffmpeg has -timeout flag, so it will fail if stream is stuck

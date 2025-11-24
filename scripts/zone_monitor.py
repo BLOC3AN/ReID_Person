@@ -13,6 +13,7 @@ import yaml
 import json
 import time
 import argparse
+import threading
 import numpy as np
 from pathlib import Path
 from datetime import datetime
@@ -23,7 +24,10 @@ from collections import defaultdict
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB
+from core import (
+    YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB,
+    ZoneMonitoringService, ZoneTask, ZoneResult, RedisTrackManager, process_reid_logic
+)
 from tabulate import tabulate
 
 
@@ -145,18 +149,20 @@ class ZoneMonitor:
         """
         Load zone definitions from YAML or JSON
 
-        Supports two formats:
-        1. Single camera (old format):
-           zones:
-             zone1: {name, polygon, authorized_ids}
-             zone2: {...}
-
-        2. Multi-camera (new format):
+        Unified format (cameras-based):
            cameras:
              camera_1:
+               name: "Camera 1"
                zones:
                  zone1: {name, polygon, authorized_ids}
+                 zone2: {...}
              camera_2:
+               zones:
+                 zone1: {...}
+
+        For single camera, use:
+           cameras:
+             camera_1:
                zones:
                  zone1: {...}
 
@@ -174,44 +180,43 @@ class ZoneMonitor:
         zones = {}
         is_multi_camera = False
 
-        # Check format: 'cameras' key = multi-camera, 'zones' key = single camera
-        if 'cameras' in config:
-            # Multi-camera format
-            is_multi_camera = True
-            logger.info("📹 Detected multi-camera zone config")
+        # Only support 'cameras' format
+        if 'cameras' not in config:
+            raise ValueError("Invalid zone config: must contain 'cameras' key. "
+                           "Format: cameras -> camera_1 -> zones -> zone1")
 
-            for camera_idx, (camera_id, camera_data) in enumerate(config['cameras'].items()):
-                camera_name = camera_data.get('name', f'Camera {camera_idx+1}')
-                logger.info(f"   Loading zones for {camera_name}")
+        num_cameras = len(config['cameras'])
+        is_multi_camera = num_cameras > 1
 
-                if 'zones' not in camera_data:
-                    logger.warning(f"   No zones defined for {camera_name}")
-                    continue
-
-                for zone_id, zone_data in camera_data['zones'].items():
-                    # Create unique zone ID: camera_id + zone_id
-                    unique_zone_id = f"{camera_id}_{zone_id}"
-
-                    # Create zone with camera metadata
-                    zone = self._create_zone_from_data(
-                        zone_data,
-                        camera_idx=camera_idx,
-                        camera_id=camera_id,
-                        camera_name=camera_name
-                    )
-                    zones[unique_zone_id] = zone
-                    logger.info(f"      - {zone_data['name']} ({len(zone_data.get('authorized_ids', []))} authorized)")
-
-        elif 'zones' in config:
-            # Single camera format (backward compatible)
+        if is_multi_camera:
+            logger.info(f"📹 Detected multi-camera zone config ({num_cameras} cameras)")
+        else:
             logger.info("📹 Detected single-camera zone config")
 
-            for zone_id, zone_data in config['zones'].items():
-                # Create zone for camera 0 (single camera)
-                zone = self._create_zone_from_data(zone_data, camera_idx=0)
-                zones[zone_id] = zone
-        else:
-            raise ValueError("Invalid zone config: must contain 'zones' or 'cameras' key")
+        for camera_idx, (camera_id, camera_data) in enumerate(config['cameras'].items()):
+            camera_name = camera_data.get('name', f'Camera {camera_idx+1}')
+            logger.info(f"   Loading zones for {camera_name}")
+
+            if 'zones' not in camera_data:
+                logger.warning(f"   No zones defined for {camera_name}")
+                continue
+
+            for zone_id, zone_data in camera_data['zones'].items():
+                # Only add camera prefix for multi-camera setups
+                if is_multi_camera:
+                    unique_zone_id = f"{camera_id}_{zone_id}"
+                else:
+                    unique_zone_id = zone_id  # Keep simple zone1, zone2 for single camera
+
+                # Create zone with camera metadata
+                zone = self._create_zone_from_data(
+                    zone_data,
+                    camera_idx=camera_idx,
+                    camera_id=camera_id,
+                    camera_name=camera_name
+                )
+                zones[unique_zone_id] = zone
+                logger.info(f"      - {zone_data['name']} ({len(zone_data.get('authorized_ids', []))} authorized)")
 
         return zones, is_multi_camera
 
@@ -297,11 +302,11 @@ class ZoneMonitor:
             bbox = zone_data['bbox']
             # R-tree format: (minx, miny, maxx, maxy)
             idx.insert(i, tuple(bbox), obj=zone_id)
-        
+
         logger.info(f"   R-tree index built for {len(self.zones)} zones")
         return idx
-    
-    def find_zone(self, person_bbox, camera_idx=0):
+
+    def find_zone(self, person_bbox, camera_idx=0, track_id=None, person_name=None):
         """
         Find which zone contains the person using IoP >= threshold
 
@@ -312,6 +317,8 @@ class ZoneMonitor:
         Args:
             person_bbox: [x1, y1, x2, y2] or [x, y, w, h]
             camera_idx: Camera index (0-based) for multi-camera setup
+            track_id: Track ID for logging (optional)
+            person_name: Person name for logging (optional)
         Returns:
             zone_id or None
         """
@@ -329,6 +336,11 @@ class ZoneMonitor:
         best_zone = None
         best_iop = 0.0
 
+        # Debug logging
+        debug_info = []
+        if track_id is not None:
+            debug_info.append(f"Track {track_id} ({person_name}): bbox={person_bbox_xyxy}")
+
         for candidate in candidates:
             zone_id = candidate.object
             zone_data = self.zones[zone_id]
@@ -342,12 +354,30 @@ class ZoneMonitor:
             # Calculate IoP (Intersection over Person)
             iop = calculate_iop(person_bbox_xyxy, zone_bbox)
 
+            # Debug logging
+            zone_name = zone_data.get('name', zone_id)
+            iop_percent = iop * 100
+            threshold_percent = self.iop_threshold * 100
+
+            if track_id is not None:
+                status = "✅ MATCH" if iop >= self.iop_threshold else "❌ NO MATCH"
+                debug_info.append(f"  {status} {zone_name}: IoP={iop_percent:.1f}% (threshold={threshold_percent:.0f}%) | zone_bbox={zone_bbox}")
+
             if iop >= self.iop_threshold and iop > best_iop:
                 best_iop = iop
                 best_zone = zone_id
 
+        # Log debug info
+        if track_id is not None and debug_info:
+            for line in debug_info:
+                logger.debug(line)
+            if best_zone:
+                logger.info(f"✅ Track {track_id} ({person_name}): ASSIGNED to {self.zones[best_zone]['name']} (IoP={best_iop*100:.1f}%)")
+            else:
+                logger.info(f"❌ Track {track_id} ({person_name}): NO ZONE MATCH (best IoP={best_iop*100:.1f}% < threshold={self.iop_threshold*100:.0f}%)")
+
         return best_zone
-    
+
     def update_presence(self, global_id, zone_id, frame_time, person_name):
         """
         Update person location and recalculate zone status (ZONE-CENTRIC LOGIC)
@@ -373,7 +403,9 @@ class ZoneMonitor:
                 'name': person_name,
                 'current_zone': zone_id,
                 'enter_time': frame_time if zone_id else None,
-                'camera_idx': 0  # Will be updated by caller if needed
+                'camera_idx': 0,  # Will be updated by caller if needed
+                'last_zone_id': old_zone,  # Keep track of last zone for display
+                'last_exit_time': frame_time if zone_id is None else None  # When person left zone
             }
 
             # Log movement
@@ -580,7 +612,7 @@ class ZoneMonitor:
             logger.info("="*80)
             logger.info("\n" + tabulate(table_data, headers=headers, tablefmt="grid"))
             logger.info("="*80 + "\n")
-    
+
     def get_zone_summary(self):
         """
         Get summary of zone status (ZONE-CENTRIC LOGIC)
@@ -619,7 +651,7 @@ class ZoneMonitor:
             List of zone violation events
         """
         return self.zone_violations.copy()
-    
+
     def save_report(self, output_path):
         """Save zone monitoring report to JSON (ZONE-CENTRIC LOGIC)"""
         report = {
@@ -769,14 +801,23 @@ class ZoneMonitor:
         return frame
 
 
+# Removed: _process_reid_logic_zone() - now using shared process_reid_logic() from core.reid_logic
+
+
 def process_video_with_zones(video_path, zone_config_path, reid_config_path=None,
                              similarity_threshold=0.8, iou_threshold=0.6, zone_opacity=0.3,
                              output_dir=None, max_frames=None, max_duration_seconds=None,
                              output_video_path=None, output_csv_path=None, output_json_path=None,
                              progress_callback=None, cancellation_flag=None,
-                             violation_callback=None, alert_threshold=0):
+                             violation_callback=None, alert_threshold=0, zone_workers=None, camera_idx=0, frame_id_offset=0):
     """
     Process video with zone monitoring integrated into ReID pipeline
+
+    Args:
+        camera_idx: Camera index for multi-stream processing (default: 0)
+        frame_id_offset: Offset for frame IDs to make them unique across cameras (default: 0)
+        zone_workers: Number of worker threads for zone processing (default: auto-detect, capped at 4)
+                     Set to 1 for single-threaded mode, or higher for faster processing
 
     Args:
         video_path: Path to input video or stream URL(s)
@@ -807,8 +848,10 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     logger.info("🎯 ZONE MONITORING WITH PERSON REID")
     logger.info("="*80)
 
-    # Initialize ReID pipeline
+    # Initialize ReID pipeline (will use preloaded components if available)
     pipeline = PersonReIDPipeline(reid_config_path)
+    # Note: initialize_*() calls are optional - pipeline auto-initializes on first use
+    # These calls are kept for explicit initialization and will skip if already loaded
     pipeline.initialize_detector()
     pipeline.initialize_tracker()
     pipeline.initialize_extractor()
@@ -820,6 +863,103 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
 
     # Initialize zone monitor with camera count
     zone_monitor = ZoneMonitor(zone_config_path, iou_threshold, zone_opacity, num_cameras=num_cameras)
+
+    # Load users_dict (global_id -> name mapping) BEFORE starting zone service
+    # Initialize Redis Track Manager first
+    redis_host = os.getenv('REDIS_HOST', 'localhost')
+    redis_port = int(os.getenv('REDIS_PORT', 6379))
+    redis_ttl = int(os.getenv('REDIS_TTL', 300))
+
+    redis_manager_temp = None
+    try:
+        redis_manager_temp = RedisTrackManager(host=redis_host, port=redis_port, ttl=redis_ttl)
+        logger.info(f"✅ Redis connected for users_dict loading")
+    except Exception as e:
+        logger.warning(f"⚠️  Redis not available for users_dict: {e}")
+
+    users_dict = {}
+    if redis_manager_temp:
+        # Try to get from Redis cache first
+        users_dict = redis_manager_temp.get_users_dict()
+        if users_dict:
+            logger.info(f"✅ Loaded {len(users_dict)} users from Redis cache")
+
+    # If not in Redis, load from database and cache it
+    if not users_dict:
+        try:
+            from services.database.postgres_manager import PostgresManager
+            db_manager = PostgresManager()
+            if db_manager.connect():
+                users_dict = db_manager.get_users_dict()
+                logger.info(f"✅ Loaded {len(users_dict)} users from database")
+                db_manager.disconnect()
+
+                # Cache in Redis for future use
+                if redis_manager_temp and users_dict:
+                    redis_manager_temp.set_users_dict(users_dict, ttl=3600)  # Cache for 1 hour
+        except Exception as e:
+            logger.warning(f"⚠️  Could not load users from database: {e}")
+            users_dict = {}
+
+    # Update zone_monitor with users_dict BEFORE starting zone service
+    zone_monitor.users_dict = users_dict
+    logger.info(f"✅ Zone monitor initialized with {len(users_dict)} users: {users_dict}")
+
+    # Load Kafka configuration from config
+    kafka_config = None
+    config_file_to_use = reid_config_path
+
+    logger.info(f"🔍 Kafka config loading: reid_config_path={reid_config_path}")
+
+    # If no config path provided, use default config
+    if not config_file_to_use:
+        from pathlib import Path
+        default_config = Path(__file__).parent.parent / "configs" / "config.yaml"
+        if default_config.exists():
+            config_file_to_use = str(default_config)
+            logger.info(f"📝 Using default config: {config_file_to_use}")
+        else:
+            logger.warning(f"⚠️ Default config not found: {default_config}")
+
+    if config_file_to_use:
+        try:
+            import yaml
+            logger.info(f"📖 Loading config from: {config_file_to_use}")
+            with open(config_file_to_use, 'r') as f:
+                config = yaml.safe_load(f)
+                if 'kafka' in config:
+                    kafka_enabled = config['kafka'].get('enable', False)
+                    logger.info(f"📊 Kafka in config: enable={kafka_enabled}")
+                    if kafka_enabled:
+                        kafka_config = config['kafka']
+                        logger.info(f"✅ Kafka enabled: {kafka_config.get('bootstrap_servers')} -> {kafka_config.get('topic')}")
+                    else:
+                        logger.info("⚠️ Kafka disabled in config")
+                else:
+                    logger.warning("⚠️ No 'kafka' section in config")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load Kafka config: {e}")
+    else:
+        logger.warning("⚠️ No config file found")
+
+    # Initialize zone monitoring service (thread pool)
+    # zone_workers: number of worker threads (default: auto-detect, capped at 4)
+    zone_service = ZoneMonitoringService(
+        zone_monitor,
+        max_queue_size=100,
+        num_workers=zone_workers,
+        kafka_config=kafka_config,
+        alert_threshold=alert_threshold
+    )
+    zone_service.start()
+
+    # Initialize Redis Track Manager for track persistence
+    try:
+        redis_manager = redis_manager_temp  # Reuse the connection from users_dict loading
+        logger.info(f"✅ Redis Track Manager initialized (reusing connection)")
+    except Exception as e:
+        logger.warning(f"⚠️  Redis not available: {e}. Using in-memory storage only.")
+        redis_manager = None
 
     # Setup output paths
     if output_video_path and output_csv_path and output_json_path:
@@ -904,7 +1044,6 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     frame_id = 0
     track_labels = {}
     track_frame_count = {}
-    track_embeddings = {}
 
     # FPS tracking
     fps_history = []
@@ -957,6 +1096,9 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
         if frame_id % 30 == 0:
             logger.info(f"Frame {frame_id}/{total_frames}: {len(tracks)} tracks")
 
+        # Initialize zone_ids for this frame (will be filled during track processing)
+        zone_ids_for_service = {}
+
         # Process each track
         for track in tracks:
             x1, y1, x2, y2, track_id, conf = track
@@ -968,64 +1110,28 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             # Initialize track
             if track_id not in track_frame_count:
                 track_frame_count[track_id] = 0
-                track_embeddings[track_id] = []
 
             track_frame_count[track_id] += 1
             current_frame_count = track_frame_count[track_id]
 
-            # ReID extraction (same logic as detect_and_track.py)
-            should_extract = False
-            if current_frame_count <= 3:
-                should_extract = True
-            elif current_frame_count % 30 == 0:
-                should_extract = True
+            # ReID extraction: Frame 1 + re-verify every 60 frames
+            should_extract = (current_frame_count == 1) or (current_frame_count % 60 == 0)
 
             if should_extract:
                 bbox = [x, y, w, h]
                 embedding = pipeline.extractor.extract(frame, bbox)
-
-                if current_frame_count <= 3:
-                    track_embeddings[track_id].append(embedding)
-
-                    if current_frame_count == 3:
-                        # Voting
-                        votes = {}
-                        similarities = {}
-
-                        for emb in track_embeddings[track_id]:
-                            matches = pipeline.database.find_best_match(emb, threshold=0.0, top_k=1)
-                            if matches:
-                                gid, sim, name = matches[0]
-                                key = (gid, name)
-                                votes[key] = votes.get(key, 0) + 1
-                                similarities[key] = max(similarities.get(key, 0), sim)
-
-                        if votes:
-                            best_key = max(votes.items(), key=lambda x: (x[1], similarities[x[0]]))[0]
-                            global_id, person_name = best_key
-                            similarity = similarities[best_key]
-
-                            label = person_name if similarity >= similarity_threshold else "Unknown"
-
-                            track_labels[track_id] = {
-                                'global_id': global_id,
-                                'similarity': similarity,
-                                'label': label,
-                                'person_name': person_name
-                            }
-                else:
-                    # Re-verification
-                    matches = pipeline.database.find_best_match(embedding, threshold=0.0, top_k=1)
-                    if matches:
-                        global_id, similarity, person_name = matches[0]
-                        label = person_name if similarity >= similarity_threshold else "Unknown"
-
-                        track_labels[track_id] = {
-                            'global_id': global_id,
-                            'similarity': similarity,
-                            'label': label,
-                            'person_name': person_name
-                        }
+                process_reid_logic(
+                    track_id=track_id,
+                    frame_id=frame_id,
+                    current_frame_count=current_frame_count,
+                    embedding=embedding,
+                    database=pipeline.database,
+                    similarity_threshold=similarity_threshold,
+                    redis_manager=redis_manager,
+                    track_labels=track_labels,
+                    log_file=None,  # Zone monitoring doesn't use log file
+                    camera_idx=0
+                )
 
             # Get track info
             info = track_labels.get(track_id, {
@@ -1035,7 +1141,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                 'person_name': 'Unknown'
             })
 
-            # ZONE MONITORING: Check which zone person is in
+            # ZONE MONITORING: Check which zone person is in (Main thread only)
             person_bbox = [x, y, w, h]
 
             # Convert bbox to camera-relative coordinates (single camera = no conversion)
@@ -1045,54 +1151,32 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                 relative_bbox, camera_idx = person_bbox, 0
 
             # Find zone (works for both single and multi-camera)
-            zone_id = zone_monitor.find_zone(relative_bbox, camera_idx)
+            # This is done in main thread for immediate use in drawing
+            zone_id = zone_monitor.find_zone(
+                relative_bbox,
+                camera_idx,
+                track_id=track_id,
+                person_name=info.get('person_name', 'Unknown')
+            )
 
-            # Update zone presence (ZONE-CENTRIC LOGIC)
-            # Only update if we have a valid global_id (person has been identified)
-            if info['global_id'] > 0:
-                # Store violations count before update
-                old_violations_count = len(zone_monitor.zone_violations)
-
-                zone_monitor.update_presence(
-                    info['global_id'],
-                    zone_id,
-                    frame_time,
-                    info['person_name']
-                )
-
-                # Check if new zone violation occurred and trigger callback
-                if violation_callback:
-                    new_violations_count = len(zone_monitor.zone_violations)
-
-                    if new_violations_count > old_violations_count:
-                        # New zone violation occurred
-                        latest_violation = zone_monitor.zone_violations[-1]
-                        violation_callback({
-                            'frame_id': frame_id,
-                            'frame_time': frame_time,
-                            **latest_violation
-                        })
-
-            # Print violation table every 5 seconds
-            if frame_time - zone_monitor.last_violation_table_print >= 5.0:
-                zone_monitor.print_violation_table(frame_time, alert_threshold=alert_threshold)
-                zone_monitor.last_violation_table_print = frame_time
+            # Store zone_id for zone service
+            zone_ids_for_service[track_id] = zone_id
 
             # Get zone info (ZONE-CENTRIC LOGIC)
-            zone_name = zone_monitor.zones[zone_id]['name'] if zone_id else "None"
+            zone_name = zone_monitor.zones[zone_id]['name'] if zone_id is not None else "None"
             duration = 0.0
 
-            # Get person location data for duration tracking
+            # Get person location data for duration tracking (from cached results)
             if info['global_id'] > 0 and info['global_id'] in zone_monitor.person_locations:
                 person_loc = zone_monitor.person_locations[info['global_id']]
-                if zone_id and person_loc.get('enter_time'):
+                if zone_id is not None and person_loc.get('enter_time'):
                     duration = frame_time - person_loc['enter_time']
 
             # Write to CSV (ZONE-CENTRIC LOGIC)
             csv_writer.writerow([
                 frame_id, track_id, info['global_id'], info['person_name'],
                 f"{info['similarity']:.4f}", x, y, w, h,
-                zone_id if zone_id else "", zone_name, f"{duration:.2f}", camera_idx
+                zone_id if zone_id is not None else "", zone_name, f"{duration:.2f}", camera_idx
             ])
 
             # Save person frames as images
@@ -1193,12 +1277,28 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
 
             # Draw on frame (ZONE-CENTRIC LOGIC)
             # Color logic:
-            # Green: Person is in a zone
-            # Blue: Person is outside all zones
-            if zone_id:
-                color = (0, 255, 0)  # Green - in a zone
+            # Green: Person is in a zone (current or last known zone)
+            # Red: Person is outside all zones
+
+            # Use current zone_id if available, otherwise use last known zone
+            display_zone_id = zone_id
+            display_zone_name = zone_name
+            display_duration = duration
+
+            if display_zone_id is None and info['global_id'] > 0 and info['global_id'] in zone_monitor.person_locations:
+                # Use last known zone if person is currently outside
+                person_loc = zone_monitor.person_locations[info['global_id']]
+                if person_loc.get('last_zone_id'):
+                    display_zone_id = person_loc['last_zone_id']
+                    display_zone_name = zone_monitor.zones[display_zone_id]['name'] if display_zone_id in zone_monitor.zones else "Unknown"
+                    if person_loc.get('last_exit_time'):
+                        display_duration = frame_time - person_loc['last_exit_time']
+                    logger.debug(f"Using last zone for {info['label']}: {display_zone_name} (exited {display_duration:.1f}s ago)")
+
+            if display_zone_id is not None:
+                color = (0, 255, 0)  # Green - in a zone or recently in zone
             else:
-                color = (255, 0, 0)  # Blue - outside zones
+                color = (0, 0, 255)  # Red - outside zones
 
             cv2.rectangle(frame, (x, y), (x+w, y+h), color, 2)
 
@@ -1206,8 +1306,8 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             label_text = f"{info['label']} (ID:{track_id})"
 
             # Add zone info and time (ZONE-CENTRIC LOGIC)
-            if zone_id:
-                label_text += f" | {zone_name} ({duration:.1f}s)"
+            if display_zone_id is not None:
+                label_text += f" | {display_zone_name} ({display_duration:.1f}s)"
             else:
                 label_text += f" | Outside"
 
@@ -1217,10 +1317,53 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             cv2.putText(frame, label_text, (x, y-5),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
-        # After processing all tracks, update all zones to check completeness
-        # This ensures zones turn red immediately when all persons leave
-        for zone_id in zone_monitor.zones.keys():
-            zone_monitor._update_zone_status(zone_id, frame_time)
+        # Detect lost tracks (tracks not in current frame)
+        current_track_ids = set(int(track[4]) for track in tracks)
+        old_track_ids = set(track_labels.keys())
+        lost_tracks = old_track_ids - current_track_ids
+
+        for lost_track_id in lost_tracks:
+            old_info = track_labels[lost_track_id]
+            logger.info(f"🗑️  Track {lost_track_id}: RESET (was {old_info.get('person_name', 'Unknown')}, best_sim={old_info.get('best_similarity', 0):.4f})")
+
+            # Delete from Redis (TTL will auto-expire)
+            if redis_manager:
+                redis_manager.delete_track(lost_track_id)
+
+            # Delete from in-memory
+            del track_labels[lost_track_id]
+            if lost_track_id in track_frame_count:
+                del track_frame_count[lost_track_id]
+
+        # Submit zone monitoring task to service thread
+        # Zone service will update zone status and detect violations
+        zone_task = ZoneTask(
+            frame_id=frame_id + frame_id_offset,
+            frame_time=frame_time,
+            tracks=tracks,
+            reid_results=track_labels.copy(),
+            zone_ids=zone_ids_for_service.copy(),
+            camera_idx=camera_idx
+        )
+        zone_service.submit_task(zone_task)
+
+        # Get zone results from service (non-blocking)
+        # May be from previous frame if service is still processing
+        zone_result = zone_service.get_result(timeout=0.001)
+
+        # Process violations from zone service
+        if zone_result and zone_result.violations and violation_callback:
+            for violation in zone_result.violations:
+                violation_callback({
+                    'frame_id': zone_result.frame_id,
+                    'frame_time': zone_result.frame_time,
+                    **violation
+                })
+
+        # Print violation table every 5 seconds
+        if frame_time - zone_monitor.last_violation_table_print >= 5.0:
+            zone_monitor.print_violation_table(frame_time, alert_threshold=alert_threshold)
+            zone_monitor.last_violation_table_print = frame_time
 
         # Draw zones for all cameras (single camera = 1 iteration)
         for cam_idx in range(num_cameras):
@@ -1303,6 +1446,16 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
 
     elapsed = time.time() - start_time
     logger.info("="*80)
+    # Stop zone monitoring service
+    zone_service.stop()
+
+    # Print zone service metrics
+    metrics = zone_service.get_metrics()
+    logger.info(f"\n📊 Zone Service Metrics:")
+    logger.info(f"   Processed frames: {metrics['processed_frames']}")
+    logger.info(f"   Dropped frames: {metrics['dropped_frames']}")
+    logger.info(f"   Avg process time: {metrics['avg_process_time_ms']:.2f}ms")
+
     logger.info(f"✅ Processing completed in {elapsed:.1f}s")
     logger.info(f"   Processed {frame_id} frames @ {frame_id/elapsed:.1f} FPS")
     logger.info(f"   Person frames saved to: {extracted_objects_dir}")
@@ -1338,6 +1491,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
 
     # Save report
     zone_monitor.save_report(output_json)
+
+    # Log Redis stats before cleanup
+    if redis_manager:
+        stats = redis_manager.get_stats()
+        logger.info(f"\n📊 Redis Stats: {stats['total_tracks']} tracks, {stats['redis_memory_used']} memory used")
 
     logger.info("\n" + "="*80)
     logger.info("📁 OUTPUT FILES")
@@ -1375,4 +1533,216 @@ if __name__ == "__main__":
         output_dir=args.output,
         max_frames=args.max_frames
     )
+
+
+def process_multi_stream_with_zones(
+    stream_urls: list,
+    zone_config_path: str,
+    reid_config_path: str = None,
+    similarity_threshold: float = 0.8,
+    iou_threshold: float = 0.6,
+    zone_opacity: float = 0.3,
+    output_dir: str = None,
+    max_frames: int = None,
+    max_duration_seconds: int = None,
+    progress_callback: callable = None,
+    violation_callback: callable = None,
+    cancellation_flag: threading.Event = None,
+    alert_threshold: float = 0,
+    zone_workers: int = None
+):
+    """
+    Process multiple video streams with zone monitoring in parallel
+
+    Each stream is processed in a separate thread with its own zone monitoring.
+
+    Args:
+        stream_urls: List of stream URLs or file paths
+        zone_config_path: Path to zone configuration YAML (must contain cameras section)
+        reid_config_path: Path to ReID config
+        similarity_threshold: ReID similarity threshold
+        iou_threshold: Zone IoP threshold
+        zone_opacity: Zone border thickness factor
+        output_dir: Output directory for results
+        max_frames: Maximum frames per stream
+        max_duration_seconds: Maximum duration per stream
+        progress_callback: Callback(camera_id, frame_id, tracks) for progress updates
+        violation_callback: Callback(violation_dict) for violations
+        cancellation_flag: Threading event to signal cancellation
+        alert_threshold: Time threshold before showing alert
+        zone_workers: Number of worker threads for zone processing
+
+    Returns:
+        Dict with results per camera
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from pathlib import Path
+
+    logger.info("="*80)
+    logger.info("🎯 MULTI-STREAM ZONE MONITORING WITH PERSON REID")
+    logger.info("="*80)
+    logger.info(f"Processing {len(stream_urls)} streams in parallel")
+
+    # Load zone config to extract per-camera zones
+    with open(zone_config_path, 'r') as f:
+        if Path(zone_config_path).suffix.lower() == '.json':
+            import json
+            zone_config = json.load(f)
+        else:
+            zone_config = yaml.safe_load(f)
+
+    if 'cameras' not in zone_config:
+        raise ValueError("Zone config must contain 'cameras' section for multi-stream processing")
+
+    cameras = zone_config['cameras']
+    num_cameras = len(cameras)
+
+    if len(stream_urls) != num_cameras:
+        logger.warning(f"⚠️  Number of streams ({len(stream_urls)}) != number of cameras in config ({num_cameras})")
+        logger.warning(f"   Will process min({len(stream_urls)}, {num_cameras}) streams")
+        num_cameras = min(len(stream_urls), num_cameras)
+
+    # Setup output directory
+    if output_dir is None:
+        output_dir = Path(__file__).parent.parent / "outputs" / "multi_stream_zones"
+    else:
+        output_dir = Path(output_dir)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create per-camera zone configs
+    camera_zone_configs = {}
+    for camera_idx, (camera_id, camera_data) in enumerate(list(cameras.items())[:num_cameras]):
+        # Create single-camera zone config
+        single_camera_config = {
+            'cameras': {
+                'camera_1': camera_data  # Always use camera_1 for single-camera processing
+            }
+        }
+
+        # Save to temp file
+        temp_config_path = output_dir / f"zone_config_camera_{camera_idx}.yaml"
+        with open(temp_config_path, 'w') as f:
+            yaml.dump(single_camera_config, f)
+
+        camera_zone_configs[camera_idx] = str(temp_config_path)
+        logger.info(f"📹 Camera {camera_idx}: {camera_data.get('name', f'Camera {camera_idx+1}')} - {len(camera_data.get('zones', {}))} zones")
+
+    # Process each stream in parallel
+    results = {
+        'cameras': {},
+        'total_time': 0,
+        'status': 'processing'
+    }
+
+    def process_single_stream(camera_idx: int, stream_url: str, zone_config_path: str):
+        """Process a single stream with zone monitoring"""
+        try:
+            logger.info(f"🚀 [Camera {camera_idx}] Starting: {stream_url}")
+
+            # Setup output paths for this camera
+            camera_output_dir = output_dir / f"camera_{camera_idx}"
+            camera_output_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_video = camera_output_dir / f"output_{timestamp}.mp4"
+            output_csv = camera_output_dir / f"tracks_{timestamp}.csv"
+            output_json = camera_output_dir / f"zones_{timestamp}.json"
+
+            # Wrapper for progress callback to include camera_id
+            def camera_progress_callback(frame_id, tracks):
+                if progress_callback:
+                    progress_callback(camera_idx, frame_id, tracks)
+
+            # Calculate frame_id_offset for this camera (to make frame_ids unique across cameras)
+            # Each camera gets a unique offset: camera_0 = 0, camera_1 = 1000000, camera_2 = 2000000, etc.
+            frame_id_offset = camera_idx * 1000000
+
+            # Process with zone monitoring
+            process_video_with_zones(
+                video_path=stream_url,
+                zone_config_path=zone_config_path,
+                reid_config_path=reid_config_path,
+                similarity_threshold=similarity_threshold,
+                iou_threshold=iou_threshold,
+                zone_opacity=zone_opacity,
+                output_video_path=str(output_video),
+                output_csv_path=str(output_csv),
+                output_json_path=str(output_json),
+                max_frames=max_frames,
+                max_duration_seconds=max_duration_seconds,
+                progress_callback=camera_progress_callback,
+                violation_callback=violation_callback,
+                cancellation_flag=cancellation_flag,
+                alert_threshold=alert_threshold,
+                zone_workers=zone_workers,
+                camera_idx=camera_idx,
+                frame_id_offset=frame_id_offset
+            )
+
+            logger.info(f"✅ [Camera {camera_idx}] Completed")
+
+            return {
+                'camera_id': camera_idx,
+                'stream_url': stream_url,
+                'status': 'completed',
+                'output_video': str(output_video),
+                'output_csv': str(output_csv),
+                'output_json': str(output_json)
+            }
+
+        except Exception as e:
+            logger.error(f"❌ [Camera {camera_idx}] Error: {e}")
+            return {
+                'camera_id': camera_idx,
+                'stream_url': stream_url,
+                'status': 'error',
+                'error': str(e)
+            }
+
+    # Execute in parallel
+    start_time = time.time()
+
+    with ThreadPoolExecutor(max_workers=num_cameras) as executor:
+        futures = {}
+
+        for camera_idx in range(num_cameras):
+            stream_url = stream_urls[camera_idx]
+            zone_config = camera_zone_configs[camera_idx]
+
+            future = executor.submit(
+                process_single_stream,
+                camera_idx,
+                stream_url,
+                zone_config
+            )
+            futures[future] = camera_idx
+
+        # Wait for all to complete
+        for future in as_completed(futures):
+            camera_idx = futures[future]
+            try:
+                result = future.result()
+                results['cameras'][camera_idx] = result
+            except Exception as e:
+                logger.error(f"❌ Camera {camera_idx} failed: {e}")
+                results['cameras'][camera_idx] = {
+                    'camera_id': camera_idx,
+                    'status': 'error',
+                    'error': str(e)
+                }
+
+    results['total_time'] = time.time() - start_time
+    results['status'] = 'completed'
+
+    logger.info("="*80)
+    logger.info(f"✅ Multi-stream zone monitoring completed in {results['total_time']:.1f}s")
+    logger.info("="*80)
+
+    return results
+
+
+if __name__ == "__main__":
+    main()
 
