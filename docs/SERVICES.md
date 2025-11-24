@@ -252,14 +252,14 @@ Health check endpoint.
 2. Detect persons using MOT17 model
 3. Extract largest bbox (assume target person)
 4. Extract face embeddings using ArcFace
-5. Store to Qdrant + local pickle file
+5. Store embeddings to Qdrant database
 6. Return success with embedding count
 
-### Database Sync
+### Database Storage
 
-- **Qdrant Cloud:** Real-time sync
-- **Local Pickle:** `data/database/reid_database.pkl`
-- **Format:** `{db: {global_id: [embeddings]}, person_metadata, next_global_id}`
+- **Qdrant:** All embeddings stored in Qdrant vector database
+- **Collection:** `cross_camera_matching_id`
+- **Payload:** `{global_id, name, camera_id, track_id}`
 
 ---
 

@@ -171,11 +171,7 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
 
     for emb in embeddings:
         db.add_embedding(global_id, emb, metadata=metadata)
-    
-    # Save to local file
-    db_file = Path(__file__).parent.parent / "data" / "database" / "reid_database.pkl"
-    db.save_to_file(str(db_file))
-    
+
     # Summary
     logger.info("\n" + "=" * 80)
     logger.info("✅ REGISTRATION COMPLETE")
@@ -183,7 +179,6 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
     logger.info(f"Person: {person_name}")
     logger.info(f"Global ID: {global_id}")
     logger.info(f"Embeddings stored: {len(embeddings)}")
-    logger.info(f"Local database: {db_file}")
     logger.info(f"Qdrant collection: {db.collection_name} ({len(embeddings)} points)")
     logger.info("=" * 80)
     logger.info("\nNext step:")
@@ -354,10 +349,6 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
     for emb in embeddings:
         db.add_embedding(global_id, emb, metadata=metadata)
 
-    # Save to local file
-    db_file = Path(__file__).parent.parent / "data" / "database" / "reid_database.pkl"
-    db.save_to_file(str(db_file))
-
     # Summary
     logger.info("\n" + "=" * 80)
     logger.info("✅ REGISTRATION COMPLETE")
@@ -366,7 +357,6 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
     logger.info(f"Global ID: {global_id}")
     logger.info(f"Images processed: {processed_count}/{len(images_to_process)}")
     logger.info(f"Embeddings stored: {len(embeddings)}")
-    logger.info(f"Local database: {db_file}")
     logger.info(f"Qdrant collection: {db.collection_name} ({len(embeddings)} points)")
     logger.info("=" * 80)
 

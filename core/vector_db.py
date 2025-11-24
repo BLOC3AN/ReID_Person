@@ -340,46 +340,6 @@ class QdrantVectorDB:
             'next_global_id': self.next_global_id,
             'using_qdrant': self.client is not None,
         }
-    
-    def save_to_file(self, filepath: str):
-        """Save database to file"""
-        import pickle
-        data = {
-            'db': {k: list(v) for k, v in self.db.items()},
-            'person_metadata': self.person_metadata,
-            'next_global_id': self.next_global_id
-        }
-        with open(filepath, 'wb') as f:
-            pickle.dump(data, f)
-        logger.info(f"✅ Database saved to {filepath}")
-
-    def load_from_file(self, filepath: str):
-        """Load database from file"""
-        import pickle
-        from pathlib import Path
-        if not Path(filepath).exists():
-            logger.warning(f"Database file not found: {filepath}")
-            return False
-
-        with open(filepath, 'rb') as f:
-            data = pickle.load(f)
-
-        self.db.clear()
-        for k, v in data['db'].items():
-            self.db[k] = deque(v, maxlen=self.max_embeddings)
-
-        self.person_metadata = data['person_metadata']
-
-        # Calculate next_global_id from existing IDs (for auto-detection of new persons)
-        if self.db:
-            max_id = max(self.db.keys())
-            self.next_global_id = max_id + 1
-        else:
-            self.next_global_id = data.get('next_global_id', 1)
-
-        logger.info(f"✅ Database loaded from {filepath}")
-        logger.info(f"   Next auto global_id: {self.next_global_id}")
-        return True
 
     def clear(self):
         """Clear database"""

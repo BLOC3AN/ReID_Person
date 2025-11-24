@@ -178,12 +178,7 @@ class PersonReIDPipeline:
             use_grpc=cfg.get('use_grpc', False)
         )
 
-        # Load existing database
-        db_file = Path(__file__).parent.parent / "data" / "database" / "reid_database.pkl"
-        if db_file.exists():
-            logger.info(f"Loading database from {db_file}")
-            self.database.load_from_file(str(db_file))
-            logger.info(f"Database loaded: {self.database.get_person_count()} persons")
+        logger.info(f"Database initialized: {self.database.get_person_count()} persons in Qdrant")
     
     def process_video(self, video_path, similarity_threshold=0.8, output_dir=None,
                       output_video_path=None, output_csv_path=None, output_log_path=None,
