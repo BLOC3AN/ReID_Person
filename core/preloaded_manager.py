@@ -80,24 +80,24 @@ class PreloadedPipelineManager:
                 # Load config
                 config_start = time.time()
                 self._load_config(config_path)
-                logger.info(f"✓ Config loaded in {time.time() - config_start:.2f}s")
+                logger.info(f"✅ Config loaded in {time.time() - config_start:.2f}s")
 
                 # Initialize components in order with timing
                 detector_start = time.time()
                 self._init_detector()
-                logger.info(f"✓ Detector loaded in {time.time() - detector_start:.2f}s")
+                logger.info(f"✅ Detector loaded in {time.time() - detector_start:.2f}s")
 
                 tracker_start = time.time()
                 self._init_tracker()
-                logger.info(f"✓ Tracker loaded in {time.time() - tracker_start:.2f}s")
+                logger.info(f"✅ Tracker loaded in {time.time() - tracker_start:.2f}s")
 
                 extractor_start = time.time()
                 self._init_extractor()
-                logger.info(f"✓ Extractor loaded in {time.time() - extractor_start:.2f}s")
+                logger.info(f"✅ Extractor loaded in {time.time() - extractor_start:.2f}s")
 
                 database_start = time.time()
                 self._init_database()
-                logger.info(f"✓ Database loaded in {time.time() - database_start:.2f}s")
+                logger.info(f"✅ Database loaded in {time.time() - database_start:.2f}s")
 
                 load_time = time.time() - overall_start
                 logger.info("=" * 80)
@@ -153,7 +153,7 @@ class PreloadedPipelineManager:
                 timeout=triton_cfg.get('timeout', 10.0),
                 verbose=triton_cfg.get('verbose', False)
             )
-            logger.info("✓ Triton Detector loaded")
+            logger.info("✅ Triton Detector loaded")
             logger.info(f"  Server: {triton_cfg['url']}")
             logger.info(f"  Model: {triton_cfg['model_name']}")
 
@@ -174,7 +174,7 @@ class PreloadedPipelineManager:
                 nms_thresh=cfg['nms_threshold'],
                 test_size=tuple(cfg['test_size'])
             )
-            logger.info("✓ PyTorch Detector loaded")
+            logger.info("✅ PyTorch Detector loaded")
     
     def _init_tracker(self) -> None:
         """Initialize ByteTrack tracker"""
@@ -188,7 +188,7 @@ class PreloadedPipelineManager:
             frame_rate=30,
             mot20=cfg.get('mot20', False)
         )
-        logger.info("✓ Tracker loaded")
+        logger.info("✅ Tracker loaded")
     
     def _init_extractor(self) -> None:
         """Initialize ArcFace feature extractor (Triton Pipeline, Triton, or InsightFace)"""
@@ -215,7 +215,7 @@ class PreloadedPipelineManager:
                 feature_dim=feature_dim,
                 face_conf_threshold=face_conf_threshold
             )
-            logger.info("✓ Triton Face Recognition Pipeline loaded")
+            logger.info("✅ Triton Face Recognition Pipeline loaded")
             logger.info(f"  Server: {triton_url}")
             logger.info(f"  Face Detector: {face_detector_model}")
             logger.info(f"  ArcFace: {arcface_model}")
@@ -229,7 +229,7 @@ class PreloadedPipelineManager:
                 feature_dim=cfg.get('feature_dim', 512),
                 face_conf_thresh=triton_cfg.get('face_conf_threshold', 0.5)
             )
-            logger.info("✓ InsightFace ArcFace Extractor loaded")
+            logger.info("✅ InsightFace ArcFace Extractor loaded")
     
     def _init_database(self) -> None:
         """Initialize Qdrant vector database"""
@@ -249,7 +249,7 @@ class PreloadedPipelineManager:
             person_count = self.database.sync_metadata_from_qdrant()
             logger.info(f"✅ Synced metadata from Qdrant: {person_count} persons")
 
-        logger.info("✓ Database loaded")
+        logger.info("✅ Database loaded")
     
     def _cleanup_partial_init(self) -> None:
         """Cleanup partially initialized components"""
