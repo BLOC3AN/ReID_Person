@@ -1,0 +1,36 @@
+# Dockerfile for Livestream Service
+# Serves HLS livestream files for real-time viewing
+
+FROM python:3.10-slim
+
+# Install FFmpeg (required for HLS streaming)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir flask flask-cors requests
+
+# Copy livestream service
+COPY services/livestream_service.py /app/
+
+# Create output directory
+RUN mkdir -p /app/outputs/livestream
+
+# Expose port
+EXPOSE 3900
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:3900/health')"
+
+# Run service
+CMD ["python", "livestream_service.py"]
+

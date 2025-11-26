@@ -57,7 +57,7 @@ async def broadcast_message(message: Dict):
     for client_id, ws in list(websocket_clients.items()):
         try:
             await ws.send_json(message)
-            logger.debug(f"✓ Sent Kafka alert to client {client_id}")
+            logger.debug(f"✅ Sent Kafka alert to client {client_id}")
         except Exception as e:
             logger.warning(f"Failed to send to client {client_id}: {e}")
             disconnected.append(client_id)

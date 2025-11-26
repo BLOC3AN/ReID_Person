@@ -121,7 +121,7 @@ class StreamReader:
             for i in range(max_attempts):
                 ret, _ = self.cap.read()
                 if ret:
-                    logger.info(f"✓ First frame received after {(i+1)*0.2:.1f}s")
+                    logger.info(f"✅ First frame received after {(i+1)*0.2:.1f}s")
                     break
                 time.sleep(0.2)
 
@@ -141,7 +141,7 @@ class StreamReader:
         if self.fps == 0 or self.fps is None:
             self.fps = 25.0  # Default for streams
 
-        logger.info(f"✓ Opened via OpenCV: {self.width}x{self.height} @ {self.fps:.1f} FPS")
+        logger.info(f"✅ Opened via OpenCV: {self.width}x{self.height} @ {self.fps:.1f} FPS")
         self.using_ffmpeg = False
     
     def _initialize_ffmpeg_udp(self):
@@ -169,9 +169,12 @@ class StreamReader:
                 source_url = f"{self.source}&reuse=1"
 
         # Build ffmpeg command to decode and output raw BGR24 frames
-        # Optimized for faster startup with UDP streams
+        # Optimized for faster startup with UDP streams + GPU decoding
+        # Note: GPU decodes, then transfers to CPU for rawvideo output (necessary for pipe)
         ffmpeg_cmd = [
             'ffmpeg',
+            '-hwaccel', 'cuda',  # Enable NVIDIA GPU hardware acceleration for decoding
+            '-hwaccel_device', '0',  # Use GPU 0 (can be configured)
             '-timeout', '5000000',  # 5 second timeout (reduced from 10s)
             '-fflags', '+genpts+discardcorrupt+nobuffer+igndts',  # Added igndts for corrupted streams
             '-flags', 'low_delay',
@@ -181,13 +184,13 @@ class StreamReader:
             '-i', source_url,
             '-vsync', '0',  # Pass through timestamps, don't wait for missing frames
             '-f', 'rawvideo',
-            '-pix_fmt', 'bgr24',
+            '-pix_fmt', 'bgr24',  # Output format (GPU->CPU transfer happens here)
             '-an',  # No audio
             '-sn',  # No subtitles
             'pipe:1'
         ]
 
-        logger.info(f"Starting ffmpeg subprocess (optimized for fast startup)...")
+        logger.info(f"Starting ffmpeg subprocess (GPU decoding enabled)...")
         logger.debug(f"Command: {' '.join(ffmpeg_cmd)}")
 
         # Start ffmpeg process with stderr capture for debugging
@@ -224,7 +227,7 @@ class StreamReader:
                 readable, _, _ = select.select([self.ffmpeg_process.stdout], [], [], 0)
                 if readable:
                     data_detected = True
-                    logger.info(f"✓ Data detected from ffmpeg after {(i+1)*check_interval:.1f}s")
+                    logger.info(f"✅ Data detected from ffmpeg after {(i+1)*check_interval:.1f}s")
                     break
             else:
                 # On Windows, just wait a bit longer
@@ -264,7 +267,7 @@ class StreamReader:
         if self.ffmpeg_process.poll() is not None:
             raise RuntimeError(f"ffmpeg process terminated after restart (exit code: {self.ffmpeg_process.returncode})")
 
-        logger.info(f"✓ Stream opened via ffmpeg subprocess: {self.width}x{self.height} @ {self.fps:.1f} FPS")
+        logger.info(f"✅ Stream opened via ffmpeg subprocess: {self.width}x{self.height} @ {self.fps:.1f} FPS")
         self.using_ffmpeg = True
     
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:

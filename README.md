@@ -291,8 +291,7 @@ person_reid_system/
 │   ├── stream_reader.py     # Video/stream reader (UDP, RTSP, files)
 │   └── multi_stream_reader.py # Multi-camera stream reader
 ├── data/
-│   ├── videos/              # Input videos
-│   └── database/            # reid_database.pkl
+│   └── videos/              # Input videos
 ├── models/
 │   ├── bytetrack_x_mot17.pth.tar     # PyTorch MOT17 model
 │   ├── bytetrack_x_mot17_fp16.trt    # TensorRT engine

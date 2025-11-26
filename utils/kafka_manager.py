@@ -69,7 +69,7 @@ class KafkaAlertProducer:
             logger.error(f"❌ Kafka message delivery failed: {err}")
         else:
             self.message_count += 1
-            logger.debug(f"✓ Kafka message delivered to {msg.topic()} [partition {msg.partition()}] at offset {msg.offset()}")
+            logger.debug(f"✅ Kafka message delivered to {msg.topic()} [partition {msg.partition()}] at offset {msg.offset()}")
 
     def send_alert(self,
                    user_id: Optional[str],
@@ -285,7 +285,7 @@ class KafkaAlertConsumer:
                     message_dict = json.loads(message_json)
 
                     self.message_count += 1
-                    logger.debug(f"✓ Kafka message received: {message_dict.get('status')} - {message_dict.get('zone_name')}")
+                    logger.debug(f"✅ Kafka message received: {message_dict.get('status')} - {message_dict.get('zone_name')}")
 
                     # Call callback
                     callback(message_dict)

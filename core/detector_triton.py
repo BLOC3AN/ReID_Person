@@ -90,7 +90,7 @@ class TritonDetector:
             if not self.client.is_server_ready():
                 raise RuntimeError(f"Triton server at {self.triton_url} is not ready")
             
-            logger.info(f"✓ Connected to Triton server at {self.triton_url}")
+            logger.info(f"✅ Connected to Triton server at {self.triton_url}")
             
         except Exception as e:
             logger.error(f"Failed to connect to Triton server: {e}")
@@ -128,7 +128,7 @@ class TritonDetector:
             else:
                 logger.info(f"  Dynamic batching: DISABLED")
             
-            logger.info("✓ Model metadata loaded")
+            logger.info("✅ Model metadata loaded")
             
         except Exception as e:
             logger.error(f"Failed to get model metadata: {e}")
@@ -151,7 +151,7 @@ class TritonDetector:
             except Exception as e:
                 logger.warning(f"Warmup iteration {i+1} failed: {e}")
 
-        logger.info("✓ Model warmed up")
+        logger.info("✅ Model warmed up")
     
     def _infer(self, input_data: np.ndarray) -> np.ndarray:
         """

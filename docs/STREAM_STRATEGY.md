@@ -335,7 +335,7 @@ def _reconnect_stream(self):
         try:
             logger.info(f"Reconnection attempt {attempt + 1}/{max_retries}")
             self._initialize()
-            logger.info("✓ Reconnected successfully")
+            logger.info("✅ Reconnected successfully")
             return True
         except Exception as e:
             logger.error(f"Reconnection failed: {e}")

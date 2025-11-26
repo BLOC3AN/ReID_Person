@@ -256,21 +256,21 @@ Start
   │
   ├─ Single camera?
   │   ├─ Yes → FPS < 20?
-  │   │   ├─ Yes → PyTorch ✓
-  │   │   └─ No → TensorRT ✓
+  │   │   ├─ Yes → PyTorch ✅
+  │   │   └─ No → TensorRT ✅
   │   │
   │   └─ No → Multiple cameras?
-  │       ├─ 2-3 cameras → TensorRT ✓
-  │       └─ 4+ cameras → Triton ✓
+  │       ├─ 2-3 cameras → TensorRT ✅
+  │       └─ 4+ cameras → Triton ✅
   │
   ├─ Need low latency (< 30ms)?
-  │   └─ Yes → Triton ✓
+  │   └─ Yes → Triton ✅
   │
   ├─ Need monitoring/metrics?
-  │   └─ Yes → Triton ✓
+  │   └─ Yes → Triton ✅
   │
   └─ Development/debugging?
-      └─ Yes → PyTorch ✓
+      └─ Yes → PyTorch ✅
 ```
 
 ---

@@ -166,7 +166,8 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                       zone_config_path: Optional[str] = None, iou_threshold: float = 0.6,
                       zone_opacity: float = 0.3, max_frames: Optional[int] = None,
                       max_duration_seconds: Optional[int] = None, alert_threshold: float = 0,
-                      zone_workers: Optional[int] = None):
+                      zone_workers: Optional[int] = None, enable_livestream: bool = False,
+                      livestream_dir: Optional[str] = None):
     """
     Background task to process detection and tracking with optional zone monitoring
     Auto-detects single vs multi-stream and processes accordingly
@@ -248,7 +249,9 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                     violation_callback=lambda violation: _add_violation(job_id, violation),
                     cancellation_flag=cancellation_flags.get(job_id),
                     alert_threshold=alert_threshold,
-                    zone_workers=zone_workers
+                    zone_workers=zone_workers,
+                    enable_livestream=enable_livestream,
+                    livestream_dir=livestream_dir
                 )
 
                 # Create summary log file
@@ -377,7 +380,9 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                     violation_callback=lambda violation: _add_violation(job_id, violation),
                     cancellation_flag=cancellation_flags.get(job_id),
                     alert_threshold=alert_threshold,
-                    zone_workers=zone_workers
+                    zone_workers=zone_workers,
+                    enable_livestream=enable_livestream,
+                    livestream_dir=livestream_dir
                 )
 
                 # Create a simple log file for zone monitoring
@@ -736,7 +741,8 @@ async def detect_and_track(
     max_frames: Optional[int] = Form(None),
     max_duration_seconds: Optional[int] = Form(None),
     alert_threshold: float = Form(0),
-    zone_workers: Optional[int] = Form(None)
+    zone_workers: Optional[int] = Form(None),
+    enable_livestream: bool = Form(False)
 ):
     """
     Detect, track, and re-identify persons in video file or stream with optional zone monitoring
@@ -761,6 +767,7 @@ async def detect_and_track(
         max_duration_seconds: Maximum duration in seconds (None for unlimited, mainly for streams)
         alert_threshold: Time threshold (seconds) before showing alert (default: 0)
         zone_workers: Number of worker processes for zone monitoring (default: auto)
+        enable_livestream: Enable real-time HLS livestream output (default: False)
 
     Returns:
         Job ID for tracking the detection process
@@ -801,6 +808,17 @@ async def detect_and_track(
         output_csv = str(OUTPUT_DIR / "csv" / f"{job_id}_{output_suffix}_tracking.csv")
         output_log = str(OUTPUT_DIR / "logs" / f"{job_id}_{output_suffix}_detection.log")
 
+        # Setup livestream directory if enabled
+        livestream_dir = None
+        livestream_url = None
+        if enable_livestream:
+            livestream_dir = str(OUTPUT_DIR / "livestream" / job_id)
+            Path(livestream_dir).mkdir(parents=True, exist_ok=True)
+            # Livestream URL will be served by livestream service on port 3900
+            livestream_url = f"http://localhost:3900/hls/{job_id}/stream.m3u8"
+            logger.info(f"📡 Livestream enabled for job {job_id}")
+            logger.info(f"   URL: {livestream_url}")
+
         # Create output directories
         _ensure_output_directories()
 
@@ -811,7 +829,9 @@ async def detect_and_track(
             "message": f"{'Stream' if is_stream else 'Video'} detection job queued for processing",
             "video_path": video_path_str,
             "zone_monitoring": zone_config_path is not None,
-            "is_stream": is_stream
+            "is_stream": is_stream,
+            "enable_livestream": enable_livestream,
+            "livestream_url": livestream_url
         }
 
         # Add stream-specific metadata
@@ -839,7 +859,9 @@ async def detect_and_track(
             max_frames=max_frames,
             max_duration_seconds=max_duration_seconds,
             alert_threshold=alert_threshold,
-            zone_workers=zone_workers
+            zone_workers=zone_workers,
+            enable_livestream=enable_livestream,
+            livestream_dir=livestream_dir
         )
 
         # Prepare response

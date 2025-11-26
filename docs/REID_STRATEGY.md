@@ -276,15 +276,15 @@ SIMILARITY_THRESHOLD = 0.8  # Default: 0.8
 | 1 | Extract #2 | Pending | - |
 | 2 | Extract #3 + Vote | **Duong** (3/3 votes) | 0.9606 |
 | 3-29 | Cached | Duong | 0.9606 |
-| 30 | Re-verify | Duong → Duong ✓ | 0.9654 |
+| 30 | Re-verify | Duong → Duong ✅ | 0.9654 |
 | 31-59 | Cached | Duong | 0.9654 |
-| 60 | Re-verify | Duong → Duong ✓ | 0.9664 |
+| 60 | Re-verify | Duong → Duong ✅ | 0.9664 |
 | 61-89 | Cached | Duong | 0.9664 |
-| 90 | Re-verify | Duong → Duong ✓ | 0.9668 |
+| 90 | Re-verify | Duong → Duong ✅ | 0.9668 |
 | 91-119 | Cached | Duong | 0.9668 |
-| 120 | Re-verify | Duong → Duong ✓ | 0.9716 |
+| 120 | Re-verify | Duong → Duong ✅ | 0.9716 |
 | 121-149 | Cached | Duong | 0.9716 |
-| 150 | Re-verify | Duong → Duong ✓ | 0.9659 |
+| 150 | Re-verify | Duong → Duong ✅ | 0.9659 |
 
 **Total extractions:** 3 (voting) + 5 (re-verify) = **8 extractions** (vs 150 if every frame)
 

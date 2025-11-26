@@ -17,7 +17,7 @@ from qdrant_client.models import Distance, VectorParams
 from typing import List, Union
 
 
-def register_person_mot17(video_path: str, person_name: str, global_id: int, sample_rate: int = 5, delete_existing: bool = False, face_conf_thresh: float = 0.5, detector=None, extractor=None):
+def register_person_mot17(video_path: str, person_name: str, global_id: int, sample_rate: int = 5, delete_existing: bool = False, face_conf_thresh: float = 0.5, skip_body_detection: bool = False, detector=None, extractor=None):
     """
     Register a person using MOT17 model
 
@@ -28,6 +28,7 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
         sample_rate: Extract 1 frame every N frames (default: 5)
         delete_existing: Delete existing collection before registering
         face_conf_thresh: Face detection confidence threshold 0-1 (default: 0.5)
+        skip_body_detection: Skip body detection and use full image (for augmented face images) (default: False)
         detector: Pre-loaded YOLOX detector (optional, will create new if None)
         extractor: Pre-loaded ArcFace extractor (optional, will create new if None)
     """
@@ -37,10 +38,14 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
     logger.info(f"Global ID: {global_id}")
     logger.info(f"Video: {video_path}")
     logger.info(f"Sample rate: {sample_rate}")
+    logger.info(f"Skip body detection: {skip_body_detection}")
     logger.info("=" * 80)
 
-    # Use preloaded detector or initialize new one
-    if detector is None:
+    # Use preloaded detector or initialize new one (skip if skip_body_detection=True)
+    if skip_body_detection:
+        logger.info("\n⚠️  Skipping body detection - using full image as bbox")
+        detector = None
+    elif detector is None:
         logger.info("\nInitializing MOT17 detector...")
         model_path = Path(__file__).parent.parent / "models" / "bytetrack_x_mot17.pth.tar"
         detector = YOLOXDetector(
@@ -96,27 +101,32 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
     # Extract embeddings
     logger.info(f"\nExtracting embeddings from {len(frames)} frames...")
     embeddings = []
-    
+
     for i, frame in enumerate(frames):
-        # Detect persons in frame
-        detections = detector.detect(frame)
-        if len(detections) == 0:
-            continue
-        
-        # Get largest bounding box (assume it's the target person)
-        areas = [(det[2] - det[0]) * (det[3] - det[1]) for det in detections]
-        largest_idx = np.argmax(areas)
-        det = detections[largest_idx]
-        
-        # Convert to [x, y, w, h] format
-        x1, y1, x2, y2 = det[:4]
-        bbox = [int(x1), int(y1), int(x2 - x1), int(y2 - y1)]
-        
+        if skip_body_detection:
+            # Use full image as bbox (for augmented face images)
+            h, w = frame.shape[:2]
+            bbox = [0, 0, w, h]
+        else:
+            # Detect persons in frame
+            detections = detector.detect(frame)
+            if len(detections) == 0:
+                continue
+
+            # Get largest bounding box (assume it's the target person)
+            areas = [(det[2] - det[0]) * (det[3] - det[1]) for det in detections]
+            largest_idx = np.argmax(areas)
+            det = detections[largest_idx]
+
+            # Convert to [x, y, w, h] format
+            x1, y1, x2, y2 = det[:4]
+            bbox = [int(x1), int(y1), int(x2 - x1), int(y2 - y1)]
+
         # Extract embedding
         embedding = extractor.extract(frame, bbox)
         if np.linalg.norm(embedding) > 0:
             embeddings.append(embedding)
-        
+
         if (i + 1) % 10 == 0:
             logger.info(f"  Processed {i + 1}/{len(frames)} frames")
     
@@ -171,11 +181,7 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
 
     for emb in embeddings:
         db.add_embedding(global_id, emb, metadata=metadata)
-    
-    # Save to local file
-    db_file = Path(__file__).parent.parent / "data" / "database" / "reid_database.pkl"
-    db.save_to_file(str(db_file))
-    
+
     # Summary
     logger.info("\n" + "=" * 80)
     logger.info("✅ REGISTRATION COMPLETE")
@@ -183,7 +189,6 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
     logger.info(f"Person: {person_name}")
     logger.info(f"Global ID: {global_id}")
     logger.info(f"Embeddings stored: {len(embeddings)}")
-    logger.info(f"Local database: {db_file}")
     logger.info(f"Qdrant collection: {db.collection_name} ({len(embeddings)} points)")
     logger.info("=" * 80)
     logger.info("\nNext step:")
@@ -192,7 +197,7 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
 
 
 def register_person_from_images(image_paths: Union[str, List[str]], person_name: str, global_id: int,
-                                 delete_existing: bool = False, face_conf_thresh: float = 0.5, detector=None, extractor=None):
+                                 delete_existing: bool = False, face_conf_thresh: float = 0.5, skip_body_detection: bool = False, detector=None, extractor=None):
     """
     Register a person using images instead of video
 
@@ -202,6 +207,7 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
         global_id: Global ID for the person (unique identifier)
         delete_existing: Delete existing collection before registering
         face_conf_thresh: Face detection confidence threshold 0-1 (default: 0.5)
+        skip_body_detection: Skip body detection and use full image (for augmented face images) (default: False)
         detector: Pre-loaded YOLOX detector (optional, will create new if None)
         extractor: Pre-loaded ArcFace extractor (optional, will create new if None)
     """
@@ -209,6 +215,7 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
     logger.info("=" * 80)
     logger.info(f"REGISTERING PERSON FROM IMAGES: {person_name}")
     logger.info(f"Global ID: {global_id}")
+    logger.info(f"Skip body detection: {skip_body_detection}")
     logger.info("=" * 80)
 
     # Collect image paths
@@ -237,8 +244,11 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
         logger.error("No images found!")
         return
 
-    # Use preloaded detector or initialize new one
-    if detector is None:
+    # Use preloaded detector or initialize new one (skip if skip_body_detection=True)
+    if skip_body_detection:
+        logger.info("\n⚠️  Skipping body detection - using full image as bbox")
+        detector = None
+    elif detector is None:
         logger.info("\nInitializing MOT17 detector...")
         model_path = Path(__file__).parent.parent / "models" / "bytetrack_x_mot17.pth.tar"
         detector = YOLOXDetector(
@@ -271,27 +281,32 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
     embeddings = []
     processed_count = 0
 
-    for i, img_path in enumerate(images_to_process):
+    for img_path in images_to_process:
         # Read image
         frame = cv2.imread(str(img_path))
         if frame is None:
             logger.warning(f"  ⚠️  Cannot read image: {img_path}")
             continue
 
-        # Detect persons in image
-        detections = detector.detect(frame)
-        if len(detections) == 0:
-            logger.warning(f"  ⚠️  No person detected in: {img_path.name}")
-            continue
+        if skip_body_detection:
+            # Use full image as bbox (for augmented face images)
+            h, w = frame.shape[:2]
+            bbox = [0, 0, w, h]
+        else:
+            # Detect persons in image
+            detections = detector.detect(frame)
+            if len(detections) == 0:
+                logger.warning(f"  ⚠️  No person detected in: {img_path.name}")
+                continue
 
-        # Get largest bounding box (assume it's the target person)
-        areas = [(det[2] - det[0]) * (det[3] - det[1]) for det in detections]
-        largest_idx = np.argmax(areas)
-        det = detections[largest_idx]
+            # Get largest bounding box (assume it's the target person)
+            areas = [(det[2] - det[0]) * (det[3] - det[1]) for det in detections]
+            largest_idx = np.argmax(areas)
+            det = detections[largest_idx]
 
-        # Convert to [x, y, w, h] format
-        x1, y1, x2, y2 = det[:4]
-        bbox = [int(x1), int(y1), int(x2 - x1), int(y2 - y1)]
+            # Convert to [x, y, w, h] format
+            x1, y1, x2, y2 = det[:4]
+            bbox = [int(x1), int(y1), int(x2 - x1), int(y2 - y1)]
 
         # Extract embedding
         embedding = extractor.extract(frame, bbox)
@@ -354,10 +369,6 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
     for emb in embeddings:
         db.add_embedding(global_id, emb, metadata=metadata)
 
-    # Save to local file
-    db_file = Path(__file__).parent.parent / "data" / "database" / "reid_database.pkl"
-    db.save_to_file(str(db_file))
-
     # Summary
     logger.info("\n" + "=" * 80)
     logger.info("✅ REGISTRATION COMPLETE")
@@ -366,7 +377,6 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
     logger.info(f"Global ID: {global_id}")
     logger.info(f"Images processed: {processed_count}/{len(images_to_process)}")
     logger.info(f"Embeddings stored: {len(embeddings)}")
-    logger.info(f"Local database: {db_file}")
     logger.info(f"Qdrant collection: {db.collection_name} ({len(embeddings)} points)")
     logger.info("=" * 80)
 
@@ -413,7 +423,13 @@ if __name__ == "__main__":
         help="Face detection confidence threshold 0-1 (default: 0.5)"
     )
 
+    parser.add_argument(
+        "--skip-body-detection",
+        action='store_true',
+        help="Skip body detection and use full image (for augmented face images) (default: False)"
+    )
+
     args = parser.parse_args()
 
-    register_person_mot17(args.video, args.name, args.global_id, args.sample_rate, args.delete_existing, args.face_conf_thresh)
+    register_person_mot17(args.video, args.name, args.global_id, args.sample_rate, args.delete_existing, args.face_conf_thresh, args.skip_body_detection)
 

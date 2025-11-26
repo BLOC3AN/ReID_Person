@@ -155,10 +155,10 @@ python scripts/register_mot17.py --video data/videos/khiem.mp4 --name Khiem --sa
 # Lower sample-rate = more embeddings
 ```
 
-3. **Clear database and re-register:**
+3. **Clear Qdrant database and re-register:**
 ```bash
-rm data/database/reid_database.pkl
-python scripts/register_mot17.py --video data/videos/khiem.mp4 --name Khiem
+# Use --delete-existing flag to clear collection
+python scripts/register_mot17.py --video data/videos/khiem.mp4 --name Khiem --delete-existing
 ```
 
 ---
@@ -210,34 +210,34 @@ pip install loguru
 
 ---
 
-### 8. Database Corruption
+### 8. Qdrant Connection Issues
 
 **Symptom:**
 ```
-Error loading database: pickle.UnpicklingError
+Error connecting to Qdrant: Connection refused
 ```
 
 **Solution:**
 
-1. **Backup old database:**
+1. **Check Qdrant service status:**
 ```bash
-mv data/database/reid_database.pkl data/database/reid_database.pkl.backup
+# For Docker deployment
+docker ps | grep qdrant
+
+# Check Qdrant logs
+docker logs qdrant
 ```
 
-2. **Create new database:**
+2. **Verify Qdrant configuration in configs/.env:**
 ```bash
-python scripts/register_mot17.py --video data/videos/person.mp4 --name PersonName
+QDRANT_URI=http://qdrant:6333
+QDRANT_API_KEY=your_api_key
+QDRANT_COLLECTION=cross_camera_matching_id
 ```
 
-3. **If backup needed, try to recover:**
-```python
-import pickle
-with open("data/database/reid_database.pkl.backup", "rb") as f:
-    try:
-        data = pickle.load(f)
-        print(data.keys())
-    except Exception as e:
-        print(f"Cannot recover: {e}")
+3. **Recreate Qdrant collection:**
+```bash
+python scripts/register_mot17.py --video data/videos/person.mp4 --name PersonName --delete-existing
 ```
 
 ---

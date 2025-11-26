@@ -181,12 +181,10 @@ person_id = db.create_new_person(name="John", embeddings=[feature])
 ```
 
 **Methods:**
-- `add_embedding(person_id, embedding, metadata)` - Add embedding to database
+- `add_embedding(person_id, embedding, metadata)` - Add embedding to Qdrant database
 - `find_best_match(query_embedding, top_k)` - Find best matching person, returns `[(global_id, similarity, name), ...]`
 - `create_new_person(name, embeddings)` - Create new person entry
 - `get_person_info(person_id)` - Get person information
-- `save_to_file()` - Save database to file
-- `load_from_file()` - Load database from file
 
 ---
 
@@ -500,8 +498,7 @@ python scripts/register_mot17.py \
 - `--delete-existing` - Delete existing collection before registering (optional)
 
 **Output:**
-- Updates `data/database/reid_database.pkl`
-- Syncs to Qdrant cloud
+- Stores embeddings to Qdrant database
 - Prints person ID and number of embeddings
 
 **Important:**
@@ -575,7 +572,6 @@ feature_extraction:
   device: "cuda"
 
 database:
-  db_path: "data/database/reid_database.pkl"
   use_qdrant: true
   qdrant_collection: "cross_camera_matching_id"
 
@@ -630,7 +626,7 @@ from core.reid_matcher import ReIDMatcher
 detector = YOLOXDetector("models/bytetrack_x_mot17.pth.tar")
 tracker = ByteTracker()
 extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True)
-db = VectorDatabase("data/database/reid_database.pkl")
+db = QdrantVectorDB(use_qdrant=True, embedding_dim=512)
 matcher = ReIDMatcher(db, extractor, threshold=0.8)
 
 # Process frame

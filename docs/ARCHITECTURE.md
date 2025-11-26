@@ -292,8 +292,7 @@ person_reid_system/
 │   ├── logs/            # Detailed logs
 │   └── extracted_objects/  # Extracted object videos
 ├── data/
-│   ├── uploads/         # Temporary uploads
-│   └── database/        # reid_database.pkl
+│   └── uploads/         # Temporary uploads
 ├── models/              # Pre-trained models (shared)
 │   ├── bytetrack_x_mot17.pth.tar
 │   └── yolox_x.pth
@@ -310,11 +309,7 @@ person_reid_system/
 - Vector size: 512
 - Distance: Cosine
 - Payload: `{global_id, name, camera_id, track_id}`
-
-**Local Pickle:**
-- Path: `data/database/reid_database.pkl`
-- Format: `{db: {global_id: [embeddings]}, person_metadata, next_global_id}`
-- Sync: Automatic after each registration
+- Storage: All embeddings stored directly in Qdrant (no local pickle file)
 
 ## Performance Optimization
 

@@ -37,11 +37,11 @@ logs/
 
 # Outputs (will be mounted as volume)
 outputs/
-stores/
+
 
 # Data (will be mounted as volume)
-data/videos/
-data/database/*.pkl
+data/
+
 
 # Models (will be mounted as volume for worker)
 # Keep models in image for faster startup
