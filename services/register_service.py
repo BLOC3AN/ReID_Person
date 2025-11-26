@@ -56,7 +56,7 @@ class JobStatus(BaseModel):
 
 
 def process_registration(job_id: str, video_path: str, person_name: str,
-                         global_id: int, sample_rate: int, delete_existing: bool, face_conf_thresh: float = 0.5):
+                         global_id: int, sample_rate: int, delete_existing: bool, face_conf_thresh: float = 0.5, skip_body_detection: bool = False):
     """Background task to process person registration"""
     try:
         jobs[job_id]["status"] = "processing"
@@ -69,6 +69,7 @@ def process_registration(job_id: str, video_path: str, person_name: str,
             sample_rate=sample_rate,
             delete_existing=delete_existing,
             face_conf_thresh=face_conf_thresh,
+            skip_body_detection=skip_body_detection,
             detector=preloaded_manager.detector,
             extractor=preloaded_manager.extractor
         )
@@ -84,7 +85,7 @@ def process_registration(job_id: str, video_path: str, person_name: str,
 
 
 def process_image_registration(job_id: str, image_paths: List[str], person_name: str,
-                                global_id: int, delete_existing: bool, face_conf_thresh: float = 0.5):
+                                global_id: int, delete_existing: bool, face_conf_thresh: float = 0.5, skip_body_detection: bool = False):
     """Background task to process person registration from images"""
     try:
         jobs[job_id]["status"] = "processing"
@@ -96,6 +97,7 @@ def process_image_registration(job_id: str, image_paths: List[str], person_name:
             global_id=global_id,
             delete_existing=delete_existing,
             face_conf_thresh=face_conf_thresh,
+            skip_body_detection=skip_body_detection,
             detector=preloaded_manager.detector,
             extractor=preloaded_manager.extractor
         )
@@ -128,6 +130,7 @@ async def register_person(
     global_id: int = Form(...),
     sample_rate: int = Form(5),
     face_conf_thresh: float = Form(0.5),
+    skip_body_detection: bool = Form(False),
     delete_existing: bool = Form(False)
 ):
     """
@@ -139,6 +142,7 @@ async def register_person(
         global_id: Global ID for the person (unique identifier)
         sample_rate: Extract 1 frame every N frames (default: 5)
         face_conf_thresh: Face detection confidence threshold 0-1 (default: 0.5)
+        skip_body_detection: Skip body detection and use full image (for augmented face images) (default: False)
         delete_existing: Delete existing collection before registering
 
     Returns:
@@ -147,14 +151,14 @@ async def register_person(
     try:
         # Generate job ID
         job_id = str(uuid.uuid4())
-        
+
         # Save uploaded video
         video_filename = f"{job_id}_{video.filename}"
         video_path = UPLOAD_DIR / video_filename
-        
+
         with open(video_path, "wb") as buffer:
             shutil.copyfileobj(video.file, buffer)
-        
+
         # Initialize job status
         jobs[job_id] = {
             "job_id": job_id,
@@ -164,7 +168,7 @@ async def register_person(
             "global_id": global_id,
             "video_path": str(video_path)
         }
-        
+
         # Add background task
         background_tasks.add_task(
             process_registration,
@@ -174,7 +178,8 @@ async def register_person(
             global_id=global_id,
             sample_rate=sample_rate,
             delete_existing=delete_existing,
-            face_conf_thresh=face_conf_thresh
+            face_conf_thresh=face_conf_thresh,
+            skip_body_detection=skip_body_detection
         )
         
         return JSONResponse(content={
@@ -205,6 +210,7 @@ async def register_batch(
     global_id: int = Form(...),
     sample_rate: int = Form(5),
     face_conf_thresh: float = Form(0.5),
+    skip_body_detection: bool = Form(False),
     delete_existing: bool = Form(False)
 ):
     """
@@ -216,6 +222,7 @@ async def register_batch(
         global_id: Global ID for the person (unique identifier)
         sample_rate: Extract 1 frame every N frames (default: 5)
         face_conf_thresh: Face detection confidence threshold 0-1 (default: 0.5)
+        skip_body_detection: Skip body detection and use full image (for augmented face images) (default: False)
         delete_existing: Delete existing collection before registering
 
     Returns:
@@ -258,7 +265,8 @@ async def register_batch(
                 global_id=global_id,
                 sample_rate=sample_rate,
                 delete_existing=delete_existing and (job_ids == []),  # Only delete on first video
-                face_conf_thresh=face_conf_thresh
+                face_conf_thresh=face_conf_thresh,
+                skip_body_detection=skip_body_detection
             )
 
             job_ids.append(job_id)
@@ -315,6 +323,7 @@ async def register_person_images(
     person_name: str = Form(...),
     global_id: int = Form(...),
     face_conf_thresh: float = Form(0.5),
+    skip_body_detection: bool = Form(False),
     delete_existing: bool = Form(False)
 ):
     """
@@ -325,6 +334,7 @@ async def register_person_images(
         person_name: Name of the person to register
         global_id: Global ID for the person (unique identifier)
         face_conf_thresh: Face detection confidence threshold 0-1 (default: 0.5)
+        skip_body_detection: Skip body detection and use full image (for augmented face images) (default: False)
         delete_existing: Delete existing collection before registering
 
     Returns:
@@ -367,7 +377,8 @@ async def register_person_images(
             person_name=person_name,
             global_id=global_id,
             delete_existing=delete_existing,
-            face_conf_thresh=face_conf_thresh
+            face_conf_thresh=face_conf_thresh,
+            skip_body_detection=skip_body_detection
         )
 
         return JSONResponse(content={

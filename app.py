@@ -227,6 +227,12 @@ if page == "Register Person":
             help="Face detection confidence threshold (higher = stricter face detection)"
         )
 
+        skip_body_detection = st.checkbox(
+            "Skip Body Detection",
+            value=False,
+            help="⚠️ Use full image as bbox (for augmented face images without body)"
+        )
+
         delete_existing = st.checkbox("Delete Existing Collection", value=False,
                                      help="⚠️ This will delete all registered persons!")
 
@@ -248,6 +254,7 @@ if page == "Register Person":
                             "global_id": global_id,
                             "sample_rate": sample_rate,
                             "face_conf_thresh": face_conf_thresh,
+                            "skip_body_detection": skip_body_detection,
                             "delete_existing": delete_existing
                         }
 
@@ -323,6 +330,7 @@ if page == "Register Person":
                             "person_name": person_name,
                             "global_id": global_id,
                             "face_conf_thresh": face_conf_thresh,
+                            "skip_body_detection": skip_body_detection,
                             "delete_existing": delete_existing
                         }
 
