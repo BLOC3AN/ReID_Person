@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ReID Logic Processing Module
-Centralized ReID decision logic to avoid code duplication
+Centralized ReID decision logic with Priority 1 & 2 matching
 """
 
 import time
@@ -22,13 +22,10 @@ def process_reid_logic(
     camera_idx: int = 0
 ) -> Optional[Dict[str, Any]]:
     """
-    Process ReID logic with Redis storage
+    Process ReID logic with Priority 1 & 2 matching
     
-    Decision Logic:
-    - Frame 1: Extract → Assign (first time)
-    - Frame 60+: Extract → Compare with old
-    - Update only if new_sim > old_sim AND passes threshold
-    - Reset when track lost (TTL expires)
+    Priority 1: best_score >= UI_threshold → Accept
+    Priority 2: All results same GID + max_score >= query_threshold → Bypass UI threshold
     
     Args:
         track_id: Track ID
@@ -36,7 +33,7 @@ def process_reid_logic(
         current_frame_count: Frame count for this track
         embedding: Feature embedding vector
         database: Vector database instance
-        similarity_threshold: Similarity threshold for matching
+        similarity_threshold: Similarity threshold for matching (UI threshold)
         redis_manager: Redis manager instance (optional)
         track_labels: In-memory track labels dict
         log_file: Optional file handle for logging
@@ -45,12 +42,34 @@ def process_reid_logic(
     Returns:
         Updated track_data dict or None if no match
     """
-    matches = database.find_best_match(embedding, threshold=0.0, top_k=1)
+    logger.info("="*50)
+    logger.info(f"🔍 ReID Track {track_id} (frame={frame_id}, UI_threshold={similarity_threshold})")
+    logger.info("="*50)
     
-    if not matches:
+    # Query database
+    result = database.find_best_match(embedding, threshold=similarity_threshold, top_k=1)
+    
+    if not result['matches']:
+        logger.info(f"❌ Track {track_id}: NO MATCH (no results from database)")
         return None
     
-    new_global_id, new_similarity, new_person_name = matches[0]
+    new_global_id, new_similarity, new_person_name = result['matches'][0]
+    
+    # Priority 1: Check if score meets UI threshold
+    passes_priority1 = (new_similarity >= similarity_threshold)
+    logger.debug(f"[Priority 1] score={new_similarity:.4f}, UI_threshold={similarity_threshold}, pass={passes_priority1}")
+    
+    # Priority 2: Check consensus (if Priority 1 fails)
+    passes_priority2 = False
+    if not passes_priority1:
+        unique_gids = set(result['all_gids'])
+        query_threshold = result['query_threshold']
+        
+        logger.debug(f"[Priority 2] Checking consensus: unique_gids={unique_gids}, max_score={new_similarity:.4f}, query_threshold={query_threshold}")
+        
+        if len(unique_gids) == 1 and new_similarity >= query_threshold:
+            passes_priority2 = True
+            logger.info(f"✅ [Priority 2] BYPASS threshold: All {len(result['all_gids'])} results agree on GID={new_global_id} ({new_person_name}), max_score={new_similarity:.4f}")
     
     # Get old data from Redis or in-memory
     old_data = None
@@ -60,7 +79,9 @@ def process_reid_logic(
         old_data = track_labels.get(track_id)
     
     # Decision logic
-    if new_similarity >= similarity_threshold:
+    if passes_priority1 or passes_priority2:
+        priority_label = "Priority 1" if passes_priority1 else "Priority 2"
+        
         if old_data is None:
             # New track (first time or recovered after TTL)
             new_data = {
@@ -75,7 +96,7 @@ def process_reid_logic(
                 'camera_idx': camera_idx,
                 'status': 'active'
             }
-            log_msg = f"✅ Track {track_id}: ASSIGN {new_person_name} (ID:{new_global_id}, sim={new_similarity:.4f}, frame={frame_id})"
+            log_msg = f"✅ Track {track_id}: ASSIGN {new_person_name} (ID:{new_global_id}, sim={new_similarity:.4f}, {priority_label}, frame={frame_id})"
             if log_file:
                 log_file.write(log_msg + "\n")
             logger.info(log_msg)
@@ -97,10 +118,10 @@ def process_reid_logic(
                 new_data['last_update_frame'] = frame_id
                 new_data['timestamp'] = time.time()
                 
-                log_msg = f"✅ Track {track_id}: UPDATE {old_person_name} → {new_person_name} (ID:{old_global_id} → {new_global_id}, sim={old_similarity:.4f} → {new_similarity:.4f}, frame={frame_id})"
+                log_msg = f"✅ Track {track_id}: UPDATE {old_person_name} → {new_person_name} (ID:{old_global_id} → {new_global_id}, sim={old_similarity:.4f} → {new_similarity:.4f}, {priority_label}, frame={frame_id})"
                 if log_file:
                     log_file.write(log_msg + "\n")
-                logger.info(f"✅ Track {track_id}: UPDATE {old_person_name} → {new_person_name} (sim {old_similarity:.4f} → {new_similarity:.4f})")
+                logger.info(f"✅ Track {track_id}: UPDATE {old_person_name} → {new_person_name} (sim {old_similarity:.4f} → {new_similarity:.4f}, {priority_label})")
                 
             else:
                 # REJECT: Same or worse match
@@ -108,13 +129,13 @@ def process_reid_logic(
                 new_data['last_update_frame'] = frame_id
                 new_data['timestamp'] = time.time()
                 
-                log_msg = f"❌ Track {track_id}: REJECT {new_person_name} (ID:{new_global_id}, sim={new_similarity:.4f} < {old_similarity:.4f}, frame={frame_id})"
+                log_msg = f"❌ Track {track_id}: REJECT {new_person_name} (ID:{new_global_id}, sim={new_similarity:.4f} <= {old_similarity:.4f}, frame={frame_id})"
                 if log_file:
                     log_file.write(log_msg + "\n")
-                logger.debug(f"❌ Track {track_id}: REJECT {new_person_name} (sim {new_similarity:.4f} < {old_similarity:.4f})")
+                logger.debug(f"❌ Track {track_id}: REJECT {new_person_name} (sim {new_similarity:.4f} <= {old_similarity:.4f})")
     
     else:
-        # FAIL_THRESHOLD
+        # FAIL: Both Priority 1 and Priority 2 failed
         if old_data is None:
             new_data = {
                 'global_id': -1,
@@ -128,19 +149,20 @@ def process_reid_logic(
                 'camera_idx': camera_idx,
                 'status': 'unknown'
             }
-            log_msg = f"❌ Track {track_id}: FAIL_THRESHOLD {new_person_name} (ID:{new_global_id}, sim={new_similarity:.4f} < {similarity_threshold:.4f}, frame={frame_id})"
+            log_msg = f"❌ Track {track_id}: FAIL (Priority 1: {new_similarity:.4f} < {similarity_threshold:.4f}, Priority 2: multiple GIDs or low score, frame={frame_id})"
             if log_file:
                 log_file.write(log_msg + "\n")
-            logger.debug(f"❌ Track {track_id}: FAIL_THRESHOLD {new_person_name} (sim {new_similarity:.4f} < {similarity_threshold:.4f})")
+            logger.debug(log_msg)
         else:
+            # Keep old data
             new_data = old_data.copy()
             new_data['last_update_frame'] = frame_id
             new_data['timestamp'] = time.time()
             
-            log_msg = f"❌ Track {track_id}: FAIL_THRESHOLD {new_person_name} (ID:{new_global_id}, sim={new_similarity:.4f} < {similarity_threshold:.4f}, frame={frame_id})"
+            log_msg = f"❌ Track {track_id}: FAIL (Priority 1: {new_similarity:.4f} < {similarity_threshold:.4f}, Priority 2: multiple GIDs or low score, keeping old label={old_data.get('label', 'Unknown')}, frame={frame_id})"
             if log_file:
                 log_file.write(log_msg + "\n")
-            logger.debug(f"❌ Track {track_id}: FAIL_THRESHOLD {new_person_name} (sim {new_similarity:.4f} < {similarity_threshold:.4f})")
+            logger.debug(log_msg)
     
     # Save to Redis and in-memory
     if redis_manager:

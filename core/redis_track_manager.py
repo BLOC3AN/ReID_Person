@@ -1,6 +1,7 @@
 """
 Redis Track Manager for persistent track label storage
 Handles track data persistence with TTL-based auto-cleanup
+Each job has isolated namespace to prevent conflicts
 """
 
 import redis
@@ -9,14 +10,15 @@ import time
 from typing import Dict, Optional, List
 from loguru import logger
 import os
+from datetime import datetime
 
 
 class RedisTrackManager:
     """
-    Manages track labels in Redis with TTL support
+    Manages track labels in Redis with job-based isolation and TTL support
     
     Data Structure:
-        Key: track:{track_id}
+        Key: track:{job_id}:{track_id}
         Type: Hash
         Fields:
             - global_id: Person ID from database
@@ -31,37 +33,55 @@ class RedisTrackManager:
             - status: Track status (active/unknown)
     """
     
-    def __init__(self, host: str = 'localhost', port: int = 6379, 
-                 ttl: int = 300, db: int = 0):
+    def __init__(self, job_id: str = None, host: str = None, port: int = None, 
+                 ttl: int = None, db: int = None):
         """
-        Initialize Redis Track Manager
+        Initialize Redis Track Manager with job isolation
         
         Args:
-            host: Redis server host
-            port: Redis server port
-            ttl: Time-to-live for track keys in seconds (default: 300s = 5 min)
-            db: Redis database number
+            job_id: Unique job identifier (auto-generated if not provided)
+            host: Redis server host (default: from REDIS_HOST env or 'localhost')
+            port: Redis server port (default: from REDIS_PORT env or 6379)
+            ttl: Time-to-live for track keys in seconds (default: from REDIS_TTL env or 300s)
+            db: Redis database number (default: from REDIS_DB env or 0)
         """
-        self.host = os.getenv('REDIS_HOST', host)
-        self.port = os.getenv('REDIS_PORT', port)
-        self.ttl = ttl
-        self.db = db
+        # Generate job_id if not provided
+        if not job_id:
+            job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+        
+        self.job_id = job_id
+        self.host = host 
+        self.port = port
+        self.ttl = ttl 
+        self.db = db or os.getenv('REDIS_DB', '0')
         
         try:
             self.redis = redis.Redis(
-                host=host, 
-                port=port, 
-                db=db,
+                host=self.host, 
+                port=self.port, 
+                db=self.db,
                 decode_responses=True,
                 socket_connect_timeout=5,
                 socket_keepalive=True
             )
             # Test connection
             self.redis.ping()
-            logger.info(f"✅ Redis connected: {host}:{port} (TTL={ttl}s)")
+            logger.info(f"✅ Redis connected: {self.host}:{self.port} (job_id={self.job_id}, TTL={self.ttl}s)")
         except redis.ConnectionError as e:
             logger.error(f"❌ Redis connection failed: {e}")
             raise
+    
+    def _get_key(self, track_id: int) -> str:
+        """
+        Generate Redis key with job_id namespace
+        
+        Args:
+            track_id: Track ID
+            
+        Returns:
+            Redis key string
+        """
+        return f"track:{self.job_id}:{track_id}"
     
     def set_track(self, track_id: int, track_data: Dict) -> bool:
         """
@@ -75,7 +95,7 @@ class RedisTrackManager:
             True if successful, False otherwise
         """
         try:
-            key = f"track:{track_id}"
+            key = self._get_key(track_id)
             # Convert numeric values to strings for Redis storage
             data_to_store = {
                 k: str(v) if isinstance(v, (int, float)) else v 
@@ -99,7 +119,7 @@ class RedisTrackManager:
             Track data dictionary or None if not found
         """
         try:
-            key = f"track:{track_id}"
+            key = self._get_key(track_id)
             data = self.redis.hgetall(key)
             if not data:
                 return None
@@ -129,7 +149,7 @@ class RedisTrackManager:
             True if successful, False otherwise
         """
         try:
-            key = f"track:{track_id}"
+            key = self._get_key(track_id)
             self.redis.delete(key)
             return True
         except Exception as e:
@@ -138,21 +158,38 @@ class RedisTrackManager:
     
     def get_all_track_ids(self) -> List[int]:
         """
-        Get all active track IDs
+        Get all active track IDs for current job
         
         Returns:
             List of track IDs
         """
         try:
-            keys = self.redis.keys("track:*")
-            return [int(key.split(':')[1]) for key in keys]
+            keys = self.redis.keys(f"track:{self.job_id}:*")
+            return [int(key.split(':')[2]) for key in keys]
         except Exception as e:
             logger.error(f"❌ Failed to get all track IDs: {e}")
             return []
     
+    def clear_job_tracks(self) -> bool:
+        """
+        Clear all tracks for current job
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            keys = self.redis.keys(f"track:{self.job_id}:*")
+            if keys:
+                self.redis.delete(*keys)
+            logger.info(f"✅ Cleared {len(keys)} tracks for job {self.job_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to clear job tracks: {e}")
+            return False
+    
     def clear_all_tracks(self) -> bool:
         """
-        Clear all track data (use with caution)
+        Clear all track data across all jobs (use with caution)
         
         Returns:
             True if successful, False otherwise
@@ -161,7 +198,7 @@ class RedisTrackManager:
             keys = self.redis.keys("track:*")
             if keys:
                 self.redis.delete(*keys)
-            logger.info(f"✅ Cleared {len(keys)} tracks from Redis")
+            logger.info(f"✅ Cleared {len(keys)} tracks from Redis (all jobs)")
             return True
         except Exception as e:
             logger.error(f"❌ Failed to clear all tracks: {e}")
@@ -169,16 +206,19 @@ class RedisTrackManager:
     
     def get_stats(self) -> Dict:
         """
-        Get Redis statistics
+        Get Redis statistics for current job
 
         Returns:
             Dictionary with stats
         """
         try:
             info = self.redis.info()
-            keys = self.redis.keys("track:*")
+            job_keys = self.redis.keys(f"track:{self.job_id}:*")
+            all_keys = self.redis.keys("track:*")
             return {
-                'total_tracks': len(keys),
+                'job_id': self.job_id,
+                'job_tracks': len(job_keys),
+                'total_tracks_all_jobs': len(all_keys),
                 'redis_memory_used': info.get('used_memory_human', 'N/A'),
                 'redis_connected_clients': info.get('connected_clients', 0),
                 'ttl': self.ttl

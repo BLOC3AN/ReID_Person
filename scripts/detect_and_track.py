@@ -311,13 +311,17 @@ class PersonReIDPipeline:
         extracted_objects_dir = Path(__file__).parent.parent / "outputs" / "extracted_objects"
         extracted_objects_dir.mkdir(parents=True, exist_ok=True)
 
+        # Generate unique job_id for this processing session
+        job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+        logger.info(f"🚀 Starting job: {job_id}")
+
         # Initialize Redis Track Manager
         redis_host = os.getenv('REDIS_HOST', 'localhost')
-        redis_port = int(os.getenv('REDIS_PORT', 6379))
-        redis_ttl = int(os.getenv('REDIS_TTL', 300))
+        redis_port = os.getenv('REDIS_PORT', 6379)
+        redis_ttl = os.getenv('REDIS_TTL', 300)
 
         try:
-            redis_manager = RedisTrackManager(host=redis_host, port=redis_port, ttl=redis_ttl)
+            redis_manager = RedisTrackManager(job_id=job_id, host=redis_host, port=redis_port, ttl=redis_ttl)
             logger.info(f"✅ Redis Track Manager initialized")
         except Exception as e:
             logger.warning(f"⚠️  Redis not available: {e}. Using in-memory storage only.")

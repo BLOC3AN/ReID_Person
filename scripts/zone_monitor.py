@@ -867,15 +867,19 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     # Initialize zone monitor with camera count
     zone_monitor = ZoneMonitor(zone_config_path, iou_threshold, zone_opacity, num_cameras=num_cameras)
 
+    # Generate unique job_id for this processing session
+    job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+    logger.info(f"🚀 Starting job: {job_id}")
+    
     # Load users_dict (global_id -> name mapping) BEFORE starting zone service
     # Initialize Redis Track Manager first
     redis_host = os.getenv('REDIS_HOST', 'localhost')
-    redis_port = int(os.getenv('REDIS_PORT', 6379))
-    redis_ttl = int(os.getenv('REDIS_TTL', 300))
+    redis_port = os.getenv('REDIS_PORT', 6379)
+    redis_ttl = os.getenv('REDIS_TTL', 300)
 
     redis_manager_temp = None
     try:
-        redis_manager_temp = RedisTrackManager(host=redis_host, port=redis_port, ttl=redis_ttl)
+        redis_manager_temp = RedisTrackManager(job_id=job_id, host=redis_host, port=redis_port, ttl=redis_ttl)
         logger.info(f"✅ Redis connected for users_dict loading")
     except Exception as e:
         logger.warning(f"⚠️  Redis not available for users_dict: {e}")
