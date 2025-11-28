@@ -142,8 +142,8 @@ class QdrantVectorDB:
         """
         Find best matching persons using Qdrant vector search
         
-        Priority 1: Query with lower threshold (0.5), if all results have same GID → match
-        Priority 2: Query with UI threshold, group by GID and return best score
+        Priority 2 (first): Query with UI threshold, if results exist → return
+        Priority 1 (fallback): If no Priority 2 results, query with 0.5, if all same GID → match
         
         Args:
             embedding: Query embedding (512,)
@@ -159,7 +159,37 @@ class QdrantVectorDB:
         logger.info(f"🔍 Starting ReID matching (UI threshold={threshold})")
         logger.info("="*50)
 
-        # Priority 1: Try with lower threshold (0.5) to check if all results agree
+        # Priority 2: Query with UI threshold (try strict matching first)
+        logger.debug(f"[Priority 2] Querying Qdrant with UI threshold={threshold}...")
+        results = self.client.query_points(
+            collection_name=self.collection_name,
+            query=embedding.tolist(),
+            limit=top_k * 10,
+            score_threshold=threshold
+        )
+
+        logger.debug(f"[Priority 2] Qdrant returned {len(results.points)} results")
+
+        if results.points:
+            # Group by global_id and get best score + name for each person
+            best_per_person = {}
+            for r in results.points:
+                global_id = r.payload.get('global_id', r.id)
+                name = r.payload.get('name', f'Person_{global_id}')
+                logger.debug(f"[Priority 2]   Result: GID={global_id}, name={name}, score={r.score:.4f}")
+                if global_id not in best_per_person or r.score > best_per_person[global_id][1]:
+                    best_per_person[global_id] = (global_id, r.score, name)
+
+            # Return top K persons
+            matches = sorted(best_per_person.values(), key=lambda x: x[1], reverse=True)[:top_k]
+            logger.info("="*50)
+            logger.info(f"✅ [Priority 2] MATCH: {[(f'GID={gid} ({name})', f'score={score:.4f}') for gid, score, name in matches]}")
+            logger.info("="*50)
+            return matches
+
+        # Priority 1: Fallback with lower threshold (0.5) if Priority 2 found nothing
+        logger.debug(f"[Priority 2] No results found, falling back to Priority 1")
+        
         priority1_threshold = 0.5
         logger.debug(f"[Priority 1] Querying Qdrant with threshold={priority1_threshold}...")
         results_p1 = self.client.query_points(
@@ -195,42 +225,13 @@ class QdrantVectorDB:
                 else:
                     logger.debug(f"[Priority 1] avg_score={avg_score:.4f} < {priority1_threshold}, skipping")
             else:
-                logger.debug(f"[Priority 1] Multiple GIDs found: {unique_gids}, falling back to Priority 2")
-        else:
-            logger.debug(f"[Priority 1] No results found, falling back to Priority 2")
+                logger.debug(f"[Priority 1] Multiple GIDs found: {unique_gids}, no match")
 
-        # Priority 2: Query with UI threshold
-        logger.debug(f"[Priority 2] Querying Qdrant with UI threshold={threshold}...")
-        results = self.client.query_points(
-            collection_name=self.collection_name,
-            query=embedding.tolist(),
-            limit=top_k * 10,
-            score_threshold=threshold
-        )
-
-        logger.debug(f"[Priority 2] Qdrant returned {len(results.points)} results")
-
-        if not results.points:
-            logger.info("="*50)
-            logger.info(f"❌ [Priority 2] NO MATCH: No results above threshold={threshold}")
-            logger.info("="*50)
-            return []
-
-        # Group by global_id and get best score + name for each person
-        best_per_person = {}
-        for r in results.points:
-            global_id = r.payload.get('global_id', r.id)
-            name = r.payload.get('name', f'Person_{global_id}')
-            logger.debug(f"[Priority 2]   Result: GID={global_id}, name={name}, score={r.score:.4f}")
-            if global_id not in best_per_person or r.score > best_per_person[global_id][1]:
-                best_per_person[global_id] = (global_id, r.score, name)
-
-        # Return top K persons
-        matches = sorted(best_per_person.values(), key=lambda x: x[1], reverse=True)[:top_k]
+        # No match found
         logger.info("="*50)
-        logger.info(f"✅ [Priority 2] MATCH: {[(f'GID={gid} ({name})', f'score={score:.4f}') for gid, score, name in matches]}")
+        logger.info(f"❌ NO MATCH: No results found in both Priority 2 and Priority 1")
         logger.info("="*50)
-        return matches
+        return []
     
     def create_new_person(self, embedding: np.ndarray,
                          metadata: Optional[Dict] = None) -> int:
