@@ -142,8 +142,9 @@ class QdrantVectorDB:
         """
         Find best matching persons using Qdrant vector search
         
-        Priority 2 (first): Query with UI threshold, if results exist → return
-        Priority 1 (fallback): If no Priority 2 results, query with 0.5, if all same GID → match
+        Query once with low threshold (0.5), then:
+        Priority 2: Check if best score >= UI threshold → return
+        Priority 1: If Priority 2 fails, check if all results same GID + avg >= 0.5 → match
         
         Args:
             embedding: Query embedding (512,)
@@ -159,75 +160,78 @@ class QdrantVectorDB:
         logger.info(f"🔍 Starting ReID matching (UI threshold={threshold})")
         logger.info("="*50)
 
-        # Priority 2: Query with UI threshold (try strict matching first)
-        logger.debug(f"[Priority 2] Querying Qdrant with UI threshold={threshold}...")
+        # Query Qdrant once with lower threshold to get more results
+        query_threshold = 0.5
+        logger.debug(f"Querying Qdrant with threshold={query_threshold}...")
         results = self.client.query_points(
             collection_name=self.collection_name,
             query=embedding.tolist(),
             limit=top_k * 10,
-            score_threshold=threshold
+            score_threshold=query_threshold
         )
 
-        logger.debug(f"[Priority 2] Qdrant returned {len(results.points)} results")
+        logger.debug(f"Qdrant returned {len(results.points)} results")
 
-        if results.points:
-            # Group by global_id and get best score + name for each person
-            best_per_person = {}
-            for r in results.points:
-                global_id = r.payload.get('global_id', r.id)
-                name = r.payload.get('name', f'Person_{global_id}')
-                logger.debug(f"[Priority 2]   Result: GID={global_id}, name={name}, score={r.score:.4f}")
-                if global_id not in best_per_person or r.score > best_per_person[global_id][1]:
-                    best_per_person[global_id] = (global_id, r.score, name)
+        if not results.points:
+            logger.info("="*50)
+            logger.info(f"❌ NO MATCH: No results found")
+            logger.info("="*50)
+            return []
 
-            # Return top K persons
-            matches = sorted(best_per_person.values(), key=lambda x: x[1], reverse=True)[:top_k]
+        # Group by global_id and get best score + name for each person
+        best_per_person = {}
+        all_global_ids = []
+        for r in results.points:
+            global_id = r.payload.get('global_id', r.id)
+            name = r.payload.get('name', f'Person_{global_id}')
+            all_global_ids.append(global_id)
+            logger.debug(f"  Result: GID={global_id}, name={name}, score={r.score:.4f}")
+            if global_id not in best_per_person or r.score > best_per_person[global_id][1]:
+                best_per_person[global_id] = (global_id, r.score, name)
+
+        # Priority 2: Check if best score meets UI threshold
+        matches = sorted(best_per_person.values(), key=lambda x: x[1], reverse=True)[:top_k]
+        best_score = matches[0][1] if matches else 0.0
+        
+        logger.debug(f"[Priority 2] Best score: {best_score:.4f}, UI threshold: {threshold}")
+        
+        if best_score >= threshold:
             logger.info("="*50)
             logger.info(f"✅ [Priority 2] MATCH: {[(f'GID={gid} ({name})', f'score={score:.4f}') for gid, score, name in matches]}")
             logger.info("="*50)
             return matches
 
-        # Priority 1: Fallback with lower threshold (0.5) if Priority 2 found nothing
-        logger.debug(f"[Priority 2] No results found, falling back to Priority 1")
+        # Priority 1: Check if all results have same GID (fallback when Priority 2 fails)
+        logger.debug(f"[Priority 2] Best score {best_score:.4f} < UI threshold {threshold}, checking Priority 1...")
         
-        priority1_threshold = 0.5
-        logger.debug(f"[Priority 1] Querying Qdrant with threshold={priority1_threshold}...")
-        results_p1 = self.client.query_points(
-            collection_name=self.collection_name,
-            query=embedding.tolist(),
-            limit=top_k * 10,
-            score_threshold=priority1_threshold
-        )
-
-        logger.debug(f"[Priority 1] Qdrant returned {len(results_p1.points)} results")
-
-        if results_p1.points:
-            all_global_ids = [r.payload.get('global_id', r.id) for r in results_p1.points]
-            unique_gids = set(all_global_ids)
+        unique_gids = set(all_global_ids)
+        logger.debug(f"[Priority 1] Unique GIDs: {unique_gids}")
+        
+        if len(unique_gids) == 1:  # All same global_id
+            avg_score = np.mean([r.score for r in results.points])
+            gid = all_global_ids[0]
+            name = results.points[0].payload.get('name', f'Person_{gid}')
             
-            logger.debug(f"[Priority 1] Unique GIDs: {unique_gids}")
+            logger.debug(f"[Priority 1] All {len(results.points)} results have same GID={gid} ({name})")
+            logger.debug(f"[Priority 1] Scores: {[f'{r.score:.4f}' for r in results.points[:5]]}{'...' if len(results.points) > 5 else ''}")
+            logger.debug(f"[Priority 1] avg_score={avg_score:.4f}, checking if >= {query_threshold}")
             
-            if len(unique_gids) == 1:  # All same global_id
-                avg_score = np.mean([r.score for r in results_p1.points])
-                gid = all_global_ids[0]
-                name = results_p1.points[0].payload.get('name', f'Person_{gid}')
-                
-                logger.debug(f"[Priority 1] All {len(results_p1.points)} results have same GID={gid} ({name})")
-                logger.debug(f"[Priority 1] Scores: {[f'{r.score:.4f}' for r in results_p1.points[:5]]}{'...' if len(results_p1.points) > 5 else ''}")
-                logger.debug(f"[Priority 1] avg_score={avg_score:.4f}, checking if >= {priority1_threshold}")
-                
-                if avg_score >= priority1_threshold:
-                    logger.info("="*50)
-                    logger.info(f"✅ [Priority 1] MATCH: GID={gid} ({name}), avg_score={avg_score:.4f}")
-                    logger.info(f"   Bypassing UI threshold={threshold} (all {len(results_p1.points)} results agree)")
-                    logger.info("="*50)
-                    return [(gid, avg_score, name)]
-                else:
-                    logger.debug(f"[Priority 1] avg_score={avg_score:.4f} < {priority1_threshold}, skipping")
+            if avg_score >= query_threshold:
+                logger.info("="*50)
+                logger.info(f"✅ [Priority 1] MATCH: GID={gid} ({name}), avg_score={avg_score:.4f}")
+                logger.info(f"   Bypassing UI threshold={threshold} (all {len(results.points)} results agree)")
+                logger.info("="*50)
+                return [(gid, avg_score, name)]
             else:
-                logger.debug(f"[Priority 1] Multiple GIDs found: {unique_gids}, no match")
+                logger.debug(f"[Priority 1] avg_score={avg_score:.4f} < {query_threshold}, no match")
+        else:
+            logger.debug(f"[Priority 1] Multiple GIDs found: {unique_gids}, no match")
 
         # No match found
+        logger.info("="*50)
+        logger.info(f"❌ NO MATCH: Priority 2 failed (best={best_score:.4f} < {threshold}), Priority 1 failed (multiple GIDs or low avg)")
+        logger.info("="*50)
+        return []
         logger.info("="*50)
         logger.info(f"❌ NO MATCH: No results found in both Priority 2 and Priority 1")
         logger.info("="*50)
