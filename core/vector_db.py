@@ -173,11 +173,11 @@ class QdrantVectorDB:
         
         if len(set(all_global_ids)) == 1:  # All same global_id
             avg_score = np.mean([r.score for r in results.points])
-            if avg_score >= 0.5:
+            if avg_score >= threshold:  # Use threshold from UI
                 gid = all_global_ids[0]
                 name = results.points[0].payload.get('name', f'Person_{gid}')
                 logger.info("="*50)
-                logger.debug(f"[Priority 1] All {len(results.points)} results have same GID={gid}, avg_score={avg_score:.4f}")
+                logger.debug(f"[Priority 1] All {len(results.points)} results have same GID={gid}, avg_score={avg_score:.4f} >= threshold={threshold}")
                 logger.info("="*50)
                 return [(gid, avg_score, name)]
 
