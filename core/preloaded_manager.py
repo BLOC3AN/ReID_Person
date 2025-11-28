@@ -237,17 +237,14 @@ class PreloadedPipelineManager:
         cfg = self.config['database']
 
         self.database = QdrantVectorDB(
-            use_qdrant=cfg['use_qdrant'],
             collection_name=cfg['qdrant_collection'],
-            max_embeddings_per_person=cfg['max_embeddings_per_person'],
             embedding_dim=cfg['embedding_dim'],
             use_grpc=cfg.get('use_grpc', False)
         )
 
-        # Sync metadata from Qdrant (if available)
-        if self.database.client:
-            person_count = self.database.sync_metadata_from_qdrant()
-            logger.info(f"✅ Synced metadata from Qdrant: {person_count} persons")
+        # Sync metadata from Qdrant
+        person_count = self.database.sync_metadata_from_qdrant()
+        logger.info(f"✅ Synced metadata from Qdrant: {person_count} persons")
 
         logger.info("✅ Database loaded")
     

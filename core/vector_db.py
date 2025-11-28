@@ -141,6 +141,10 @@ class QdrantVectorDB:
                        top_k: int = 1) -> List[Tuple[int, float, str]]:
         """
         Find best matching persons using Qdrant vector search
+        
+        Priority 1: If all top K results have same global_id and avg_score >= 0.5 → match
+        Priority 2: Group by global_id and return best score per person
+        
         Args:
             embedding: Query embedding (512,)
             threshold: Cosine similarity threshold (0-1, default 0.8)
@@ -161,7 +165,22 @@ class QdrantVectorDB:
 
         logger.debug(f"Qdrant query_points returned {len(results.points)} results (threshold={threshold})")
 
-        # Group by global_id and get best score + name for each person
+        if not results.points:
+            return []
+
+        # Priority 1: Check if all top K results have same global_id
+        top_results = results.points[:top_k]
+        global_ids = [r.payload.get('global_id', r.id) for r in top_results]
+        
+        if len(set(global_ids)) == 1:  # All same global_id
+            avg_score = np.mean([r.score for r in top_results])
+            if avg_score >= 0.5:
+                gid = global_ids[0]
+                name = top_results[0].payload.get('name', f'Person_{gid}')
+                logger.debug(f"[Priority 1] All top {len(top_results)} results have same GID={gid}, avg_score={avg_score:.4f}")
+                return [(gid, avg_score, name)]
+
+        # Priority 2: Group by global_id and get best score + name for each person
         best_per_person = {}
         for r in results.points:
             global_id = r.payload.get('global_id', r.id)
@@ -172,7 +191,9 @@ class QdrantVectorDB:
 
         # Return top K persons
         matches = sorted(best_per_person.values(), key=lambda x: x[1], reverse=True)[:top_k]
-        logger.debug(f"Best matches: {[(gid, f'{score:.4f}', name) for gid, score, name in matches]}")
+        logger.info("="*50)
+        logger.debug(f"[Priority 2] Best matches: {[(gid, f'{score:.4f}', name) for gid, score, name in matches]}")
+        logger.info("="*50)
         return matches
     
     def create_new_person(self, embedding: np.ndarray,
