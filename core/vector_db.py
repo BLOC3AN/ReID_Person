@@ -232,10 +232,6 @@ class QdrantVectorDB:
         logger.info(f"❌ NO MATCH: Priority 1 failed (best={best_score:.4f} < {threshold}), Priority 2 failed (multiple GIDs or low avg)")
         logger.info("="*50)
         return []
-        logger.info("="*50)
-        logger.info(f"❌ NO MATCH: No results found in both Priority 2 and Priority 1")
-        logger.info("="*50)
-        return []
     
     def create_new_person(self, embedding: np.ndarray,
                          metadata: Optional[Dict] = None) -> int:
