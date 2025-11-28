@@ -142,7 +142,7 @@ class QdrantVectorDB:
         """
         Find best matching persons using Qdrant vector search
         
-        Priority 1: If all top K results have same global_id and avg_score >= 0.5 → match
+        Priority 1: If all results have same global_id and avg_score >= 0.5 → match
         Priority 2: Group by global_id and return best score per person
         
         Args:
@@ -168,16 +168,17 @@ class QdrantVectorDB:
         if not results.points:
             return []
 
-        # Priority 1: Check if all top K results have same global_id
-        top_results = results.points[:top_k]
-        global_ids = [r.payload.get('global_id', r.id) for r in top_results]
+        # Priority 1: Check if ALL results have same global_id
+        all_global_ids = [r.payload.get('global_id', r.id) for r in results.points]
         
-        if len(set(global_ids)) == 1:  # All same global_id
-            avg_score = np.mean([r.score for r in top_results])
+        if len(set(all_global_ids)) == 1:  # All same global_id
+            avg_score = np.mean([r.score for r in results.points])
             if avg_score >= 0.5:
-                gid = global_ids[0]
-                name = top_results[0].payload.get('name', f'Person_{gid}')
-                logger.debug(f"[Priority 1] All top {len(top_results)} results have same GID={gid}, avg_score={avg_score:.4f}")
+                gid = all_global_ids[0]
+                name = results.points[0].payload.get('name', f'Person_{gid}')
+                logger.info("="*50)
+                logger.debug(f"[Priority 1] All {len(results.points)} results have same GID={gid}, avg_score={avg_score:.4f}")
+                logger.info("="*50)
                 return [(gid, avg_score, name)]
 
         # Priority 2: Group by global_id and get best score + name for each person
