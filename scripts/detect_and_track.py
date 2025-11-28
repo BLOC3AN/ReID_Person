@@ -171,9 +171,7 @@ class PersonReIDPipeline:
         cfg = self.config['database']
 
         self.database = QdrantVectorDB(
-            use_qdrant=cfg['use_qdrant'],
             collection_name=cfg['qdrant_collection'],
-            max_embeddings_per_person=cfg['max_embeddings_per_person'],
             embedding_dim=cfg['embedding_dim'],
             use_grpc=cfg.get('use_grpc', False)
         )

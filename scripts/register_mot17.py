@@ -71,7 +71,7 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int, sam
     # Initialize database
     logger.info("Initializing database...")
     use_grpc = os.getenv("QDRANT_USE_GRPC", "false").lower() == "true"
-    db = QdrantVectorDB(use_qdrant=True, embedding_dim=512, use_grpc=use_grpc)
+    db = QdrantVectorDB(embedding_dim=512, use_grpc=use_grpc)
     
     # Extract frames
     logger.info(f"\nExtracting frames (sample rate={sample_rate})...")
@@ -274,7 +274,7 @@ def register_person_from_images(image_paths: Union[str, List[str]], person_name:
     # Initialize database
     logger.info("Initializing database...")
     use_grpc = os.getenv("QDRANT_USE_GRPC", "false").lower() == "true"
-    db = QdrantVectorDB(use_qdrant=True, embedding_dim=512, use_grpc=use_grpc)
+    db = QdrantVectorDB(embedding_dim=512, use_grpc=use_grpc)
 
     # Extract embeddings from images
     logger.info(f"\nExtracting embeddings from {len(images_to_process)} images...")
