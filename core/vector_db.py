@@ -142,8 +142,8 @@ class QdrantVectorDB:
         """
         Find best matching persons using Qdrant vector search
         
-        Priority 1: If all results have same global_id and avg_score >= 0.5 → match
-        Priority 2: Group by global_id and return best score per person
+        Priority 1: Query with lower threshold (0.5), if all results have same GID → match
+        Priority 2: Query with UI threshold, group by GID and return best score
         
         Args:
             embedding: Query embedding (512,)
@@ -155,33 +155,44 @@ class QdrantVectorDB:
         # Normalize embedding
         embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
 
-        # Query Qdrant
+        # Priority 1: Try with lower threshold (0.5) to check if all results agree
+        priority1_threshold = 0.5
+        results_p1 = self.client.query_points(
+            collection_name=self.collection_name,
+            query=embedding.tolist(),
+            limit=top_k * 10,
+            score_threshold=priority1_threshold
+        )
+
+        logger.debug(f"[Priority 1] Qdrant query returned {len(results_p1.points)} results (threshold={priority1_threshold})")
+
+        if results_p1.points:
+            all_global_ids = [r.payload.get('global_id', r.id) for r in results_p1.points]
+            
+            if len(set(all_global_ids)) == 1:  # All same global_id
+                avg_score = np.mean([r.score for r in results_p1.points])
+                if avg_score >= priority1_threshold:
+                    gid = all_global_ids[0]
+                    name = results_p1.points[0].payload.get('name', f'Person_{gid}')
+                    logger.info("="*50)
+                    logger.debug(f"[Priority 1] ✅ All {len(results_p1.points)} results have same GID={gid}, avg_score={avg_score:.4f} (bypassing UI threshold={threshold})")
+                    logger.info("="*50)
+                    return [(gid, avg_score, name)]
+
+        # Priority 2: Query with UI threshold
         results = self.client.query_points(
             collection_name=self.collection_name,
             query=embedding.tolist(),
-            limit=top_k * 10,  # Get more results to group by global_id
-            score_threshold=threshold  # Qdrant uses similarity directly
+            limit=top_k * 10,
+            score_threshold=threshold
         )
 
-        logger.debug(f"Qdrant query_points returned {len(results.points)} results (threshold={threshold})")
+        logger.debug(f"[Priority 2] Qdrant query returned {len(results.points)} results (threshold={threshold})")
 
         if not results.points:
             return []
 
-        # Priority 1: Check if ALL results have same global_id
-        all_global_ids = [r.payload.get('global_id', r.id) for r in results.points]
-        
-        if len(set(all_global_ids)) == 1:  # All same global_id
-            avg_score = np.mean([r.score for r in results.points])
-            if avg_score >= threshold:  # Use threshold from UI
-                gid = all_global_ids[0]
-                name = results.points[0].payload.get('name', f'Person_{gid}')
-                logger.info("="*50)
-                logger.debug(f"[Priority 1] All {len(results.points)} results have same GID={gid}, avg_score={avg_score:.4f} >= threshold={threshold}")
-                logger.info("="*50)
-                return [(gid, avg_score, name)]
-
-        # Priority 2: Group by global_id and get best score + name for each person
+        # Group by global_id and get best score + name for each person
         best_per_person = {}
         for r in results.points:
             global_id = r.payload.get('global_id', r.id)
