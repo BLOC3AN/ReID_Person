@@ -137,63 +137,94 @@ class QdrantVectorDB:
             }]
         )
     
-    def find_best_match(self, embedding: np.ndarray, threshold: float = 0.8,
-                       top_k: int = 1):
+    def find_best_match(self, embedding: np.ndarray, threshold: float = 0.0,
+                       top_k: int = 1, use_rerank=False, k1=20, k2=6, lambda_value=0.3):
         """
-        Find best matching persons using Qdrant vector search
-        
-        Returns matches + metadata for Priority 2 logic in reid_logic.py
+        Find best matching persons using Qdrant vector search with optional k-reciprocal reranking
         
         Args:
             embedding: Query embedding (512,)
             threshold: Cosine similarity threshold (0-1, default 0.8)
             top_k: Return top K matches
+            use_rerank: Enable k-reciprocal reranking (default: False)
+            k1: K-reciprocal set size (default: 20)
+            k2: K-nearest neighbors for expansion (default: 6)
+            lambda_value: Weight for original distance (default: 0.3)
         Returns:
-            Dict with:
-                - matches: List of (global_id, similarity, name) tuples
-                - all_gids: List of all global_ids from results
-                - query_threshold: Threshold used for querying
+            Dict with matches, all_gids, query_threshold
         """
-        # Normalize embedding
         embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
 
-        # Query Qdrant with low threshold to get more results
-        query_threshold = 0.0
         results = self.client.query_points(
             collection_name=self.collection_name,
             query=embedding.tolist(),
-            limit=top_k * 10,
-            score_threshold=query_threshold
+            limit=50 if use_rerank else top_k * 10,
+            score_threshold=0.3 if use_rerank else threshold,
+            with_vectors=use_rerank
         )
 
-        logger.debug(f"Qdrant returned {len(results.points)} results (query_threshold={query_threshold})")
+        logger.debug(f"Qdrant returned {len(results.points)} results (threshold={threshold}, rerank={use_rerank})")
 
         if not results.points:
-            return {
-                'matches': [],
-                'all_gids': [],
-                'query_threshold': query_threshold
-            }
+            return {'matches': [], 'all_gids': [], 'query_threshold': threshold}
 
-        # Group by global_id and get best score for each person
+        # Apply reranking if enabled
+        if use_rerank:
+            reranked_points = self._rerank_embeddings(embedding, results.points, k1, k2, lambda_value)
+            results.points = reranked_points
+
+        # Group by global_id and get best score
         best_per_person = {}
-        all_global_ids = []
         for r in results.points:
-            global_id = r.payload.get('global_id', r.id)
-            name = r.payload.get('name', f'Person_{global_id}')
-            all_global_ids.append(global_id)
-            logger.debug(f"  Result: GID={global_id}, name={name}, score={r.score:.4f}")
-            if global_id not in best_per_person or r.score > best_per_person[global_id][1]:
-                best_per_person[global_id] = (global_id, r.score, name)
-
-        # Return top K matches + metadata
-        matches = sorted(best_per_person.values(), key=lambda x: x[1], reverse=True)[:top_k]
+            gid = r.payload.get('global_id', r.id)
+            name = r.payload.get('name', f'Person_{gid}')
+            if r.score >= threshold and (gid not in best_per_person or r.score > best_per_person[gid][1]):
+                best_per_person[gid] = (gid, r.score, name)
         
-        return {
-            'matches': matches,
-            'all_gids': all_global_ids,
-            'query_threshold': query_threshold
-        }
+        matches = sorted(best_per_person.values(), key=lambda x: x[1], reverse=True)[:top_k]
+        all_gids = [m[0] for m in matches]
+        return {'matches': matches, 'all_gids': all_gids, 'query_threshold': threshold}
+
+    def _rerank_embeddings(self, query_emb, points, k1, k2, lambda_value):
+        """K-reciprocal reranking - returns points with updated scores"""
+        gallery_embs = np.array([p.vector for p in points])
+        
+        # Compute distances
+        query_sim = np.dot(query_emb.reshape(1, -1), gallery_embs.T).flatten()
+        query_dist = 1 - query_sim
+        gallery_dist = 1 - np.dot(gallery_embs, gallery_embs.T)
+        
+        # K-reciprocal neighbors
+        k1 = min(k1, len(points))
+        initial_rank = np.argsort(query_dist)[:k1]
+        k_reciprocal_idx = [i for i in initial_rank if i in initial_rank]
+        
+        # Expand with k2
+        k_reciprocal_exp = k_reciprocal_idx.copy()
+        for i in k_reciprocal_idx:
+            candidate_k = np.argsort(gallery_dist[i])[:int(k2)]
+            candidate_reciprocal = [j for j in candidate_k if j in np.argsort(gallery_dist[j])[:int(k2/2)]]
+            if len(np.intersect1d(candidate_reciprocal, k_reciprocal_idx)) > 2/3 * len(candidate_reciprocal):
+                k_reciprocal_exp.extend(candidate_reciprocal)
+        k_reciprocal_exp = list(set(k_reciprocal_exp))
+        
+        # Jaccard distance
+        jaccard_dist = np.zeros(len(points))
+        for i in range(len(points)):
+            temp_reciprocal = [j for j in np.argsort(gallery_dist[i])[:k1] if i in np.argsort(gallery_dist[j])[:k1]]
+            if len(temp_reciprocal) == 0:
+                jaccard_dist[i] = 1.0
+            else:
+                intersect = np.intersect1d(k_reciprocal_exp, temp_reciprocal)
+                union = np.union1d(k_reciprocal_exp, temp_reciprocal)
+                jaccard_dist[i] = 1 - len(intersect) / len(union)
+        
+        # Final distance and update scores
+        final_dist = jaccard_dist * (1 - lambda_value) + query_dist * lambda_value
+        for i, point in enumerate(points):
+            point.score = 1 - final_dist[i]
+        
+        return points
     
     def create_new_person(self, embedding: np.ndarray,
                          metadata: Optional[Dict] = None) -> int:

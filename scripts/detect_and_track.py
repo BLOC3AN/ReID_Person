@@ -445,7 +445,11 @@ class PersonReIDPipeline:
                         redis_manager=redis_manager,
                         track_labels=track_labels,
                         log_file=log_file,
-                        camera_idx=0
+                        camera_idx=0,
+                        use_rerank=self.config.get('reid', {}).get('use_rerank', False),
+                        rerank_k1=self.config.get('reid', {}).get('rerank_k1', 20),
+                        rerank_k2=self.config.get('reid', {}).get('rerank_k2', 6),
+                        rerank_lambda=self.config.get('reid', {}).get('rerank_lambda', 0.3)
                     )
                 
                 # Get cached label

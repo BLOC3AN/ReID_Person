@@ -18,7 +18,7 @@ detection:
     model_name: bytetrack_tensorrt  # Model name in Triton repository
     model_version: ''  # Empty string = latest version
     timeout: 20.0  # Request timeout in seconds (increased for multi-stream)
-    verbose: false  # Enable verbose logging
+    verbose: true  # Enable verbose logging
 
     # Dynamic batching settings (configured in Triton model config)
     # These are for reference - actual config is in model repository
@@ -53,6 +53,12 @@ reid:
   arcface_model_name: buffalo_l  # Options: buffalo_l, buffalo_s, antelopev2
   feature_dim: 512
   use_cuda: true
+
+  # K-reciprocal reranking (improves accuracy, reduces noise)
+  use_rerank: true  # Enable k-reciprocal reranking
+  rerank_k1: 20  # K-reciprocal set size
+  rerank_k2: 6  # K-nearest neighbors for expansion
+  rerank_lambda: 0.3  # Weight for original distance (0.0-1.0)
 
   # Triton settings (used when backend=triton_pipeline)
   triton:
@@ -97,7 +103,7 @@ visualization:
   color_known:
   - 0
   - 255
-  - 0
+  - 255
   color_unknown:
   - 128
   - 128
