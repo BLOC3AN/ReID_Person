@@ -1176,7 +1176,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                     redis_manager=redis_manager,
                     track_labels=track_labels,
                     log_file=None,  # Zone monitoring doesn't use log file
-                    camera_idx=0
+                    camera_idx=camera_idx,
+                    use_rerank=pipeline.config.get('reid', {}).get('use_rerank', False),
+                    rerank_k1=pipeline.config.get('reid', {}).get('rerank_k1', 20),
+                    rerank_k2=pipeline.config.get('reid', {}).get('rerank_k2', 6),
+                    rerank_lambda=pipeline.config.get('reid', {}).get('rerank_lambda', 0.3)
                 )
 
             # Get track info
