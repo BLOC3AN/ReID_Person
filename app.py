@@ -1129,13 +1129,57 @@ elif page == "Detect & Track":
                 help="Tracking confidence threshold (higher = stricter tracking)"
             )
 
-            st.markdown("**Current Settings:**")
-            st.code(f"""
+        st.markdown("### K-Reciprocal Reranking")
+        st.markdown("Improves accuracy by considering gallery-gallery relationships (reduces noise)")
+        
+        col_rerank1, col_rerank2 = st.columns(2)
+        
+        with col_rerank1:
+            use_rerank = st.checkbox(
+                "Enable Reranking",
+                value=True,
+                help="Enable k-reciprocal reranking for better accuracy"
+            )
+            
+            rerank_k1 = st.slider(
+                "K1 (Reciprocal Set Size)",
+                min_value=5,
+                max_value=50,
+                value=20,
+                step=5,
+                disabled=not use_rerank,
+                help="Size of k-reciprocal set (larger = more context, slower)"
+            )
+        
+        with col_rerank2:
+            rerank_k2 = st.slider(
+                "K2 (Expansion Neighbors)",
+                min_value=2,
+                max_value=20,
+                value=6,
+                step=2,
+                disabled=not use_rerank,
+                help="K-nearest neighbors for expansion"
+            )
+            
+            rerank_lambda = st.slider(
+                "Lambda (Original Weight)",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.3,
+                step=0.1,
+                disabled=not use_rerank,
+                help="Weight for original distance (0=Jaccard only, 1=Original only)"
+            )
+
+        st.markdown("**Current Settings:**")
+        st.code(f"""
 Model: {model_type}
 Similarity: {similarity_threshold}
 Detection: {conf_thresh}
 Face Detection: {face_conf_thresh}
 Tracking: {track_thresh}
+Reranking: {'Enabled' if use_rerank else 'Disabled'}
 Zone Monitoring: {'Enabled' if zone_config_file else 'Disabled'}
 IoP Threshold: {iou_threshold} ({iou_threshold*100:.0f}% of person in zone)
 Zone Border Thickness: {int(zone_opacity*10)}px
@@ -1198,6 +1242,13 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                         "alert_threshold": str(alert_threshold),
                         "enable_livestream": str(enable_livestream).lower()  # Convert bool to "true"/"false"
                     }
+
+                    # Add rerank parameters
+                    if use_rerank:
+                        data["use_rerank"] = "true"
+                        data["rerank_k1"] = str(rerank_k1)
+                        data["rerank_k2"] = str(rerank_k2)
+                        data["rerank_lambda"] = str(rerank_lambda)
 
                     # Add optional parameters
                     if model_type:

@@ -167,7 +167,9 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                       zone_opacity: float = 0.3, max_frames: Optional[int] = None,
                       max_duration_seconds: Optional[int] = None, alert_threshold: float = 0,
                       zone_workers: Optional[int] = None, enable_livestream: bool = False,
-                      livestream_dir: Optional[str] = None):
+                      livestream_dir: Optional[str] = None,
+                      use_rerank: Optional[bool] = None, rerank_k1: int = 20,
+                      rerank_k2: int = 6, rerank_lambda: float = 0.3):
     """
     Background task to process detection and tracking with optional zone monitoring
     Auto-detects single vs multi-stream and processes accordingly
@@ -425,6 +427,16 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                 if hasattr(pipeline.extractor, 'face_detector'):
                     pipeline.extractor.face_detector.conf_threshold = face_conf_thresh
                     logger.info(f"✅ Updated face confidence threshold to {face_conf_thresh}")
+
+            # Override rerank parameters if provided
+            if use_rerank is not None:
+                if 'reid' not in pipeline.config:
+                    pipeline.config['reid'] = {}
+                pipeline.config['reid']['use_rerank'] = use_rerank
+                pipeline.config['reid']['rerank_k1'] = rerank_k1
+                pipeline.config['reid']['rerank_k2'] = rerank_k2
+                pipeline.config['reid']['rerank_lambda'] = rerank_lambda
+                logger.info(f"✅ Rerank: {use_rerank} (k1={rerank_k1}, k2={rerank_k2}, λ={rerank_lambda})")
 
             # Components are either pre-loaded or will be initialized automatically
 
@@ -742,7 +754,11 @@ async def detect_and_track(
     max_duration_seconds: Optional[int] = Form(None),
     alert_threshold: float = Form(0),
     zone_workers: Optional[int] = Form(None),
-    enable_livestream: bool = Form(False)
+    enable_livestream: bool = Form(False),
+    use_rerank: Optional[bool] = Form(None),
+    rerank_k1: int = Form(20),
+    rerank_k2: int = Form(6),
+    rerank_lambda: float = Form(0.3)
 ):
     """
     Detect, track, and re-identify persons in video file or stream with optional zone monitoring
@@ -861,7 +877,11 @@ async def detect_and_track(
             alert_threshold=alert_threshold,
             zone_workers=zone_workers,
             enable_livestream=enable_livestream,
-            livestream_dir=livestream_dir
+            livestream_dir=livestream_dir,
+            use_rerank=use_rerank,
+            rerank_k1=rerank_k1,
+            rerank_k2=rerank_k2,
+            rerank_lambda=rerank_lambda
         )
 
         # Prepare response
