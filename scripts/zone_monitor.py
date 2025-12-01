@@ -810,7 +810,8 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                              output_video_path=None, output_csv_path=None, output_json_path=None,
                              progress_callback=None, cancellation_flag=None,
                              violation_callback=None, alert_threshold=0, zone_workers=None, camera_idx=0, frame_id_offset=0,
-                             enable_livestream=False, livestream_dir=None):
+                             enable_livestream=False, livestream_dir=None,
+                             model_type=None, conf_thresh=None, track_thresh=None, face_conf_thresh=None):
     """
     Process video with zone monitoring integrated into ReID pipeline
 
@@ -859,6 +860,26 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     pipeline.initialize_tracker()
     pipeline.initialize_extractor()
     pipeline.initialize_database()
+
+    # Override config parameters if provided (from API)
+    if model_type is not None:
+        pipeline.config['detection']['model_type'] = model_type
+        logger.info(f"✅ Override model_type: {model_type}")
+    
+    if conf_thresh is not None:
+        pipeline.config['detection']['conf_threshold'] = conf_thresh
+        logger.info(f"✅ Override detection confidence: {conf_thresh}")
+    
+    if track_thresh is not None:
+        pipeline.config['tracking']['track_thresh'] = track_thresh
+        logger.info(f"✅ Override tracking threshold: {track_thresh}")
+    
+    if face_conf_thresh is not None:
+        pipeline.config['reid']['triton']['face_conf_threshold'] = face_conf_thresh
+        # Update SCRFD client threshold directly (for pre-loaded components)
+        if hasattr(pipeline.extractor, 'face_detector'):
+            pipeline.extractor.face_detector.conf_threshold = face_conf_thresh
+            logger.info(f"✅ Override face confidence: {face_conf_thresh}")
 
     # Parse video_path to check if it contains multiple URLs
     urls = parse_stream_urls(video_path)
@@ -1610,7 +1631,11 @@ def process_multi_stream_with_zones(
     alert_threshold: float = 0,
     zone_workers: int = None,
     enable_livestream: bool = False,
-    livestream_dir: str = None
+    livestream_dir: str = None,
+    model_type: str = None,
+    conf_thresh: float = None,
+    track_thresh: float = None,
+    face_conf_thresh: float = None
 ):
     """
     Process multiple video streams with zone monitoring in parallel
@@ -1747,7 +1772,11 @@ def process_multi_stream_with_zones(
                 camera_idx=camera_idx,
                 frame_id_offset=frame_id_offset,
                 enable_livestream=enable_livestream,
-                livestream_dir=str(camera_livestream_dir) if camera_livestream_dir else None
+                livestream_dir=str(camera_livestream_dir) if camera_livestream_dir else None,
+                model_type=model_type,
+                conf_thresh=conf_thresh,
+                track_thresh=track_thresh,
+                face_conf_thresh=face_conf_thresh
             )
 
             logger.info(f"✅ [Camera {camera_idx}] Completed")

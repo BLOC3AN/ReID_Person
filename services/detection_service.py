@@ -253,7 +253,11 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                     alert_threshold=alert_threshold,
                     zone_workers=zone_workers,
                     enable_livestream=enable_livestream,
-                    livestream_dir=livestream_dir
+                    livestream_dir=livestream_dir,
+                    model_type=model_type,
+                    conf_thresh=conf_thresh,
+                    track_thresh=track_thresh,
+                    face_conf_thresh=face_conf_thresh
                 )
 
                 # Create summary log file
@@ -384,7 +388,11 @@ def process_detection(job_id: str, video_path: str, output_video: str,
                     alert_threshold=alert_threshold,
                     zone_workers=zone_workers,
                     enable_livestream=enable_livestream,
-                    livestream_dir=livestream_dir
+                    livestream_dir=livestream_dir,
+                    model_type=model_type,
+                    conf_thresh=conf_thresh,
+                    track_thresh=track_thresh,
+                    face_conf_thresh=face_conf_thresh
                 )
 
                 # Create a simple log file for zone monitoring
