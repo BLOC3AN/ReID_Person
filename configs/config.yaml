@@ -18,7 +18,7 @@ detection:
     model_name: bytetrack_tensorrt  # Model name in Triton repository
     model_version: ''  # Empty string = latest version
     timeout: 20.0  # Request timeout in seconds (increased for multi-stream)
-    verbose: true  # Enable verbose logging
+    verbose: false  # Enable verbose logging
 
     # Dynamic batching settings (configured in Triton model config)
     # These are for reference - actual config is in model repository
