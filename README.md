@@ -1,347 +1,417 @@
 # Person Re-Identification System
 
-Multi-camera Person Re-Identification system using YOLOX detection, ByteTrack tracking, **ArcFace (InsightFace)** face recognition, Qdrant vector database, and **Zone Monitoring** with IOU-based detection.
+Production-ready multi-camera person re-identification system with face recognition, zone monitoring, and real-time alerts.
 
-## 🎯 Key Features
+[![Version](https://img.shields.io/badge/version-1.0.2-blue.svg)](https://github.com/your-repo/releases)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Docker](https://img.shields.io/badge/docker-ready-brightgreen.svg)](deployment/)
 
-### Multiple Detection Backends
-- ✅ **PyTorch** - Standard CPU/GPU inference
-- ✅ **TensorRT** - Optimized GPU inference (2-3x faster)
-- ✅ **Triton Inference Server** - Multi-stream optimization with dynamic batching
-- ✅ **Auto-detection** of decoded model outputs (no manual configuration needed)
+## 🎯 Overview
 
-### ArcFace Face Recognition
-- ✅ High accuracy (similarity 0.85-0.95)
-- ✅ Robust to pose/lighting changes
-- ✅ Face-focused detection (512-dim embeddings)
-- ✅ GPU-accelerated inference
+Real-time person tracking and identification system across multiple camera streams using:
+- **Face Recognition:** ArcFace (512-dim embeddings, 0.85-0.95 similarity)
+- **Detection:** YOLOX + ByteTrack (MOT17 optimized)
+- **Inference:** Triton Inference Server + TensorRT (7-9 FPS per stream)
+- **Database:** Qdrant (vector search) + PostgreSQL + Redis
+- **Monitoring:** Zone-based authorization and violation detection
+- **Alerts:** Real-time Kafka messaging
 
-### Zone Monitoring
-- ✅ **IoP-based zone detection** (Intersection over Person - % of person in zone)
-- ✅ **R-tree spatial indexing** for O(log n) performance
-- ✅ **Authorization checking** per zone
-- ✅ **Time tracking** for presence in zones
-- ✅ **Violation detection** for unauthorized entries
-- ✅ **Ruler overlay** on video for easy coordinate reference
-- ✅ **Works correctly** when zone is much larger than person (unlike IOU)
+## ✨ Key Features
 
-### Multi-Camera Processing
-- ✅ **Parallel processing** of multiple camera streams
-- ✅ **Frame synchronization** across cameras
-- ✅ **Combined view** output (horizontal stack)
-- ✅ **Job cancellation** - Stop processing anytime via UI
-- ✅ **Thread-safe** cancellation mechanism
+### 🎥 Multi-Camera Support
+- Parallel processing of multiple streams (4-16 cameras)
+- Frame synchronization across cameras
+- Combined view output with per-camera tracking
+- Job cancellation and progress monitoring
 
-### UI Features
-- ✅ **Create zones in UI** - No YAML editing needed
-- ✅ **Real-time progress bar** with track info
-- ✅ **Zone report visualization** with summary and violations
-- ✅ **Download zone config** for reuse
-- ✅ **Stop button** for stream processing
+### 🔍 Person Re-Identification
+- Face-based identification using ArcFace
+- K-reciprocal reranking for improved accuracy
+- First-3 voting + re-verification strategy (5.3x faster)
+- Cross-camera person matching
 
-📖 **Documentation**: See [docs/](docs/) for detailed guides
-🔧 **Configuration**: Edit `configs/config.yaml` for model settings
-🎯 **Backend Selection**: See [docs/BACKEND_STRATEGY.md](docs/BACKEND_STRATEGY.md) for choosing PyTorch/TensorRT/Triton
-📡 **Stream Processing**: See [docs/STREAM_STRATEGY.md](docs/STREAM_STRATEGY.md) for frame handling strategies
-⚡ **Triton Optimization**: See [docs/TRITON_OPTIMIZATION.md](docs/TRITON_OPTIMIZATION.md) for resource tuning
-🗺️ **Zone Monitoring**: See [docs/ZONE_MONITORING_GUIDE.md](docs/ZONE_MONITORING_GUIDE.md)
-🎥 **Multi-Camera**: See [docs/MULTI_CAMERA_GUIDE.md](docs/MULTI_CAMERA_GUIDE.md)
-🚀 **Deployment**: See [deployment/](deployment/) for Docker and Triton setup
+### 🗺️ Zone Monitoring
+- IoP-based zone detection (Intersection over Person)
+- Authorization checking per zone
+- Time tracking and violation detection
+- Real-time alerts via Kafka
+- UI-based zone creation (no YAML editing)
 
-## Pipeline
+### 🚀 Performance
+- **Single stream:** 7-9 FPS
+- **Multi-stream (4 cameras):** 25-30 FPS total
+- **GPU memory:** ~2.5GB (4 Triton instances)
+- **Scalability:** Up to 16 cameras with 16 instances
+
+### 🎨 Web UI
+- Streamlit-based interface
+- Person registration with video upload
+- Real-time detection with progress tracking
+- Zone configuration and visualization
+- Download results (video, CSV, reports)
+
+## 🏗️ Architecture
 
 ```
-Video → Detection (PyTorch/TensorRT/Triton) → ByteTrack Tracking → ArcFace ReID → Qdrant Search → Zone Monitoring → Output
-                                                                                            ↓
-                                                                                  IOU-based Zone Detection
-                                                                                            ↓
-                                                                                  Authorization Check
-                                                                                            ↓
-                                                                                  Time Tracking + Violations
+┌─────────────────────────────────────────────────────────────┐
+│                      Streamlit Web UI                        │
+│                     (Port 8501)                              │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+┌───────▼────────┐ ┌─────▼──────┐ ┌──────▼────────┐
+│ Detection API  │ │ Register   │ │  Livestream   │
+│  (Port 8003)   │ │   API      │ │    Service    │
+│                │ │ (Port 8002)│ │               │
+└───────┬────────┘ └─────┬──────┘ └──────┬────────┘
+        │                │                │
+        └────────────────┼────────────────┘
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+┌───────▼────────┐ ┌─────▼──────┐ ┌──────▼────────┐
+│ Triton Server  │ │  Qdrant    │ │  PostgreSQL   │
+│ (TensorRT)     │ │  Vector DB │ │  User DB      │
+│ 8100-8102      │ │  (6333)    │ │  (5432)       │
+└────────────────┘ └────────────┘ └───────────────┘
+        │                │                │
+        └────────────────┼────────────────┘
+                         │
+                ┌────────▼────────┐
+                │ Redis + Kafka   │
+                │ (6379 + 9092)   │
+                └─────────────────┘
 ```
 
-### Detection Backend Selection
+## 🚀 Quick Start
 
-Configure in `configs/config.yaml`:
+### Prerequisites
 
+- Docker & Docker Compose
+- NVIDIA GPU with 8GB+ VRAM
+- nvidia-docker2
+- Ubuntu 20.04/22.04
+
+### 1. Clone Repository
+
+```bash
+git clone <repository-url>
+cd person_reid_system
+git checkout v1.0.2
+```
+
+### 2. Configure Environment
+
+```bash
+cp configs/.env.example configs/.env
+nano configs/.env  # Edit Qdrant, PostgreSQL, Redis settings
+```
+
+### 3. Start Services
+
+```bash
+cd deployment
+docker-compose up -d
+```
+
+### 4. Access Web UI
+
+```bash
+cd ..
+source ../hai_venv/bin/activate
+streamlit run app.py
+```
+
+Open browser: http://localhost:8501
+
+### 5. Register a Person
+
+1. Go to "Register Person" tab
+2. Upload video of person
+3. Enter name and unique ID
+4. Click "Register"
+
+### 6. Run Detection
+
+1. Go to "Detect & Track" tab
+2. Upload video or enter stream URL
+3. Configure parameters (optional)
+4. Click "Start Detection"
+
+**See [Quick Start Guide](docs/QUICKSTART.md) for detailed instructions.**
+
+## 📚 Documentation
+
+### Getting Started
+- **[Quick Start](docs/QUICKSTART.md)** - Get running in 5 minutes
+- **[Deployment Guide](docs/DEPLOYMENT.md)** - Production deployment
+- **[Configuration](docs/CONFIGURATION.md)** - System configuration
+
+### Core Components
+- **[Vector Database](docs/core/VECTOR_DB.md)** - Qdrant integration and k-reciprocal reranking
+- **[ReID Logic](docs/core/REID_LOGIC.md)** - First-3 voting + re-verification strategy
+
+### Deployment
+- **[Docker Setup](deployment/README.md)** - Docker Compose deployment
+- **[Triton Setup](deployment/TRITON_DEPLOYMENT.md)** - Triton Inference Server
+
+## 🛠️ Technology Stack
+
+### Detection & Tracking
+- **YOLOX-X** (MOT17 model) - Person detection
+- **ByteTrack** - Multi-object tracking
+- **TensorRT** - GPU-optimized inference
+- **Triton Inference Server** - Multi-stream batching
+
+### Face Recognition
+- **SCRFD** - Face detection
+- **ArcFace** (InsightFace) - Face embedding extraction
+- **K-reciprocal reranking** - Improved matching accuracy
+
+### Database & Storage
+- **Qdrant** - Vector database for face embeddings
+- **PostgreSQL** - User management and metadata
+- **Redis** - Job tracking and caching
+
+### Messaging & Alerts
+- **Kafka** - Real-time violation alerts
+- **WebSocket** - Live progress updates
+
+### Deployment
+- **Docker** - Containerization
+- **Docker Compose** - Service orchestration
+- **Streamlit** - Web UI
+
+## 📊 Performance
+
+### Benchmarks
+
+| Configuration | Streams | FPS (Total) | GPU Memory | Latency |
+|---------------|---------|-------------|------------|---------|
+| Single stream | 1 | 7-9 | ~1.5GB | ~110ms |
+| Multi-stream | 4 | 25-30 | ~2.5GB | ~130ms |
+| Multi-stream | 8 | 50-60 | ~4GB | ~150ms |
+| Multi-stream | 16 | 100+ | ~8GB | ~160ms |
+
+### Optimization
+
+**For Higher FPS:**
+- Increase Triton instances (4 → 8 → 16)
+- Disable k-reciprocal reranking
+- Increase detection threshold
+
+**For Better Accuracy:**
+- Enable k-reciprocal reranking
+- Lower detection/face thresholds
+- Increase re-verification frequency
+
+See [Configuration Guide](docs/CONFIGURATION.md) for tuning details.
+
+## 🔧 Configuration
+
+### Key Settings
+
+**Detection (config.yaml):**
 ```yaml
 detection:
-  backend: triton  # Options: pytorch, tensorrt, triton
-
-  # Triton settings (for multi-stream optimization)
+  backend: triton
+  conf_threshold: 0.5    # Detection confidence
   triton:
     url: localhost:8101
     model_name: bytetrack_tensorrt
 ```
 
-**Performance Comparison:**
-
-| Backend | Single Stream | Multi-Stream (4 cams) | Multi-Stream (16 cams) | GPU Memory |
-|---------|---------------|----------------------|------------------------|------------|
-| **PyTorch** | 10-15 FPS | 40-60 FPS total | N/A | ~1.5GB |
-| **TensorRT** | 20-30 FPS | 80-120 FPS total | N/A | ~1.5GB |
-| **Triton (4 instances)** | 15-25 FPS | 120-160 FPS total | N/A | ~2.5GB |
-| **Triton (16 instances)** | 20-30 FPS | 160-200 FPS total | **320-400+ FPS total** | ~8-10GB |
-
-**Current Configuration**: Triton with **16 instances** optimized for 12-16+ camera streams
-- See [docs/TRITON_OPTIMIZATION.md](docs/TRITON_OPTIMIZATION.md) for tuning guide
-
-
-
-## ReID Matching Strategy
-
-The system uses an optimized **"First-3 + Re-verify"** strategy for robust and efficient person identification:
-
-### 1. First-3 Voting (Frame 0-2 of each track)
-- Extract embeddings from **first 3 frames** of each new track
-- Perform **majority voting** from 3 matching results
-- Select label with highest votes + highest similarity
-- **Purpose:** Robust initialization, reduce false positives from single bad frame
-
-### 2. Re-verification (Every 30 frames)
-- Re-extract embedding at frame 30, 60, 90, 120...
-- Re-match against database
-- Update label if changed or confidence is high
-- **Purpose:** Self-correction, handle occlusion/pose changes
-
-### 3. Cached Labels (Other frames)
-- Use cached label from voting/re-verification
-- No embedding extraction → **Very fast**
-- **Purpose:** High performance (19+ FPS vs 3.6 FPS if ReID every frame)
-
-**Performance:** ~5.3x speedup with 95.8% reduction in embedding extractions while maintaining accuracy.
-
-## 🚀 Quick Start
-
-### Option 1: Web UI (Recommended)
-
-```bash
-# Activate virtual environment
-source ../hai_venv/bin/activate
-
-# Install Streamlit (if not installed)
-pip install streamlit
-
-# Launch UI
-./run_ui.sh
-
-# Or manually
-streamlit run app.py
+**ReID (config.yaml):**
+```yaml
+reid:
+  backend: triton_pipeline
+  use_rerank: true       # K-reciprocal reranking
+  triton:
+    face_conf_threshold: 0.5
 ```
 
-Then open browser at `http://localhost:8501`
-
-📖 **See [UI_GUIDE.md](UI_GUIDE.md) for detailed UI usage**
-
-### Option 2: Command Line
-
-#### 1. Install Dependencies
-
-```bash
-pip install -r requirements.txt
+**Matching (config.yaml):**
+```yaml
+matching:
+  similarity_threshold: 0.8  # ReID threshold (0.7-0.9)
 ```
 
-### 2. Configure Qdrant
-
-Edit `configs/.env`:
-
+**Environment (.env):**
 ```env
-QDRANT_API_KEY=your_api_key
-QDRANT_URI=host=your_qdrant_host
-QDRANT_COLLECTION=cross_camera_matching_id
+QDRANT_URI=http://127.0.0.1:6333
+TRITON_URL=localhost:8101
+POSTGRES_HOST=localhost
+REDIS_HOST=127.0.0.1
 ```
 
-### 3. Extract Objects from Video (Optional)
-
-If you have a video with multiple people and want to extract individual person videos:
-
-```bash
-python scripts/extract_objects.py \
-  --video data/videos/multi_person.mp4 \
-  --output-dir ./output_objects \
-  --model mot17 \
-  --min-frames 10
-```
-
-This will create separate video files for each tracked person in `output_objects/<video_name>/object_X.mp4`.
-
-### 4. Register Person (IMPORTANT: Use MOT17)
-
-```bash
-# Register first person
-python scripts/register_mot17.py \
-  --video data/videos/person.mp4 \
-  --name "PersonName" \
-  --global-id 1 \
-  --sample-rate 5
-
-# Register additional person (add to existing collection)
-python scripts/register_mot17.py \
-  --video data/videos/person2.mp4 \
-  --name "Person2" \
-  --global-id 2
-
-# Delete existing collection and start fresh
-python scripts/register_mot17.py \
-  --video data/videos/person.mp4 \
-  --name "PersonName" \
-  --global-id 1 \
-  --delete-existing
-```
-
-**⚠️ IMPORTANT:**
-- Each person must have a unique `--global-id` (1, 2, 3, ...)
-- Use `--delete-existing` to recreate collection from scratch
-- System uses ArcFace for face recognition (requires clear face visibility)
-
-### 5. Run Detection
-
-```bash
-python scripts/detect_and_track.py \
-  --video data/videos/test.mp4 \
-  --model mot17 \
-  --threshold 0.8
-```
-
-**Note:** Person names are automatically retrieved from Qdrant database. All registered persons will be detected and labeled with their names.
-
-## Parameters
-
-**extract_objects.py:**
-- `--video`: Input video with multiple people
-- `--output-dir`: Output directory (default: ./output_objects)
-- `--model`: `mot17` (recommended) or `yolox`
-- `--padding`: Padding pixels around bbox (default: 10)
-- `--min-frames`: Minimum frames to save object (default: 10)
-
-**register_mot17.py:**
-- `--video`: Video containing person to register
-- `--name`: Person name
-- `--global-id`: Unique ID for person (required, e.g., 1, 2, 3)
-- `--sample-rate`: Extract 1 frame every N frames (default: 5)
-- `--delete-existing`: Delete existing collection before registering
-
-**detect_and_track.py:**
-- `--video`: Input video
-- `--model`: `mot17` (recommended) or `yolox`
-- `--threshold`: Similarity threshold (0.8 = strict, 0.7 = loose)
-- `--max-frames`: Limit frames for testing (optional)
-
-## Output
-
-```
-outputs/
-├── videos/     # Annotated video with bbox + labels + FPS counter
-├── csv/        # Tracking data (frame_id, track_id, bbox, global_id, similarity, label)
-└── logs/       # Detailed per-frame logs (voting, re-verification events)
-```
-
-**Video Features:**
-- Real-time FPS counter (top-left)
-- Frame counter
-- Person labels with similarity scores
-- Color-coded bounding boxes (green=known, red=unknown)
-
-**CSV Columns:**
-- `frame_id`, `track_id`, `x`, `y`, `w`, `h`, `confidence`
-- `global_id`, `similarity`, `label`
-
-**Log Events:**
-- `[VOTING]`: First-3 frames majority voting results
-- `[RE-VERIFY]`: Re-verification at frame 30, 60, 90...
-
-## Project Structure
+## 📁 Project Structure
 
 ```
 person_reid_system/
+├── app.py                      # Streamlit Web UI
 ├── configs/
-│   ├── config.yaml          # Main config (detection backend, thresholds, etc.)
-│   ├── .env                 # Qdrant credentials & service URLs
-│   └── .env.example         # Template for environment variables
-├── core/
-│   ├── detector.py          # PyTorch YOLOX detector
-│   ├── detector_trt.py      # TensorRT detector
-│   ├── detector_triton.py   # Triton Inference Server detector
-│   ├── tracker.py           # ByteTrack tracker
-│   ├── feature_extractor.py # ArcFace face recognition
-│   ├── vector_db.py         # Qdrant database
-│   └── preloaded_manager.py # Singleton manager for pre-loaded components
-├── yolox/                   # ByteTrack YOLOX modules (integrated)
-├── exps/                    # YOLOX experiment configs
-├── scripts/
-│   ├── extract_objects.py   # Extract individual objects from video
-│   ├── register_mot17.py    # Register person
-│   ├── detect_and_track.py  # Detection pipeline
-│   └── zone_monitor.py      # Zone monitoring script
-├── services/                # FastAPI microservices
-│   ├── detection_service.py # Detection API
-│   ├── extract_service.py   # Extraction API
-│   └── register_service.py  # Registration API
-├── deployment/              # Docker deployment configs
-│   ├── docker-compose.yml   # Multi-service deployment
-│   ├── Dockerfile.*         # Service-specific Dockerfiles
-│   └── TRITON_DEPLOYMENT.md # Triton setup guide
-├── triton_model_repository/ # Triton model repository
-│   └── bytetrack_tensorrt/  # TensorRT model for Triton
-├── tools/                   # Utility scripts
-│   ├── export_onnx.py       # Export PyTorch to ONNX
-│   ├── convert_tensorrt.py  # Convert ONNX to TensorRT
-│   └── verify_onnx.py       # Verify ONNX model
-├── utils/
-│   ├── stream_reader.py     # Video/stream reader (UDP, RTSP, files)
-│   └── multi_stream_reader.py # Multi-camera stream reader
-├── data/
-│   └── videos/              # Input videos
-├── models/
-│   ├── bytetrack_x_mot17.pth.tar     # PyTorch MOT17 model
-│   ├── bytetrack_x_mot17_fp16.trt    # TensorRT engine
-│   └── bytetrack_x_mot17_fp16.onnx   # ONNX intermediate format
-├── outputs/                 # Generated outputs
-│   ├── videos/              # Annotated videos
-│   ├── csv/                 # Tracking data
-│   └── logs/                # Detailed logs
-├── app.py                   # Streamlit Web UI
-└── README.md                # This file
+│   ├── config.yaml             # Main configuration
+│   ├── .env                    # Environment variables
+│   └── zones.yaml              # Zone definitions
+├── core/                       # Core components
+│   ├── detector_triton.py      # Triton detector
+│   ├── tracker.py              # ByteTrack wrapper
+│   ├── face_recognition_triton.py  # Face recognition
+│   ├── vector_db.py            # Qdrant integration
+│   ├── reid_logic.py           # ReID matching logic
+│   └── zone_service.py         # Zone monitoring
+├── scripts/                    # CLI scripts
+│   ├── register_mot17.py       # Person registration
+│   ├── detect_and_track.py     # Detection pipeline
+│   └── zone_monitor.py         # Zone monitoring
+├── services/                   # FastAPI services
+│   ├── detection_service.py    # Detection API
+│   ├── register_service.py     # Registration API
+│   └── livestream_service.py   # Livestream API
+├── deployment/                 # Docker deployment
+│   ├── docker-compose.yml      # Service orchestration
+│   ├── Dockerfile.*            # Service Dockerfiles
+│   └── TRITON_DEPLOYMENT.md    # Triton setup
+├── triton_model_repository/    # Triton models
+│   ├── bytetrack_tensorrt/     # Detection model
+│   ├── arcface_onnx/           # Face recognition
+│   └── scrfd_10g/              # Face detection
+├── models/                     # Model weights
+├── docs/                       # Documentation
+├── outputs/                    # Generated outputs
+│   ├── videos/                 # Annotated videos
+│   ├── csv/                    # Tracking data
+│   └── logs/                   # Detailed logs
+└── README.md                   # This file
 ```
 
-## Important Notes
+## 🔐 Security
 
-1. **Always use `register_mot17.py`** - Ensures model consistency
-2. **Threshold tuning:** 0.8 = strict, 0.7 = balanced, 0.6 = loose
-3. **Qdrant sync** - Database synced to local file + Qdrant cloud
-4. **ReID Strategy:** First-3 voting + Re-verify every 30 frames for optimal speed/accuracy
-5. **Performance:** ~19 FPS (5.3x faster than ReID every frame)
+### Production Recommendations
 
-## Documentation
+1. **API Authentication:** Add JWT/OAuth to FastAPI services
+2. **Network Security:** Use firewall rules (UFW) to restrict ports
+3. **SSL/TLS:** Deploy behind Nginx reverse proxy with Let's Encrypt
+4. **Database Security:** Use strong passwords, enable SSL connections
+5. **Secrets Management:** Use Docker secrets or environment encryption
 
-### Getting Started
-- **[Installation Guide](docs/INSTALLATION.md)** - Detailed installation steps
-- **[Configuration Guide](docs/CONFIGURATION.md)** - Config file reference
-- **[Deployment Guide](docs/DEPLOYMENT.md)** - Production deployment
+See [Deployment Guide](docs/DEPLOYMENT.md) for security setup.
 
-### Performance & Optimization
-- **[Backend Strategy](docs/BACKEND_STRATEGY.md)** - Choose PyTorch/TensorRT/Triton backend
-- **[Triton Optimization](docs/TRITON_OPTIMIZATION.md)** - Resource tuning for multi-stream (NEW ⚡)
-- **[Stream Processing Strategy](docs/STREAM_STRATEGY.md)** - Frame reading, buffering, synchronization
-- **[ReID Strategy](docs/REID_STRATEGY.md)** - First-3 + Re-verify strategy
+## 🐛 Troubleshooting
 
-### Features & Guides
-- **[Multi-Camera Guide](docs/MULTI_CAMERA_GUIDE.md)** - Multi-stream processing
-- **[Zone Monitoring Guide](docs/ZONE_MONITORING_GUIDE.md)** - Zone detection setup
-- **[Stream Troubleshooting](docs/STREAM_TROUBLESHOOTING.md)** - UDP/RTSP stream issues
+### Common Issues
 
-### API & Services
-- **[API Documentation](docs/API.md)** - API reference and examples
-- **[Services Guide](docs/SERVICES.md)** - Microservices architecture
-- **[Architecture](docs/ARCHITECTURE.md)** - System architecture overview
+**Services won't start:**
+```bash
+docker-compose logs triton
+docker-compose logs detection
+docker-compose restart
+```
 
-### Troubleshooting
-- **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)** - Common issues and solutions
+**GPU not detected:**
+```bash
+docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+```
 
-### Deployment
-- **[Docker Deployment](deployment/README.md)** - Docker Compose setup
-- **[Triton Deployment](deployment/TRITON_DEPLOYMENT.md)** - Triton Inference Server setup (advanced)
+**Low FPS:**
+- Check GPU utilization: `nvidia-smi -l 1`
+- Increase Triton instances in `triton_model_repository/*/config.pbtxt`
+- Disable reranking: `use_rerank: false`
 
-## License
+**Face detection fails:**
+- Lower threshold: `face_conf_threshold: 0.3`
+- Check lighting conditions
+- Verify face is visible in frame
 
-MIT
+See [Configuration Guide](docs/CONFIGURATION.md) for more troubleshooting.
+
+## 📈 Monitoring
+
+### Health Checks
+
+```bash
+# Service health
+curl http://localhost:8003/health
+curl http://localhost:8002/health
+
+# Triton metrics
+curl http://localhost:8102/metrics
+
+# Redis stats
+docker exec person_reid_redis redis-cli INFO stats
+```
+
+### Logs
+
+```bash
+# View logs
+docker-compose logs -f detection
+docker-compose logs -f triton
+
+# Export logs
+docker-compose logs detection > detection.log
+```
+
+## 🔄 Updates
+
+### Update System
+
+```bash
+git pull origin main
+cd deployment
+docker-compose build
+docker-compose down
+docker-compose up -d
+```
+
+### Backup
+
+```bash
+# Backup Qdrant
+curl -X POST http://localhost:6333/collections/cross_camera_matching_id/snapshots
+
+# Backup PostgreSQL
+docker exec person_reid_postgres pg_dump -U postgres hailt_imespro > backup.sql
+```
+
+## 🤝 Contributing
+
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- **ByteTrack** - Multi-object tracking
+- **YOLOX** - Object detection
+- **InsightFace** - Face recognition
+- **Qdrant** - Vector database
+- **NVIDIA Triton** - Inference server
+
+## 📞 Support
+
+- **Documentation:** [docs/](docs/)
+- **Issues:** [GitHub Issues](https://github.com/your-repo/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/your-repo/discussions)
+
+## 🗺️ Roadmap
+
+- [ ] Multi-GPU support
+- [ ] Real-time dashboard
+- [ ] Mobile app integration
+- [ ] Cloud deployment (AWS/GCP/Azure)
+- [ ] Advanced analytics and reporting
+
+---
+
+**Version:** 1.0.2  
+**Last Updated:** December 2025  
+**Status:** Production Ready ✅
