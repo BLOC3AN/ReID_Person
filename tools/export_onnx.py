@@ -51,7 +51,7 @@ def export_onnx(
     logger.info("=" * 80)
     
     # 1. Load experiment config
-    exp_file = Path(__file__).parent.parent / "exps/example/mot/yolox_x_mix_det.py"
+    exp_file = Path(__file__).parent.parent / "exps/yolox_x_mix_det.py"
     logger.info(f"\n📋 Loading experiment config from {exp_file}")
     exp = get_exp(str(exp_file), None)
     exp.test_size = test_size

@@ -16,7 +16,7 @@ def export_onnx_fp16():
     """Export YOLOX to ONNX with FP16 precision"""
     
     # 1. Load model
-    exp_file = "exps/example/mot/yolox_x_mix_det.py"
+    exp_file = "exps/yolox_x_mix_det.py"
     ckpt_file = "models/bytetrack_x_mot17.pth.tar"
     output_file = "models/bytetrack_x_mot17_fp16.onnx"
     

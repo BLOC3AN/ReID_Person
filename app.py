@@ -220,10 +220,10 @@ if page == "Register Person":
 
         face_conf_thresh = st.slider(
             "Face Confidence",
-            min_value=0.0,
+            min_value=0.5,
             max_value=1.0,
-            value=0.5,
-            step=0.05,
+            value=0.7,
+            step=0.002,
             help="Face detection confidence threshold (higher = stricter face detection)"
         )
 
@@ -1024,7 +1024,7 @@ elif page == "Detect & Track":
                 "Zone Border Thickness",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.3,
+                value=0.2,
                 step=0.05,
                 help="Zone border line thickness (0.0 = thin, 1.0 = thick). Controls border width from 1-10 pixels. 0.3 (3px) recommended."
             )
@@ -1038,7 +1038,7 @@ elif page == "Detect & Track":
                 "Zone Worker Threads",
                 min_value=1,
                 max_value=32,
-                value=None,  # None = auto-detect (capped at 4)
+                value=32,  # None = auto-detect (capped at 4)
                 step=1,
                 help="Number of threads for zone processing. None = auto-detect (capped at 4). Higher values = faster processing but more CPU usage."
             )
@@ -1070,12 +1070,12 @@ elif page == "Detect & Track":
         st.markdown("### 📡 Live Preview Settings")
         enable_livestream = st.checkbox(
             "Enable Live Preview",
-            value=False,
-            help="Enable real-time HLS livestream of AI-processed video (with bounding boxes, tracking, labels). View at http://localhost:3900"
+            value=True,
+            help="Enable real-time HLS livestream of AI-processed video (with bounding boxes, tracking, labels). View at https://3900--main--coral-bass-22--ailab3.coder.tuilakhanh.id.vn/"
         )
 
         if enable_livestream:
-            st.info("📡 Live preview will be available at: **http://localhost:3900** during processing. The stream shows real-time AI detection with bounding boxes and tracking.")
+            st.info("📡 Live preview will be available at: **https://3900--main--coral-bass-22--ailab3.coder.tuilakhanh.id.vn/** during processing. The stream shows real-time AI detection with bounding boxes and tracking.")
             st.caption("💡 You can adjust buffer settings (segment duration, playlist size) in the livestream dashboard.")
 
     # Advanced Parameters
@@ -1085,18 +1085,14 @@ elif page == "Detect & Track":
         col_param1, col_param2 = st.columns(2)
 
         with col_param1:
-            model_type = st.selectbox(
-                "Model Type",
-                options=["mot17", "yolox"],
-                index=0,
-                help="Detection model: mot17 (recommended) or yolox"
-            )
+            # Model type fixed to mot17 (Triton backend only supports bytetrack_tensorrt)
+            model_type = "mot17"
 
             similarity_threshold = st.slider(
                 "Similarity Threshold",
                 min_value=0.5,
                 max_value=1.0,
-                value=0.8,
+                value=0.6,
                 step=0.05,
                 help="Cosine similarity threshold for ReID matching (higher = stricter)"
             )
@@ -1114,7 +1110,7 @@ elif page == "Detect & Track":
                 "Face Confidence",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.5,
+                value=0.7,
                 step=0.05,
                 help="Face detection confidence threshold (higher = stricter face detection)"
             )
@@ -1174,7 +1170,6 @@ elif page == "Detect & Track":
 
         st.markdown("**Current Settings:**")
         st.code(f"""
-Model: {model_type}
 Similarity: {similarity_threshold}
 Detection: {conf_thresh}
 Face Detection: {face_conf_thresh}
@@ -1205,7 +1200,7 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                 if max_duration:
                     logger.info(f"⏱️ [Detect & Track] Max duration: {max_duration}s")
 
-            logger.info(f"⚙️ [Detect & Track] Parameters: model={model_type}, similarity={similarity_threshold}, conf={conf_thresh}, face_conf={face_conf_thresh}, track={track_thresh}")
+            logger.info(f"⚙️ [Detect & Track] Parameters: similarity={similarity_threshold}, conf={conf_thresh}, face_conf={face_conf_thresh}, track={track_thresh}")
 
             # Check if zone monitoring is enabled
             zone_enabled = zone_config_file is not None or zones_data is not None
@@ -1251,8 +1246,7 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                         data["rerank_lambda"] = str(rerank_lambda)
 
                     # Add optional parameters
-                    if model_type:
-                        data["model_type"] = model_type
+                    # Note: model_type removed - Triton backend only supports mot17
                     if conf_thresh is not None:
                         data["conf_thresh"] = str(conf_thresh)
                     if track_thresh is not None:

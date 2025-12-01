@@ -180,7 +180,7 @@ def compare_with_pytorch(onnx_path: str, test_image: str, ort_session):
     from yolox.data.data_augment import preproc
     
     # Load PyTorch model
-    exp_file = Path(__file__).parent.parent / "exps/example/mot/yolox_x_mix_det.py"
+    exp_file = Path(__file__).parent.parent / "exps/yolox_x_mix_det.py"
     exp = get_exp(str(exp_file), None)
     
     model = exp.get_model()

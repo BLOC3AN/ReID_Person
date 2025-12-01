@@ -46,7 +46,7 @@ class YOLOXDetector:
         logger.info(f"  NMS threshold: {nms_thresh}")
 
         # Load experiment config
-        exp_file = Path(__file__).parent.parent / "exps/example/mot/yolox_x_mix_det.py"
+        exp_file = Path(__file__).parent.parent / "exps/yolox_x_mix_det.py"
         self.exp = get_exp(str(exp_file), None)
         self.exp.test_conf = conf_thresh
         self.exp.nmsthre = nms_thresh
