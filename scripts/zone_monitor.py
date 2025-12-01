@@ -306,7 +306,7 @@ class ZoneMonitor:
         logger.info(f"   R-tree index built for {len(self.zones)} zones")
         return idx
 
-    def find_zone(self, person_bbox, camera_idx=0, track_id=None, person_name=None):
+    def find_zone(self, person_bbox, camera_idx=0, track_id=None, person_name=None, similarity=None):
         """
         Find which zone contains the person using IoP >= threshold
 
@@ -339,7 +339,8 @@ class ZoneMonitor:
         # Debug logging
         debug_info = []
         if track_id is not None:
-            debug_info.append(f"Track {track_id} ({person_name}): bbox={person_bbox_xyxy}")
+            sim_str = f", sim={similarity:.4f}" if similarity is not None else ""
+            debug_info.append(f"Track {track_id} ({person_name}): bbox={person_bbox_xyxy}{sim_str}")
 
         for candidate in candidates:
             zone_id = candidate.object
@@ -1227,7 +1228,8 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                 relative_bbox,
                 camera_idx,
                 track_id=track_id,
-                person_name=info.get('person_name', 'Unknown')
+                person_name=info.get('person_name', 'Unknown'),
+                similarity=info.get('similarity', 0.0)
             )
 
             # Store zone_id for zone service
@@ -1575,7 +1577,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     # Log Redis stats before cleanup
     if redis_manager:
         stats = redis_manager.get_stats()
-        logger.info(f"\n📊 Redis Stats: {stats['total_tracks']} tracks, {stats['redis_memory_used']} memory used")
+        logger.info(f"\n📊 Redis Stats: {stats.get('total_tracks_all_jobs', 0)} tracks, {stats['redis_memory_used']} memory used")
 
     logger.info("\n" + "="*80)
     logger.info("📁 OUTPUT FILES")
