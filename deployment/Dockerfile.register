@@ -20,35 +20,10 @@ RUN ln -s /usr/bin/python3.10 /usr/bin/python
 
 WORKDIR /app
 
-# Create optimized requirements inline (minimal dependencies for register service)
-RUN echo "torch>=1.10.0" > requirements.register.txt && \
-    echo "torchvision>=0.11.0" >> requirements.register.txt && \
-    echo "opencv-python>=4.5.0" >> requirements.register.txt && \
-    echo "numpy>=1.21.0,<2.0.0" >> requirements.register.txt && \
-    echo "scipy>=1.7.0" >> requirements.register.txt && \
-    echo "insightface>=0.7.3" >> requirements.register.txt && \
-    echo "onnxruntime-gpu==1.15.1" >> requirements.register.txt && \
-    echo "qdrant-client>=1.0.0" >> requirements.register.txt && \
-    echo "loguru>=0.6.0" >> requirements.register.txt && \
-    echo "pyyaml>=6.0" >> requirements.register.txt && \
-    echo "python-dotenv>=0.19.0" >> requirements.register.txt && \
-    echo "scikit-image" >> requirements.register.txt && \
-    echo "Pillow" >> requirements.register.txt && \
-    echo "lap" >> requirements.register.txt && \
-    echo "filterpy" >> requirements.register.txt && \
-    echo "cython" >> requirements.register.txt && \
-    echo "cython_bbox" >> requirements.register.txt && \
-    echo "thop" >> requirements.register.txt && \
-    echo "pycocotools" >> requirements.register.txt && \
-    echo "tabulate" >> requirements.register.txt && \
-    echo "motmetrics" >> requirements.register.txt && \
-    echo "tritonclient[grpc]>=2.40.0" >> requirements.register.txt && \
-    echo "fastapi>=0.104.0" >> requirements.register.txt && \
-    echo "uvicorn>=0.24.0" >> requirements.register.txt && \
-    echo "python-multipart>=0.0.6" >> requirements.register.txt &&\
-    echo "redis>=4.5.0" >> requirements.register.txt
+# Copy requirements file
+COPY deployment/requirements.register.txt ./requirements.register.txt
 
-# Install Python dependencies with optimizations
+# Install Python dependencies
 RUN pip3 install --no-cache-dir --upgrade pip && \
     pip3 install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu118 && \
     pip3 install --no-cache-dir -r requirements.register.txt && \
@@ -76,4 +51,3 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl --fail http://localhost:8002/health || exit 1
 
 CMD ["python", "-m", "uvicorn", "services.register_service:app", "--host", "0.0.0.0", "--port", "8002"]
-
