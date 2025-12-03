@@ -46,6 +46,12 @@ class QdrantVectorDB:
         api_key = api_key or os.getenv("QDRANT_API_KEY")
         use_grpc = use_grpc or os.getenv("QDRANT_USE_GRPC", "false").lower() == "true"
         self._init_qdrant(qdrant_url, api_key, use_grpc)
+        
+        # Sync person metadata from Qdrant
+        try:
+            self.sync_metadata_from_qdrant()
+        except Exception as e:
+            logger.warning(f"Failed to sync person metadata: {e}")
     
     def _init_qdrant(self, qdrant_url, api_key=None, use_grpc=False):
         """Initialize Qdrant client
