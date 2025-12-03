@@ -2,38 +2,38 @@
 Person ReID System - Core Modules
 """
 
-from .detector import YOLOXDetector
-from .detector_triton import TritonDetector
-from .tracker import ByteTrackWrapper
-from .feature_extractor import ArcFaceExtractor
-from .face_recognition_triton import FaceRecognitionTriton
-from .vector_db import QdrantVectorDB
+from .detection import YOLOXDetector, TritonDetector
+from .tracking import ByteTrackWrapper
+from .reid import ArcFaceExtractor, FaceRecognitionTriton, process_reid_logic
+from .database import QdrantVectorDB, RedisTrackManager
+from .zone import ZoneMonitoringService, ZoneTask, ZoneResult, ZoneMonitor, process_video_with_zones, process_multi_stream_with_zones
+from .pipeline import PersonReIDPipeline, register_person_mot17, register_person_from_images
 from .preloaded_manager import preloaded_manager
-from .zone_service import ZoneMonitoringService, ZoneTask, ZoneResult
-from .redis_track_manager import RedisTrackManager
-from .reid_logic import process_reid_logic
-from .pipeline import PersonReIDPipeline
-from .zone_processor import ZoneMonitor, process_video_with_zones, process_multi_stream_with_zones
-from .registration import register_person_mot17, register_person_from_images
 
 __all__ = [
+    # Detection
     'YOLOXDetector',
     'TritonDetector',
+    # Tracking
     'ByteTrackWrapper',
+    # ReID
     'ArcFaceExtractor',
     'FaceRecognitionTriton',
+    'process_reid_logic',
+    # Database
     'QdrantVectorDB',
-    'preloaded_manager',
+    'RedisTrackManager',
+    # Zone
     'ZoneMonitoringService',
     'ZoneTask',
     'ZoneResult',
-    'RedisTrackManager',
-    'process_reid_logic',
-    'PersonReIDPipeline',
     'ZoneMonitor',
     'process_video_with_zones',
     'process_multi_stream_with_zones',
+    # Pipeline
+    'PersonReIDPipeline',
     'register_person_mot17',
     'register_person_from_images',
+    # Manager
+    'preloaded_manager',
 ]
-

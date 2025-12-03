@@ -7,7 +7,9 @@ from pathlib import Path
 from loguru import logger
 from typing import List, Union
 
-from core import YOLOXDetector, ArcFaceExtractor, QdrantVectorDB
+from core.detection import YOLOXDetector
+from core.reid import ArcFaceExtractor
+from core.database import QdrantVectorDB
 
 
 def register_person_mot17(video_path: str, person_name: str, global_id: int, 

@@ -11,11 +11,10 @@ from pathlib import Path
 from loguru import logger
 from typing import Optional
 
-from .detector import YOLOXDetector
-from .detector_triton import TritonDetector
-from .tracker import ByteTrackWrapper
-from .feature_extractor import ArcFaceExtractor
-from .vector_db import QdrantVectorDB
+from core.detection import YOLOXDetector, TritonDetector
+from core.tracking import ByteTrackWrapper
+from core.reid import ArcFaceExtractor, FaceRecognitionTriton
+from core.database import QdrantVectorDB
 
 
 class PreloadedPipelineManager:
@@ -199,7 +198,7 @@ class PreloadedPipelineManager:
 
         if reid_backend == 'triton_pipeline':
             # Triton pipeline: SCRFD face detector + ArcFace
-            from .face_recognition_triton import FaceRecognitionTriton
+            from core.reid import FaceRecognitionTriton
 
             triton_cfg = cfg.get('triton', {})
             triton_url = triton_cfg.get('url', 'localhost:8101')

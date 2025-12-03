@@ -10,7 +10,10 @@ from datetime import datetime
 from typing import Optional, Callable
 from loguru import logger
 
-from core import YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB, RedisTrackManager, process_reid_logic
+from core.detection import YOLOXDetector
+from core.tracking import ByteTrackWrapper
+from core.reid import ArcFaceExtractor, FaceRecognitionTriton, process_reid_logic
+from core.database import QdrantVectorDB, RedisTrackManager
 from core.preloaded_manager import preloaded_manager
 from utils.stream_reader import StreamReader
 from utils.multi_stream_reader import MultiStreamReader, parse_stream_urls
@@ -71,7 +74,7 @@ class PersonReIDPipeline:
         cfg = self.config['reid']
         reid_backend = cfg.get('backend', 'insightface')
         if reid_backend == 'triton_pipeline':
-            from core import FaceRecognitionTriton
+            from core.reid import FaceRecognitionTriton
             triton_cfg = cfg.get('triton', {})
             self.extractor = FaceRecognitionTriton(
                 triton_url=triton_cfg.get('url', 'localhost:8101'),

@@ -18,10 +18,11 @@ from loguru import logger
 from rtree import index
 from collections import defaultdict
 
-from core import (
-    YOLOXDetector, ByteTrackWrapper, ArcFaceExtractor, QdrantVectorDB,
-    ZoneMonitoringService, ZoneTask, ZoneResult, RedisTrackManager, process_reid_logic
-)
+from core.detection import YOLOXDetector
+from core.tracking import ByteTrackWrapper
+from core.reid import ArcFaceExtractor, process_reid_logic
+from core.database import QdrantVectorDB, RedisTrackManager
+from core.zone import ZoneMonitoringService, ZoneTask, ZoneResult
 from tabulate import tabulate
 
 
