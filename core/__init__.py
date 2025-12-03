@@ -2,7 +2,7 @@
 Person ReID System - Core Modules
 """
 
-from .detection import YOLOXDetector, TritonDetector
+from .detection import TritonDetector
 from .tracking import ByteTrackWrapper
 from .reid import ArcFaceExtractor, FaceRecognitionTriton, process_reid_logic
 from .database import QdrantVectorDB, RedisTrackManager
@@ -12,7 +12,6 @@ from .preloaded_manager import preloaded_manager
 
 __all__ = [
     # Detection
-    'YOLOXDetector',
     'TritonDetector',
     # Tracking
     'ByteTrackWrapper',

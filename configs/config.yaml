@@ -1,27 +1,16 @@
 detection:
-  # Backend selection: pytorch, tensorrt, or triton
-  # PRIORITY: triton (optimized for multi-camera streaming)
-  backend: triton  # Options: pytorch, tensorrt, triton
+  # Backend: triton only (optimized for multi-camera streaming)
+  backend: triton
 
-  # PyTorch model paths
-  model_type: mot17
-  model_path_mot17: models/bytetrack_x_mot17.pth.tar
-  model_path_yolox: models/yolox_x.pth
-
-  # TensorRT engine paths (used when backend=tensorrt)
-  tensorrt_engine_mot17: models/bytetrack_x_mot17_fp16.trt
-  tensorrt_engine_yolox: models/yolox_x_fp16.trt
-
-  # Triton Inference Server settings (used when backend=triton)
+  # Triton Inference Server settings
   triton:
-    url: localhost:8101  # Triton gRPC endpoint (changed from 8001 to avoid conflict)
+    url: localhost:8101  # Triton gRPC endpoint
     model_name: bytetrack_tensorrt  # Model name in Triton repository
     model_version: ''  # Empty string = latest version
-    timeout: 20.0  # Request timeout in seconds (increased for multi-stream)
+    timeout: 20.0  # Request timeout in seconds
     verbose: false  # Enable verbose logging
 
     # Dynamic batching settings (configured in Triton model config)
-    # These are for reference - actual config is in model repository
     max_batch_size: 8  # Maximum batch size for dynamic batching
     max_queue_delay_ms: 5  # Max delay to wait for batching (milliseconds)
     preferred_batch_sizes: [1, 2, 4, 8]  # Preferred batch sizes
@@ -32,8 +21,7 @@ detection:
   test_size:
   - 640
   - 640
-  device: cuda
-  fp16: true  # Only for PyTorch backend (TensorRT/Triton use engine precision)
+
 tracking:
   # ByteTrack: Multi-object tracking with IoU + Kalman Filter
   # Robust tracker for person tracking with high/low confidence detections

@@ -11,7 +11,7 @@ from pathlib import Path
 from loguru import logger
 from typing import Optional
 
-from core.detection import YOLOXDetector, TritonDetector
+from core.detection import TritonDetector
 from core.tracking import ByteTrackWrapper
 from core.reid import ArcFaceExtractor, FaceRecognitionTriton
 from core.database import QdrantVectorDB
@@ -132,48 +132,29 @@ class PreloadedPipelineManager:
             self.config = yaml.safe_load(f)
     
     def _init_detector(self) -> None:
-        """Initialize detector (PyTorch, TensorRT, or Triton)"""
+        """Initialize detector (Triton only)"""
         cfg = self.config['detection']
-        backend = cfg.get('backend', 'pytorch').lower()
+        backend = cfg.get('backend', 'triton').lower()
 
-        logger.info(f"Loading detector with backend: {backend}")
+        if backend != 'triton':
+            raise ValueError(f"Only 'triton' backend supported. Got: {backend}")
 
-        if backend == 'triton':
-            # Triton Inference Server backend
-            triton_cfg = cfg['triton']
+        logger.info("Loading Triton detector...")
+        triton_cfg = cfg['triton']
 
-            self.detector = TritonDetector(
-                triton_url=triton_cfg['url'],
-                model_name=triton_cfg['model_name'],
-                model_version=triton_cfg.get('model_version', ''),
-                conf_thresh=cfg['conf_threshold'],
-                nms_thresh=cfg['nms_threshold'],
-                test_size=tuple(cfg['test_size']),
-                timeout=triton_cfg.get('timeout', 10.0),
-                verbose=triton_cfg.get('verbose', False)
-            )
-            logger.info("✅ Triton Detector loaded")
-            logger.info(f"  Server: {triton_cfg['url']}")
-            logger.info(f"  Model: {triton_cfg['model_name']}")
-
-        else:
-            # PyTorch backend (default)
-            model_type = cfg.get('model_type', 'mot17')
-            if model_type == 'mot17':
-                model_path = Path(__file__).parent.parent / cfg['model_path_mot17']
-            else:
-                model_path = Path(__file__).parent.parent / cfg['model_path_yolox']
-
-            self.detector = YOLOXDetector(
-                model_path=str(model_path),
-                model_type=model_type,
-                device=cfg['device'],
-                fp16=cfg['fp16'],
-                conf_thresh=cfg['conf_threshold'],
-                nms_thresh=cfg['nms_threshold'],
-                test_size=tuple(cfg['test_size'])
-            )
-            logger.info("✅ PyTorch Detector loaded")
+        self.detector = TritonDetector(
+            triton_url=triton_cfg['url'],
+            model_name=triton_cfg['model_name'],
+            model_version=triton_cfg.get('model_version', ''),
+            conf_thresh=cfg['conf_threshold'],
+            nms_thresh=cfg['nms_threshold'],
+            test_size=tuple(cfg['test_size']),
+            timeout=triton_cfg.get('timeout', 10.0),
+            verbose=triton_cfg.get('verbose', False)
+        )
+        logger.info("✅ Triton Detector loaded")
+        logger.info(f"  Server: {triton_cfg['url']}")
+        logger.info(f"  Model: {triton_cfg['model_name']}")
     
     def _init_tracker(self) -> None:
         """Initialize ByteTrack tracker"""

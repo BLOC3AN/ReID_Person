@@ -7,8 +7,6 @@ from pathlib import Path
 from loguru import logger
 from typing import List, Union
 
-from core.detection import YOLOXDetector
-from core.reid import ArcFaceExtractor
 from core.database import QdrantVectorDB
 
 
@@ -16,25 +14,29 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int,
                           sample_rate: int = 5, delete_existing: bool = False, 
                           face_conf_thresh: float = 0.5, skip_body_detection: bool = False, 
                           detector=None, extractor=None):
-    """Register a person using MOT17 model"""
+    """
+    Register a person from video
+    
+    Args:
+        video_path: Path to video file
+        person_name: Person name
+        global_id: Unique person ID
+        sample_rate: Extract 1 frame every N frames
+        delete_existing: Delete existing person data
+        face_conf_thresh: Face detection confidence threshold
+        skip_body_detection: Skip body detection, use full image (default: False)
+        detector: Pre-loaded detector (from preloaded_manager)
+        extractor: Pre-loaded face extractor (from preloaded_manager)
+    """
     
     logger.info(f"Registering person: {person_name} (ID: {global_id})")
     
-    # Initialize detector if needed
-    if skip_body_detection:
-        detector = None
-    elif detector is None:
-        model_path = Path(__file__).parent.parent / "models" / "bytetrack_x_mot17.pth.tar"
-        detector = YOLOXDetector(
-            model_path=str(model_path),
-            model_type="mot17",
-            conf_thresh=0.6,
-            nms_thresh=0.45
-        )
+    # Detector and extractor should be passed from preloaded_manager
+    if not skip_body_detection and detector is None:
+        raise ValueError("Detector required when skip_body_detection=False. Pass detector from preloaded_manager.")
     
-    # Initialize extractor if needed
     if extractor is None:
-        extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True, face_conf_thresh=face_conf_thresh)
+        raise ValueError("Extractor required. Pass extractor from preloaded_manager.")
     
     # Initialize database
     use_grpc = os.getenv("QDRANT_USE_GRPC", "false").lower() == "true"
@@ -72,7 +74,7 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int,
             h, w = frame.shape[:2]
             bbox = [0, 0, w, h]
         else:
-            # Detect person
+            # Detect person body first
             detections = detector.detect(frame)
             if len(detections) == 0:
                 continue
@@ -80,7 +82,7 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int,
             x1, y1, x2, y2, conf = detections[0]
             bbox = [int(x1), int(y1), int(x2-x1), int(y2-y1)]
         
-        # Extract embedding
+        # Extract face embedding
         embedding = extractor.extract(frame, bbox)
         if embedding is not None:
             embeddings.append(embedding)
@@ -98,13 +100,21 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int,
 
 def register_person_from_images(image_paths: List[str], person_name: str, global_id: int,
                                 face_conf_thresh: float = 0.5, extractor=None):
-    """Register a person from a list of images"""
+    """
+    Register a person from images
+    
+    Args:
+        image_paths: List of image paths
+        person_name: Person name
+        global_id: Unique person ID
+        face_conf_thresh: Face detection confidence threshold
+        extractor: Pre-loaded face extractor (from preloaded_manager)
+    """
     
     logger.info(f"Registering person from images: {person_name} (ID: {global_id})")
     
-    # Initialize extractor if needed
     if extractor is None:
-        extractor = ArcFaceExtractor(model_name='buffalo_l', use_cuda=True, face_conf_thresh=face_conf_thresh)
+        raise ValueError("Extractor required. Pass extractor from preloaded_manager.")
     
     # Initialize database
     use_grpc = os.getenv("QDRANT_USE_GRPC", "false").lower() == "true"

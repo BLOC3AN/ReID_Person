@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional, Callable
 from loguru import logger
 
-from core.detection import YOLOXDetector
+from core.detection import TritonDetector
 from core.tracking import ByteTrackWrapper
 from core.reid import ArcFaceExtractor, FaceRecognitionTriton, process_reid_logic
 from core.database import QdrantVectorDB, RedisTrackManager
@@ -43,17 +43,22 @@ class PersonReIDPipeline:
         if self.detector is not None:
             return
         cfg = self.config['detection']
-        if model_type is None:
-            model_type = cfg.get('model_type', 'mot17')
-        model_path = Path(__file__).parent.parent / cfg['model_path_mot17' if model_type == 'mot17' else 'model_path_yolox']
-        self.detector = YOLOXDetector(
-            model_path=str(model_path),
-            model_type=model_type,
-            device=cfg['device'],
-            fp16=cfg['fp16'],
+        backend = cfg.get('backend', 'triton')
+        
+        if backend != 'triton':
+            raise ValueError(f"Only 'triton' backend supported. Got: {backend}")
+        
+        from core.detection import TritonDetector
+        triton_cfg = cfg['triton']
+        self.detector = TritonDetector(
+            triton_url=triton_cfg['url'],
+            model_name=triton_cfg['model_name'],
+            model_version=triton_cfg.get('model_version', ''),
             conf_thresh=cfg['conf_threshold'],
             nms_thresh=cfg['nms_threshold'],
-            test_size=tuple(cfg['test_size'])
+            test_size=tuple(cfg['test_size']),
+            timeout=triton_cfg.get('timeout', 10.0),
+            verbose=triton_cfg.get('verbose', False)
         )
 
     def initialize_tracker(self):

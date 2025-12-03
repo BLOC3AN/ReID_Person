@@ -18,7 +18,6 @@ from loguru import logger
 from rtree import index
 from collections import defaultdict
 
-from core.detection import YOLOXDetector
 from core.tracking import ByteTrackWrapper
 from core.reid import ArcFaceExtractor, process_reid_logic
 from core.database import QdrantVectorDB, RedisTrackManager
