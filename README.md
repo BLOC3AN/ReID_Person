@@ -260,11 +260,9 @@ person_reid_system/
 │   ├── face_recognition_triton.py  # Face recognition
 │   ├── vector_db.py            # Qdrant integration
 │   ├── reid_logic.py           # ReID matching logic
-│   └── zone_service.py         # Zone monitoring
-├── scripts/                    # CLI scripts
-│   ├── register_mot17.py       # Person registration
-│   ├── detect_and_track.py     # Detection pipeline
-│   └── zone_monitor.py         # Zone monitoring
+│   ├── zone_service.py         # Zone monitoring
+│   ├── pipeline.py             # Detection pipeline
+│   └── zone_processor.py       # Zone processing
 ├── services/                   # FastAPI services
 │   ├── detection_service.py    # Detection API
 │   ├── register_service.py     # Registration API

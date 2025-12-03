@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import uuid
 from loguru import logger
-from scripts.register_mot17 import register_person_mot17, register_person_from_images
+from core import register_person_mot17, register_person_from_images
 from services.preload_models import preload_models
 from core.preloaded_manager import preloaded_manager
 

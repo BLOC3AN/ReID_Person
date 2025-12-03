@@ -11,10 +11,6 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Add scripts directory to path
-scripts_dir = project_root / "scripts"
-sys.path.insert(0, str(scripts_dir))
-
 import os
 import shutil
 import csv
@@ -30,9 +26,8 @@ import time
 import asyncio
 import json
 
-# Import modules
-from scripts.detect_and_track import PersonReIDPipeline
-from scripts.zone_monitor import process_video_with_zones, process_multi_stream_with_zones
+# Import modules from core
+from core import PersonReIDPipeline, process_video_with_zones, process_multi_stream_with_zones
 from core.preloaded_manager import preloaded_manager
 from utils.multi_stream_reader import parse_stream_urls
 
