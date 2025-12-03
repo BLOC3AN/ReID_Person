@@ -1,0 +1,43 @@
+# Person ReID System - Register Service Requirements (CPU Only)
+# All inference via Triton - no local GPU needed
+
+# Computer Vision (CPU only)
+opencv-python-headless>=4.5.0  # Headless = no GUI, smaller
+numpy>=1.21.0,<2.0.0
+scipy>=1.7.0
+scikit-image
+Pillow
+
+# Vector Database (CPU only)
+qdrant-client>=1.0.0
+
+# Database
+redis>=4.5.0
+
+# ByteTrack Dependencies (minimal)
+lap
+filterpy
+cython
+cython-bbox  # Use hyphen, not underscore
+
+# Utilities (minimal)
+tabulate
+motmetrics
+
+# Triton Client (gRPC only - no GPU)
+tritonclient[grpc]>=2.40.0
+
+# Logging
+loguru>=0.6.0
+
+# Configuration
+pyyaml>=6.0
+python-dotenv>=0.19.0
+
+# API Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# PostgreSQL
+psycopg2-binary>=2.9.0
