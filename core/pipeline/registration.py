@@ -94,7 +94,9 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int,
         return
     
     # Register in database
-    db.register_person(global_id, person_name, embeddings)
+    metadata = {'name': person_name, 'global_id': global_id, 'video_path': video_path, 'num_embeddings': len(embeddings)}
+    for emb in embeddings:
+        db.add_embedding(global_id, emb, metadata=metadata)
     logger.info(f"✅ Registered {person_name} with {len(embeddings)} embeddings")
 
 
@@ -148,5 +150,7 @@ def register_person_from_images(image_paths: List[str], person_name: str, global
         return
     
     # Register in database
-    db.register_person(global_id, person_name, embeddings)
+    metadata = {'name': person_name, 'global_id': global_id, 'source': 'images', 'num_embeddings': len(embeddings)}
+    for emb in embeddings:
+        db.add_embedding(global_id, emb, metadata=metadata)
     logger.info(f"✅ Registered {person_name} with {len(embeddings)} embeddings")
