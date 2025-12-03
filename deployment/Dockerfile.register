@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     g++ \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     curl \
     && rm -rf /var/lib/apt/lists/* \
@@ -16,12 +16,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy requirements file
-COPY deployment/requirements.register.txt ./requirements.register.txt
+COPY requirements.register.txt ./requirements.txt
 
 # Install Python dependencies (CPU only)
 RUN pip3 install --no-cache-dir --upgrade pip && \
-    pip3 install --no-cache-dir -r requirements.register.txt && \
-    rm requirements.register.txt
+    pip3 install --no-cache-dir -r requirements.txt && \
+    rm requirements.txt
 
 # Copy only necessary application code
 COPY core/ ./core/
