@@ -99,7 +99,8 @@ def register_person_mot17(video_path: str, person_name: str, global_id: int,
 
 
 def register_person_from_images(image_paths: List[str], person_name: str, global_id: int,
-                                face_conf_thresh: float = 0.5, extractor=None):
+                                face_conf_thresh: float = 0.5, delete_existing: bool = False,
+                                skip_body_detection: bool = True, detector=None, extractor=None):
     """
     Register a person from images
     
@@ -108,6 +109,9 @@ def register_person_from_images(image_paths: List[str], person_name: str, global
         person_name: Person name
         global_id: Unique person ID
         face_conf_thresh: Face detection confidence threshold
+        delete_existing: Delete existing person data (not implemented)
+        skip_body_detection: Skip body detection, use full image (default: True)
+        detector: Pre-loaded detector (not used for images)
         extractor: Pre-loaded face extractor (from preloaded_manager)
     """
     
