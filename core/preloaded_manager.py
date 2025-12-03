@@ -222,11 +222,8 @@ class PreloadedPipelineManager:
             use_grpc=cfg.get('use_grpc', False)
         )
 
-        # Sync metadata from Qdrant
-        person_count = self.database.sync_metadata_from_qdrant()
-        logger.info(f"✅ Synced metadata from Qdrant: {person_count} persons")
-
-        logger.info("✅ Database loaded")
+        # Metadata already synced in QdrantVectorDB.__init__()
+        logger.info(f"✅ Database loaded with {len(self.database.person_metadata)} persons")
     
     def _cleanup_partial_init(self) -> None:
         """Cleanup partially initialized components"""
