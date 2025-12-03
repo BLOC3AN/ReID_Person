@@ -937,7 +937,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     # If no config path provided, use default config
     if not config_file_to_use:
         from pathlib import Path
-        default_config = Path(__file__).parent.parent / "configs" / "config.yaml"
+        default_config = Path(__file__).parent.parent.parent / "configs" / "config.yaml"
         if default_config.exists():
             config_file_to_use = str(default_config)
             logger.info(f"📝 Using default config: {config_file_to_use}")
