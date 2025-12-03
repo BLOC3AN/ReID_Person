@@ -1,0 +1,13 @@
+cameras:
+  camera_1:
+    name: Camera 1
+    zones:
+      zone1:
+        name: Test Counting Zone
+        polygon:
+          - [1600, 200]
+          - [1950, 200]
+          - [1950, 700]
+          - [1600, 700]
+        required_count: 3  # Need at least 3 people
+        required_persons: []  # Empty for counting mode

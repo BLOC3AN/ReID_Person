@@ -32,6 +32,9 @@ tracking:
   min_box_area: 10        # Minimum box area for filtering
   mot20: false            # Use MOT20 settings
 reid:
+  # Enable/disable ReID and face recognition (set to false for zone-only monitoring)
+  enable: false  # Set to false to disable ReID (all persons will be "Unknown")
+  
   # ArcFace backend selection: insightface or triton_pipeline
   # - insightface: InsightFace with built-in face detection (slower, CPU/GPU)
   # - triton_pipeline: SCRFD face detector + ArcFace via Triton (RECOMMENDED for production)

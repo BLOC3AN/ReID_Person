@@ -1,23 +1,20 @@
 # Zone Configuration
-# Unified format for single and multi-camera setups
-
-# Format: cameras -> zones structure
-# Each camera has its own set of zones with independent coordinates
+# Unified format for single and multi-camera setups with dual monitoring modes
 
 cameras:
   camera_1:
     name: "Camera 1 - Main Entrance"
-    stream_url: "udp://127.0.0.1:1905"  # Optional: for reference only
+    stream_url: "udp://127.0.0.1:1905"
     zones:
       zone1:
         name: "Assembly Area"
-        # Polygon coordinates relative to this camera's frame
         polygon:
           - [100, 100]
           - [400, 100]
           - [400, 300]
           - [100, 300]
-        authorized_ids: [1]  # Duong (ID: 1)
+        required_count: 3  # MODE 1: Need at least 3 people (any identity)
+        required_persons: [1]  # MODE 2: Need Duong (ID: 1)
       
       zone2:
         name: "Packaging Area"
@@ -26,7 +23,8 @@ cameras:
           - [750, 100]
           - [750, 300]
           - [450, 300]
-        authorized_ids: [2]  # Khiem (ID: 2)
+        required_count: 2
+        required_persons: [2]  # Khiem (ID: 2)
       
       zone3:
         name: "Common Area"
@@ -35,22 +33,16 @@ cameras:
           - [750, 350]
           - [750, 500]
           - [100, 500]
-        authorized_ids: [1, 2]  # Both Duong and Khiem allowed
+        required_count: 1
+        required_persons: [1, 2]
 
-# Notes:
-# 1. For single camera: Use camera_1 only
-#    Zone IDs will be: zone1, zone2, zone3 (no camera prefix)
+# Monitoring Modes:
+# MODE 1 - People Counting (reid.enable = false):
+#   - Uses: required_count
+#   - Checks: Total number of people in zone
+#   - Alert: "Zone X incomplete: Need 3 people, found 2"
 #
-# 2. For multi-camera: Add camera_2, camera_3, etc.
-#    Zone IDs will be: camera_1_zone1, camera_2_zone1, etc.
-#
-# 3. Camera order must match stream URL order in detection
-#    Example: If you pass "udp://127.0.0.1:1905, udp://127.0.0.1:1906"
-#    Then camera_1 = first stream, camera_2 = second stream
-#
-# 4. Coordinates are relative to EACH camera's frame
-#    - Camera 1: (0,0) to (width, height) of camera 1
-#    - Camera 2: (0,0) to (width, height) of camera 2
-#    NOT relative to the combined/stitched frame!
-#
-# 5. Each camera can have different number of zones
+# MODE 2 - Identity Verification (reid.enable = true):
+#   - Uses: required_persons
+#   - Checks: Specific person IDs must be present
+#   - Alert: "Zone X incomplete: Missing Person 2 (KHIEM_2)"

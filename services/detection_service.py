@@ -539,21 +539,34 @@ def _update_progress(job_id: str, frame_id: int, tracks: List[dict], camera_id: 
 
 
 def _add_violation(job_id: str, violation: dict):
-    """Add violation to progress data for real-time alerts (ZONE-CENTRIC LOGIC)"""
+    """Add violation to progress data for real-time alerts (Dual Mode Support)"""
     if job_id in progress_data:
         progress_data[job_id]["violations"].append(violation)
 
         # Format violation message based on type
-        if violation.get('type') == 'zone_incomplete':
-            # Zone-centric violation
+        violation_type = violation.get('type')
+        
+        # DEBUG: Log violation structure
+        logger.debug(f"[DEBUG] Violation type: {violation_type}, keys: {violation.keys()}")
+        
+        if violation_type == 'zone_insufficient_count':
+            # MODE 1: People Counting
+            logger.warning(f"🚨 [Job {job_id}] ZONE VIOLATION: Zone '{violation['zone_name']}' "
+                          f"incomplete - Need {violation['required_count']} people, "
+                          f"found {violation['actual_count']} (missing {violation['missing_count']}) "
+                          f"at frame {violation.get('frame_id', 'N/A')}")
+        
+        elif violation_type in ['zone_incomplete_identity', 'zone_incomplete']:
+            # MODE 2: Identity Verification
             missing_str = ", ".join([f"{name} (ID:{pid})"
                                     for pid, name in zip(violation['missing_persons'], violation['missing_names'])])
             logger.warning(f"🚨 [Job {job_id}] ZONE VIOLATION: Zone '{violation['zone_name']}' "
-                          f"incomplete - Missing: {missing_str} at frame {violation['frame_id']}")
+                          f"incomplete - Missing: {missing_str} at frame {violation.get('frame_id', 'N/A')}")
+        
         else:
             # Legacy person-centric violation (backward compatibility)
             logger.warning(f"🚨 [Job {job_id}] VIOLATION: {violation.get('person_name', 'Unknown')} "
-                          f"entered unauthorized zone '{violation['zone_name']}' at frame {violation['frame_id']}")
+                          f"entered unauthorized zone '{violation['zone_name']}' at frame {violation.get('frame_id', 'N/A')}")
 
         # Broadcast to WebSocket clients (schedule in event loop)
         try:
@@ -569,23 +582,40 @@ async def _broadcast_violation(job_id: str, violation: dict):
     if job_id in websocket_connections:
         # Format log message
         timestamp = time.strftime("%H:%M:%S")
+        violation_type = violation.get('type')
 
-        if violation.get('type') == 'zone_incomplete':
+        if violation_type == 'zone_insufficient_count':
+            # MODE 1: People Counting
+            log_msg = {
+                "timestamp": timestamp,
+                "level": "error",
+                "zone": violation['zone_name'],
+                "message": f"Zone incomplete: Need {violation['required_count']} people, found {violation['actual_count']}",
+                "frame": violation.get('frame_id', 0),
+                "mode": "counting"
+            }
+        
+        elif violation_type in ['zone_incomplete_identity', 'zone_incomplete']:
+            # MODE 2: Identity Verification
             missing_str = ", ".join(violation['missing_names'])
             log_msg = {
                 "timestamp": timestamp,
                 "level": "error",
                 "zone": violation['zone_name'],
                 "message": f"Zone incomplete: Missing {missing_str}",
-                "frame": violation['frame_id']
+                "frame": violation.get('frame_id', 0),
+                "mode": "identity"
             }
+        
         else:
+            # Legacy
             log_msg = {
                 "timestamp": timestamp,
                 "level": "error",
                 "zone": violation['zone_name'],
                 "message": f"{violation.get('person_name', 'Unknown')} entered unauthorized zone",
-                "frame": violation['frame_id']
+                "frame": violation.get('frame_id', 0),
+                "mode": "legacy"
             }
 
         # Send to all connected clients

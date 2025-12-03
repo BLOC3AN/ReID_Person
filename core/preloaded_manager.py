@@ -90,13 +90,23 @@ class PreloadedPipelineManager:
                 self._init_tracker()
                 logger.info(f"✅ Tracker loaded in {time.time() - tracker_start:.2f}s")
 
-                extractor_start = time.time()
-                self._init_extractor()
-                logger.info(f"✅ Extractor loaded in {time.time() - extractor_start:.2f}s")
+                # Check if ReID is enabled
+                enable_reid = self.config.get('reid', {}).get('enable', True)
+                
+                if enable_reid:
+                    logger.info("✅ ReID enabled - loading face recognition components")
+                    extractor_start = time.time()
+                    self._init_extractor()
+                    logger.info(f"✅ Extractor loaded in {time.time() - extractor_start:.2f}s")
 
-                database_start = time.time()
-                self._init_database()
-                logger.info(f"✅ Database loaded in {time.time() - database_start:.2f}s")
+                    database_start = time.time()
+                    self._init_database()
+                    logger.info(f"✅ Database loaded in {time.time() - database_start:.2f}s")
+                else:
+                    logger.warning("⚠️ ReID disabled - skipping extractor and database initialization")
+                    logger.warning("⚠️ All persons will be labeled as 'Unknown'")
+                    self.extractor = None
+                    self.database = None
 
                 load_time = time.time() - overall_start
                 logger.info("=" * 80)

@@ -644,43 +644,86 @@ elif page == "Detect & Track":
 
                                 # Fetch users from database for dropdown
                                 users_dict = fetch_users_dict()
+                                
+                                # Monitoring Mode Selection
+                                st.markdown("**Monitoring Mode**")
+                                monitoring_mode = st.radio(
+                                    "Select Mode",
+                                    ["People Counting", "Identity Verification"],
+                                    key=f"monitoring_mode_cam{cam_idx}_z{zone_idx}",
+                                    help="People Counting: Count total people (any identity). Identity Verification: Check specific person IDs.",
+                                    horizontal=True
+                                )
+                                
+                                # Initialize mode-specific fields if not exists
+                                if 'required_count' not in zone:
+                                    zone['required_count'] = 0
+                                if 'required_persons' not in zone:
+                                    zone['required_persons'] = zone.get('authorized_ids', [])
+                                
+                                if monitoring_mode == "People Counting":
+                                    # MODE 1: People Counting
+                                    st.info("ℹ️ Mode: Count total people in zone (ignores identity)")
+                                    zone['required_count'] = st.number_input(
+                                        "Minimum People Required",
+                                        min_value=0,
+                                        max_value=100,
+                                        value=zone.get('required_count', 0),
+                                        step=1,
+                                        key=f"required_count_cam{cam_idx}_z{zone_idx}",
+                                        help="Minimum number of people needed in this zone"
+                                    )
+                                    st.caption(f"✅ Alert when less than {zone['required_count']} people in zone")
+                                    
+                                    # Keep authorized_ids for backward compatibility but don't show
+                                    zone['required_persons'] = []
+                                    zone['authorized_ids'] = []
+                                
+                                else:
+                                    # MODE 2: Identity Verification
+                                    st.info("ℹ️ Mode: Check specific person IDs (requires ReID enabled)")
 
-                                if users_dict:
+                                if users_dict and monitoring_mode == "Identity Verification":
                                     # Create options for multiselect: "Name (ID: global_id)"
                                     user_options = {f"{name} (ID: {gid})": gid for gid, name in users_dict.items()}
 
                                     # Get current selected options
                                     current_selections = []
-                                    for auth_id in zone['authorized_ids']:
+                                    for auth_id in zone.get('authorized_ids', []):
                                         if auth_id in users_dict:
                                             current_selections.append(f"{users_dict[auth_id]} (ID: {auth_id})")
 
-                                    logger.info(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] current authorized_ids: {zone['authorized_ids']}, current_selections: {current_selections}")
+                                    logger.info(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] current authorized_ids: {zone.get('authorized_ids', [])}, current_selections: {current_selections}")
 
                                     selected_users = st.multiselect(
-                                        "Authorized Users",
+                                        "Required Persons",
                                         options=list(user_options.keys()),
                                         default=current_selections,
                                         key=f"zone_auth_cam{cam_idx}_z{zone_idx}",
-                                        help="Select authorized users from database"
+                                        help="Select specific persons required in this zone"
                                     )
 
                                     logger.info(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] selected_users from widget: {selected_users}")
 
-                                    # Update authorized_ids based on selection
-                                    # IMPORTANT: Only update if widget is not empty OR if current_selections was also empty
-                                    # This prevents widget reset from clearing authorized_ids
+                                    # Update authorized_ids and required_persons
                                     if selected_users or not current_selections:
                                         zone['authorized_ids'] = [user_options[user] for user in selected_users]
+                                        zone['required_persons'] = zone['authorized_ids']
                                         logger.info(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] final authorized_ids: {zone['authorized_ids']}")
                                     else:
-                                        logger.warning(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] Widget returned empty but current_selections was not empty - keeping existing authorized_ids: {zone['authorized_ids']}")
-                                else:
+                                        logger.warning(f"[Multi-cam Zone {cam_idx+1}-{zone_idx+1}] Widget returned empty but current_selections was not empty - keeping existing authorized_ids: {zone.get('authorized_ids', [])}")
+                                    
+                                    st.caption(f"✅ Alert when any of {len(zone.get('authorized_ids', []))} required persons missing")
+                                    
+                                    # Set required_count to 0 for identity mode
+                                    zone['required_count'] = 0
+                                
+                                elif monitoring_mode == "Identity Verification":
                                     # Fallback to text input if database is not available
                                     st.warning("⚠️ Database not available. Using manual input.")
                                     auth_ids_str = st.text_input(
-                                        "Authorized IDs",
-                                        value=','.join(map(str, zone['authorized_ids'])),
+                                        "Required Person IDs",
+                                        value=','.join(map(str, zone.get('authorized_ids', []))),
                                         key=f"zone_auth_cam{cam_idx}_z{zone_idx}",
                                         help="Comma-separated: 1,2,3"
                                     )
@@ -688,10 +731,15 @@ elif page == "Detect & Track":
                                     if auth_ids_str.strip():
                                         try:
                                             zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
+                                            zone['required_persons'] = zone['authorized_ids']
                                         except:
                                             zone['authorized_ids'] = []
+                                            zone['required_persons'] = []
                                     else:
                                         zone['authorized_ids'] = []
+                                        zone['required_persons'] = []
+                                    
+                                    zone['required_count'] = 0
 
                             with col2:
                                 # Convert current polygon to string
@@ -724,7 +772,9 @@ elif page == "Detect & Track":
                                 except:
                                     pass
 
-                            st.caption(f"✅ {len(zone['polygon'])} points, Auth: {zone['authorized_ids']}")
+                            # Show zone summary
+                            mode_str = f"Count≥{zone.get('required_count', 0)}" if zone.get('required_count', 0) > 0 else f"Auth:{zone.get('authorized_ids', [])}"
+                            st.caption(f"✅ {len(zone['polygon'])} points, Mode: {mode_str}")
                             st.divider()
 
             else:
@@ -862,43 +912,84 @@ elif page == "Detect & Track":
 
                                 # Fetch users from database for dropdown
                                 users_dict = fetch_users_dict()
+                                
+                                # Monitoring Mode Selection
+                                st.markdown("**Monitoring Mode**")
+                                monitoring_mode = st.radio(
+                                    "Select Mode",
+                                    ["People Counting", "Identity Verification"],
+                                    key=f"monitoring_mode_{i}",
+                                    help="People Counting: Count total people (any identity). Identity Verification: Check specific person IDs.",
+                                    horizontal=True
+                                )
+                                
+                                # Initialize mode-specific fields
+                                if 'required_count' not in zone:
+                                    zone['required_count'] = 0
+                                if 'required_persons' not in zone:
+                                    zone['required_persons'] = zone.get('authorized_ids', [])
+                                
+                                if monitoring_mode == "People Counting":
+                                    # MODE 1: People Counting
+                                    st.info("ℹ️ Mode: Count total people in zone (ignores identity)")
+                                    zone['required_count'] = st.number_input(
+                                        "Minimum People Required",
+                                        min_value=0,
+                                        max_value=100,
+                                        value=zone.get('required_count', 0),
+                                        step=1,
+                                        key=f"required_count_{i}",
+                                        help="Minimum number of people needed in this zone"
+                                    )
+                                    st.caption(f"✅ Alert when less than {zone['required_count']} people in zone")
+                                    
+                                    # Clear identity fields
+                                    zone['required_persons'] = []
+                                    zone['authorized_ids'] = []
+                                
+                                else:
+                                    # MODE 2: Identity Verification
+                                    st.info("ℹ️ Mode: Check specific person IDs (requires ReID enabled)")
 
-                                if users_dict:
+                                if users_dict and monitoring_mode == "Identity Verification":
                                     # Create options for multiselect: "Name (ID: global_id)"
                                     user_options = {f"{name} (ID: {gid})": gid for gid, name in users_dict.items()}
 
                                     # Get current selected options
                                     current_selections = []
-                                    for auth_id in zone['authorized_ids']:
+                                    for auth_id in zone.get('authorized_ids', []):
                                         if auth_id in users_dict:
                                             current_selections.append(f"{users_dict[auth_id]} (ID: {auth_id})")
 
-                                    logger.info(f"[Single-cam Zone {i+1}] current authorized_ids: {zone['authorized_ids']}, current_selections: {current_selections}")
+                                    logger.info(f"[Single-cam Zone {i+1}] current authorized_ids: {zone.get('authorized_ids', [])}, current_selections: {current_selections}")
 
                                     selected_users = st.multiselect(
-                                        "Authorized Users",
+                                        "Required Persons",
                                         options=list(user_options.keys()),
                                         default=current_selections,
                                         key=f"zone_auth_{i}",
-                                        help="Select authorized users from database"
+                                        help="Select specific persons required in this zone"
                                     )
 
                                     logger.info(f"[Single-cam Zone {i+1}] selected_users from widget: {selected_users}")
 
-                                    # Update authorized_ids based on selection
-                                    # IMPORTANT: Only update if widget is not empty OR if current_selections was also empty
-                                    # This prevents widget reset from clearing authorized_ids
+                                    # Update authorized_ids and required_persons
                                     if selected_users or not current_selections:
                                         zone['authorized_ids'] = [user_options[user] for user in selected_users]
+                                        zone['required_persons'] = zone['authorized_ids']
                                         logger.info(f"[Single-cam Zone {i+1}] final authorized_ids: {zone['authorized_ids']}")
                                     else:
-                                        logger.warning(f"[Single-cam Zone {i+1}] Widget returned empty but current_selections was not empty - keeping existing authorized_ids: {zone['authorized_ids']}")
-                                else:
+                                        logger.warning(f"[Single-cam Zone {i+1}] Widget returned empty but current_selections was not empty - keeping existing authorized_ids: {zone.get('authorized_ids', [])}")
+                                    
+                                    st.caption(f"✅ Alert when any of {len(zone.get('authorized_ids', []))} required persons missing")
+                                    zone['required_count'] = 0
+                                
+                                elif monitoring_mode == "Identity Verification":
                                     # Fallback to text input if database is not available
                                     st.warning("⚠️ Database not available. Using manual input.")
                                     auth_ids_str = st.text_input(
-                                        "Authorized IDs (comma-separated)",
-                                        value=','.join(map(str, zone['authorized_ids'])),
+                                        "Required Person IDs (comma-separated)",
+                                        value=','.join(map(str, zone.get('authorized_ids', []))),
                                         key=f"zone_auth_{i}",
                                         help="Example: 1,2,3"
                                     )
@@ -907,6 +998,7 @@ elif page == "Detect & Track":
                                     if auth_ids_str.strip():
                                         try:
                                             zone['authorized_ids'] = [int(x.strip()) for x in auth_ids_str.split(',') if x.strip()]
+                                            zone['required_persons'] = zone['authorized_ids']
                                         except:
                                             st.warning("Invalid ID format. Use comma-separated numbers.")
                                             zone['authorized_ids'] = []
@@ -952,7 +1044,8 @@ elif page == "Detect & Track":
                                     st.warning("Invalid polygon format. Use: x1,y1; x2,y2; ...")
 
                             # Show zone info
-                            st.info(f"✅ {len(zone['polygon'])} points, Authorized: {zone['authorized_ids']}")
+                            mode_str = f"Count≥{zone.get('required_count', 0)}" if zone.get('required_count', 0) > 0 else f"Auth:{zone.get('authorized_ids', [])}"
+                            st.info(f"✅ {len(zone['polygon'])} points, Mode: {mode_str}")
 
             # Helper function to create zones dict from zone list (DRY)
             def zones_list_to_dict(zones_list):
@@ -960,12 +1053,27 @@ elif page == "Detect & Track":
                 zones_dict = {}
                 for idx, zone in enumerate(zones_list):
                     zone_id = f"zone{idx+1}"
-                    zones_dict[zone_id] = {
+                    zone_config = {
                         'name': zone['name'],
                         'polygon': zone['polygon'],
-                        'authorized_ids': zone['authorized_ids']
                     }
-                    logger.info(f"[YAML Export] Zone {zone_id} ({zone['name']}): authorized_ids={zone['authorized_ids']}")
+                    
+                    # Determine mode based on monitoring_mode or presence of authorized_ids
+                    monitoring_mode = zone.get('monitoring_mode', 'People Counting')
+                    
+                    if monitoring_mode == 'People Counting':
+                        # MODE 1: People Counting - only export required_count
+                        zone_config['required_count'] = zone.get('required_count', 0)
+                    else:
+                        # MODE 2: Identity Verification - export authorized_ids and required_persons
+                        zone_config['authorized_ids'] = zone.get('authorized_ids', [])
+                        zone_config['required_persons'] = zone.get('required_persons', zone.get('authorized_ids', []))
+                    
+                    zones_dict[zone_id] = zone_config
+                    logger.info(f"[YAML Export] Zone {zone_id} ({zone['name']}): "
+                               f"required_count={zone.get('required_count', 0)}, "
+                               f"required_persons={zone.get('required_persons', [])}, "
+                               f"authorized_ids={zone.get('authorized_ids', [])}")
                 return zones_dict
 
             # Create YAML content from zones (always use cameras format)

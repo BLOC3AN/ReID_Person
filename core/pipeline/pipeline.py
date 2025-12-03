@@ -12,7 +12,7 @@ from loguru import logger
 
 from core.detection import TritonDetector
 from core.tracking import ByteTrackWrapper
-from core.reid import ArcFaceExtractor, FaceRecognitionTriton, process_reid_logic
+from core.reid import ArcFaceExtractor, FaceRecognitionTriton, ReIDProcessor
 from core.database import QdrantVectorDB, RedisTrackManager
 from core.preloaded_manager import preloaded_manager
 from utils.stream_reader import StreamReader
@@ -117,10 +117,20 @@ class PersonReIDPipeline:
                 self.initialize_detector()
             if self.tracker is None:
                 self.initialize_tracker()
-            if self.extractor is None:
-                self.initialize_extractor()
-            if self.database is None:
-                self.initialize_database()
+            
+            # Only initialize ReID components if enabled
+            enable_reid = self.config.get('reid', {}).get('enable', True)
+            if enable_reid:
+                logger.info("✅ ReID enabled - initializing face recognition components")
+                if self.extractor is None:
+                    self.initialize_extractor()
+                if self.database is None:
+                    self.initialize_database()
+            else:
+                logger.warning("⚠️ ReID disabled - all persons will be labeled as 'Unknown'")
+        
+        # Initialize ReID processor
+        reid_processor = ReIDProcessor(self.config)
 
         urls = parse_stream_urls(video_path)
         
@@ -228,29 +238,21 @@ class PersonReIDPipeline:
                 track_frame_count[track_id] += 1
                 current_frame_count = track_frame_count[track_id]
 
-                should_extract = (current_frame_count == 1) or (current_frame_count % 60 == 0)
-
-                if should_extract:
-                    bbox = [x, y, w, h]
-                    embedding = self.extractor.extract(frame, bbox)
-                    process_reid_logic(
-                        track_id=track_id,
-                        frame_id=frame_id,
-                        current_frame_count=current_frame_count,
-                        embedding=embedding,
-                        database=self.database,
-                        similarity_threshold=similarity_threshold,
-                        redis_manager=redis_manager,
-                        track_labels=track_labels,
-                        log_file=log_file,
-                        camera_idx=0,
-                        use_rerank=self.config.get('reid', {}).get('use_rerank', False),
-                        rerank_k1=self.config.get('reid', {}).get('rerank_k1', 20),
-                        rerank_k2=self.config.get('reid', {}).get('rerank_k2', 6),
-                        rerank_lambda=self.config.get('reid', {}).get('rerank_lambda', 0.3)
-                    )
-                
-                info = track_labels.get(track_id, {'global_id': -1, 'similarity': 0.0, 'label': 'Unknown'})
+                # Use ReIDProcessor for centralized ReID logic
+                info = reid_processor.process_track(
+                    track_id=track_id,
+                    frame_id=frame_id,
+                    current_frame_count=current_frame_count,
+                    frame=frame,
+                    bbox=[x, y, w, h],
+                    extractor=self.extractor,
+                    database=self.database,
+                    similarity_threshold=similarity_threshold,
+                    redis_manager=redis_manager,
+                    track_labels=track_labels,
+                    log_file=log_file,
+                    camera_idx=0
+                )
 
                 csv_writer.writerow([frame_id, track_id, x, y, w, h, f"{conf:.4f}", info['global_id'], f"{info['similarity']:.4f}", info['label']])
 
