@@ -19,7 +19,7 @@ from rtree import index
 from collections import defaultdict
 
 from core.tracking import ByteTrackWrapper
-from core.reid import ArcFaceExtractor, process_reid_logic
+from core.reid import ArcFaceExtractor, ReIDProcessor
 from core.database import QdrantVectorDB, RedisTrackManager
 from core.zone import ZoneMonitoringService, ZoneTask, ZoneResult
 from tabulate import tabulate
@@ -104,29 +104,30 @@ class ZoneMonitor:
     - Zones are independent - person can only be in one zone at a time
     """
 
-    def __init__(self, zone_config_path, iou_threshold=0.6, zone_opacity=0.3, num_cameras=1):
+    def __init__(self, zone_config_path, iou_threshold=0.6, zone_opacity=0.3, num_cameras=1, reid_enabled=True):
         """
         Args:
             zone_config_path: Path to zone configuration YAML
             iou_threshold: IoP threshold for zone overlap (default: 0.6 = 60% of person in zone)
-                          Note: Parameter name kept as 'iou_threshold' for backward compatibility,
-                          but it's actually used as IoP (Intersection over Person) threshold
             zone_opacity: Zone border thickness factor (default: 0.3, range: 0.0-1.0)
-                         Converts to pixel thickness: 0.0-1.0 → 1-10 pixels
             num_cameras: Number of cameras (default: 1 for single camera)
+            reid_enabled: Whether ReID is enabled (determines monitoring mode)
         """
         self.num_cameras = num_cameras
+        self.reid_enabled = reid_enabled
         self.zones, self.is_multi_camera = self._load_zones(zone_config_path)
-        self.iop_threshold = iou_threshold  # Actually IoP threshold
-        self.zone_opacity = zone_opacity  # Actually border thickness factor
+        self.iop_threshold = iou_threshold
+        self.zone_opacity = zone_opacity
         self.rtree_idx = self._build_rtree()
 
-        # NEW: Zone-centric state tracking
-        self.zone_status = self._initialize_zone_status()  # Track each zone's completeness
-        self.person_locations = {}  # Track where each person is currently located
-        self.zone_violations = []   # List of zone violations (zone incomplete events)
+        # Zone-centric state tracking
+        self.zone_status = self._initialize_zone_status()
+        self.person_locations = {}
+        self.zone_violations = []
         self.last_violation_table_print = 0
 
+        # Log monitoring mode
+        mode_str = "People Counting" if not reid_enabled else "Identity Verification"
         if self.is_multi_camera:
             logger.info(f"✅ ZoneMonitor initialized for {self.num_cameras} cameras with {len(self.zones)} total zones")
             for camera_idx in range(self.num_cameras):
@@ -134,10 +135,10 @@ class ZoneMonitor:
                 logger.info(f"   Camera {camera_idx+1}: {len(camera_zones)} zones")
         else:
             logger.info(f"✅ ZoneMonitor initialized with {len(self.zones)} zones")
+        logger.info(f"   Mode: {mode_str}")
         logger.info(f"   IoP threshold: {iou_threshold*100:.0f}% (percentage of person in zone)")
         thickness_px = max(1, int(zone_opacity * 10)) if zone_opacity > 0 else 3
         logger.info(f"   Zone border thickness: {thickness_px}px")
-        logger.info(f"   📊 Logic: Zone-centric (each zone checks for required persons)")
 
     def _load_zones(self, config_path):
         """
@@ -250,6 +251,7 @@ class ZoneMonitor:
             'bbox': [x1, y1, x2, y2],
             'polygon': polygon,
             'authorized_ids': zone_data.get('authorized_ids', []),
+            'required_count': zone_data.get('required_count', 0),
             'camera_idx': camera_idx
         }
 
@@ -263,27 +265,42 @@ class ZoneMonitor:
 
     def _initialize_zone_status(self):
         """
-        Initialize zone status tracking (ZONE-CENTRIC LOGIC)
+        Initialize zone status tracking (ZONE-CENTRIC LOGIC with dual modes)
 
         Each zone tracks:
-        - required_persons: List of person IDs that should be in this zone (authorized_ids)
-        - present_persons: Dict of persons currently in this zone {person_id: {name, enter_time, duration}}
+        MODE 1 (reid.enable = false - People Counting):
+        - required_count: Minimum number of people needed in zone
+        - actual_count: Current number of people in zone
+        
+        MODE 2 (reid.enable = true - Identity Verification):
+        - required_persons: List of person IDs that should be in this zone
+        - present_persons: Dict of persons currently in this zone
         - missing_persons: List of person IDs missing from this zone
-        - is_complete: Boolean - True if all required persons are present
-        - violation_start_time: Timestamp when zone became incomplete (None if complete)
+        
+        Common:
+        - is_complete: Boolean - True if zone requirements are met
+        - violation_start_time: Timestamp when zone became incomplete
 
         Returns:
             Dict[zone_id, zone_state]
         """
         status = {}
         for zone_id, zone_data in self.zones.items():
-            required = zone_data.get('authorized_ids', [])
+            # Get both mode configurations
+            required_persons = zone_data.get('authorized_ids', zone_data.get('required_persons', []))
+            required_count = zone_data.get('required_count', 0)
+            
             status[zone_id] = {
                 'name': zone_data['name'],
-                'required_persons': required,
-                'present_persons': {},  # Will be populated as persons are detected
-                'missing_persons': required.copy(),  # Initially all are missing
-                'is_complete': False,  # All zones start as incomplete (even empty zones)
+                # MODE 1: People counting
+                'required_count': required_count,
+                'actual_count': 0,
+                # MODE 2: Identity verification
+                'required_persons': required_persons,
+                'present_persons': {},
+                'missing_persons': required_persons.copy(),
+                # Common
+                'is_complete': False,
                 'violation_start_time': None,
                 'camera_idx': zone_data.get('camera_idx', 0)
             }
@@ -428,7 +445,7 @@ class ZoneMonitor:
 
             # Update all affected zones
             for affected_zone_id in affected_zones:
-                self._update_zone_status(affected_zone_id, frame_time)
+                self._update_zone_status(affected_zone_id, frame_time, self.reid_enabled)
         else:
             # Person still in same zone - just update duration
             if zone_id and global_id in self.person_locations:
@@ -439,76 +456,107 @@ class ZoneMonitor:
                     if zone_state and global_id in zone_state['present_persons']:
                         zone_state['present_persons'][global_id]['duration'] = frame_time - enter_time
 
-    def _update_zone_status(self, zone_id, frame_time):
+    def _update_zone_status(self, zone_id, frame_time, reid_enabled=True, zone_ids=None, frame_id=None):
         """
-        Update status for a specific zone (ZONE-CENTRIC LOGIC)
-
-        Check which required persons are present in this zone:
-        - Update present_persons dict
-        - Update missing_persons list
-        - Update is_complete flag
-        - Track violation timing
+        Update status for a specific zone with dual mode support
+        
+        MODE 1: People Counting (if reid_enabled=False OR required_count > 0)
+        - Count total people in zone (any identity)
+        - Compare with required_count
+        
+        MODE 2: Identity Verification (if reid_enabled=True AND no required_count)
+        - Check specific person IDs
+        - Track who is present/missing
 
         Args:
             zone_id: Zone to update
             frame_time: Current timestamp
+            reid_enabled: Whether ReID is enabled (determines mode)
+            zone_ids: Dict[track_id, zone_id] for counting ALL tracks (including Unknown)
+            frame_id: Frame ID for logging
         """
         zone_state = self.zone_status[zone_id]
-        required = zone_state['required_persons']
-        present = {}
-        missing = []
-
-        # Check each required person
-        for person_id in required:
-            if person_id in self.person_locations:
-                person_loc = self.person_locations[person_id]
-                if person_loc['current_zone'] == zone_id:
-                    # Person is in this zone
-                    enter_time = person_loc.get('enter_time', frame_time)
-                    present[person_id] = {
-                        'name': person_loc['name'],
-                        'enter_time': enter_time,
-                        'duration': frame_time - enter_time
-                    }
-                else:
-                    # Person is elsewhere
-                    missing.append(person_id)
+        
+        # Force Counting mode if required_count is set
+        use_counting_mode = not reid_enabled or zone_state.get('required_count', 0) > 0
+        
+        # DEBUG
+        logger.debug(f"[Zone {zone_state['name']}] reid_enabled={reid_enabled}, "
+                    f"required_count={zone_state.get('required_count', 0)}, "
+                    f"use_counting_mode={use_counting_mode}")
+        
+        if use_counting_mode:
+            # MODE 1: People Counting
+            # Count ALL tracks in this zone (including Unknown)
+            if zone_ids:
+                actual_count = sum(1 for zid in zone_ids.values() if zid == zone_id)
             else:
-                # Person not detected yet
-                missing.append(person_id)
-
-        # Check if missing persons changed
-        old_missing = zone_state.get('missing_persons', [])
-        missing_changed = set(old_missing) != set(missing)
-
-        # Update zone state
-        zone_state['present_persons'] = present
-        zone_state['missing_persons'] = missing
-        was_complete = zone_state['is_complete']
-        # Zone is complete only if:
-        # 1. Has required persons (not empty) - empty zones are always incomplete
-        # 2. All required persons are present (no missing)
-        zone_state['is_complete'] = (len(required) > 0 and len(missing) == 0)
-
-        # Track violation timing and log state changes
-        if not zone_state['is_complete']:
-            if zone_state['violation_start_time'] is None:
-                # Zone just became incomplete - LOG
-                zone_state['violation_start_time'] = frame_time
-                self._log_zone_violation(zone_id, missing, frame_time)
-            elif missing_changed:
-                # Zone still incomplete but missing persons changed - LOG
-                self._log_zone_violation(zone_id, missing, frame_time)
+                # Fallback: count only identified people
+                actual_count = sum(1 for person_loc in self.person_locations.values()
+                                 if person_loc['current_zone'] == zone_id)
+            
+            required_count = zone_state['required_count']
+            zone_state['actual_count'] = actual_count
+            
+            was_complete = zone_state['is_complete']
+            zone_state['is_complete'] = (actual_count >= required_count) if required_count > 0 else True
+            
+            # Track violation timing
+            if not zone_state['is_complete']:
+                if zone_state['violation_start_time'] is None:
+                    zone_state['violation_start_time'] = frame_time
+                    # Log violation
+                    missing_count = required_count - actual_count
+                    self._log_zone_violation_count(zone_id, required_count, actual_count, missing_count, frame_time, frame_id)
+            else:
+                if was_complete is False:
+                    logger.info(f"✅ Zone '{zone_state['name']}' now complete: {actual_count}/{required_count} people")
+                zone_state['violation_start_time'] = None
+        
         else:
-            # Zone is complete
-            if not was_complete and zone_state['violation_start_time'] is not None:
-                # Zone just became complete - LOG resolution
-                duration = frame_time - zone_state['violation_start_time']
-                logger.info(f"✅ Zone '{zone_state['name']}' now complete (was incomplete for {duration:.1f}s)")
-            zone_state['violation_start_time'] = None
+            # MODE 2: Identity Verification (existing logic)
+            required = zone_state['required_persons']
+            present = {}
+            missing = []
+
+            # Check each required person
+            for person_id in required:
+                if person_id in self.person_locations:
+                    person_loc = self.person_locations[person_id]
+                    if person_loc['current_zone'] == zone_id:
+                        enter_time = person_loc.get('enter_time', frame_time)
+                        present[person_id] = {
+                            'name': person_loc['name'],
+                            'enter_time': enter_time,
+                            'duration': frame_time - enter_time
+                        }
+                    else:
+                        missing.append(person_id)
+                else:
+                    missing.append(person_id)
+
+            # Update zone state
+            zone_state['present_persons'] = present
+            zone_state['missing_persons'] = missing
+            was_complete = zone_state['is_complete']
+            zone_state['is_complete'] = (len(required) > 0 and len(missing) == 0)
+
+            # Track violation timing
+            if not zone_state['is_complete']:
+                if zone_state['violation_start_time'] is None:
+                    # Zone just became incomplete - LOG
+                    zone_state['violation_start_time'] = frame_time
+                    self._log_zone_violation(zone_id, missing, frame_time)
+            else:
+                # Zone is complete
+                if was_complete is False and zone_state['violation_start_time'] is not None:
+                    # Zone just became complete - LOG resolution
+                    duration = frame_time - zone_state['violation_start_time']
+                    logger.info(f"✅ Zone '{zone_state['name']}' now complete (was incomplete for {duration:.1f}s)")
+                zone_state['violation_start_time'] = None
 
     def _log_zone_violation(self, zone_id, missing_person_ids, frame_time):
-        """Log zone violation when zone becomes incomplete"""
+        """Log zone violation when zone becomes incomplete (MODE 2: Identity)"""
         zone_state = self.zone_status[zone_id]
         missing_names = []
         for pid in missing_person_ids:
@@ -524,7 +572,7 @@ class ZoneMonitor:
             'missing_persons': missing_person_ids,
             'missing_names': missing_names,
             'time': frame_time,
-            'type': 'zone_incomplete'
+            'type': 'zone_incomplete_identity'
         }
         self.zone_violations.append(violation)
 
@@ -532,6 +580,28 @@ class ZoneMonitor:
         missing_str = ", ".join([f"{name} (ID:{pid})"
                                 for pid, name in zip(missing_person_ids, missing_names)])
         logger.warning(f"🚨 Zone '{zone_state['name']}' incomplete: Missing {missing_str}")
+    
+    def _log_zone_violation_count(self, zone_id, required_count, actual_count, missing_count, frame_time, frame_id=None):
+        """Log zone violation when zone has insufficient people (MODE 1: Counting)"""
+        zone_state = self.zone_status[zone_id]
+        
+        # Add to violations list
+        violation = {
+            'zone_id': zone_id,
+            'zone_name': zone_state['name'],
+            'required_count': required_count,
+            'actual_count': actual_count,
+            'missing_count': missing_count,
+            'time': frame_time,
+            'frame_id': frame_id,
+            'type': 'zone_insufficient_count'
+        }
+        self.zone_violations.append(violation)
+        
+        # Log to console with clear counting mode message
+        logger.warning(f"🚨 [COUNTING MODE] Zone '{zone_state['name']}': "
+                      f"Cần {required_count} người, hiện có {actual_count} người (thiếu {missing_count} người)")
+        logger.debug(f"[DEBUG] Created violation with type={violation['type']}")
 
     def _log_zone_event(self, event_type, global_id, zone_id, time, duration):
         """
@@ -853,8 +923,18 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     # These calls are kept for explicit initialization and will skip if already loaded
     pipeline.initialize_detector()
     pipeline.initialize_tracker()
-    pipeline.initialize_extractor()
-    pipeline.initialize_database()
+    
+    # Only initialize ReID components if enabled
+    enable_reid = pipeline.config.get('reid', {}).get('enable', True)
+    if enable_reid:
+        logger.info("✅ ReID enabled - initializing face recognition components")
+        pipeline.initialize_extractor()
+        pipeline.initialize_database()
+    else:
+        logger.warning("⚠️ ReID disabled - skipping extractor and database initialization")
+    
+    # Initialize centralized ReID processor
+    reid_processor = ReIDProcessor(pipeline.config)
 
     # Override config parameters if provided (from API)
     if model_type is not None:
@@ -881,7 +961,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     num_cameras = len(urls)
 
     # Initialize zone monitor with camera count
-    zone_monitor = ZoneMonitor(zone_config_path, iou_threshold, zone_opacity, num_cameras=num_cameras)
+    zone_monitor = ZoneMonitor(zone_config_path, iou_threshold, zone_opacity, num_cameras=num_cameras, reid_enabled=enable_reid)
 
     # Generate unique job_id for this processing session
     job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
@@ -1176,36 +1256,21 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
             track_frame_count[track_id] += 1
             current_frame_count = track_frame_count[track_id]
 
-            # ReID extraction: Frame 1 + re-verify every 60 frames
-            should_extract = (current_frame_count == 1) or (current_frame_count % 60 == 0)
-
-            if should_extract:
-                bbox = [x, y, w, h]
-                embedding = pipeline.extractor.extract(frame, bbox)
-                process_reid_logic(
-                    track_id=track_id,
-                    frame_id=frame_id,
-                    current_frame_count=current_frame_count,
-                    embedding=embedding,
-                    database=pipeline.database,
-                    similarity_threshold=similarity_threshold,
-                    redis_manager=redis_manager,
-                    track_labels=track_labels,
-                    log_file=None,  # Zone monitoring doesn't use log file
-                    camera_idx=camera_idx,
-                    use_rerank=pipeline.config.get('reid', {}).get('use_rerank', False),
-                    rerank_k1=pipeline.config.get('reid', {}).get('rerank_k1', 20),
-                    rerank_k2=pipeline.config.get('reid', {}).get('rerank_k2', 6),
-                    rerank_lambda=pipeline.config.get('reid', {}).get('rerank_lambda', 0.3)
-                )
-
-            # Get track info
-            info = track_labels.get(track_id, {
-                'global_id': -1,
-                'similarity': 0.0,
-                'label': 'Unknown',
-                'person_name': 'Unknown'
-            })
+            # Use ReIDProcessor for centralized ReID logic
+            info = reid_processor.process_track(
+                track_id=track_id,
+                frame_id=frame_id,
+                current_frame_count=current_frame_count,
+                frame=frame,
+                bbox=[x, y, w, h],
+                extractor=pipeline.extractor,
+                database=pipeline.database,
+                similarity_threshold=similarity_threshold,
+                redis_manager=redis_manager,
+                track_labels=track_labels,
+                log_file=None,  # Zone monitoring doesn't use log file
+                camera_idx=camera_idx
+            )
 
             # ZONE MONITORING: Check which zone person is in (Main thread only)
             person_bbox = [x, y, w, h]
@@ -1418,7 +1483,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
         # May be from previous frame if service is still processing
         zone_result = zone_service.get_result(timeout=0.001)
 
-        # Process violations from zone service
+        # Process violations from zone service (now supports dual mode + Kafka)
         if zone_result and zone_result.violations and violation_callback:
             for violation in zone_result.violations:
                 violation_callback({

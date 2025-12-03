@@ -285,9 +285,10 @@ class ZoneMonitoringService:
             }
 
         # Update all zones and check for violations
+        # Pass zone_ids for counting mode (includes Unknown tracks)
         new_violations = []
         for zone_id in self.zone_monitor.zones.keys():
-            self.zone_monitor._update_zone_status(zone_id, task.frame_time)
+            self.zone_monitor._update_zone_status(zone_id, task.frame_time, zone_ids=task.zone_ids, frame_id=task.frame_id)
 
             # Check violation with threshold
             violation = self._check_zone_violation(zone_id, task.frame_time, task.camera_idx, task.frame_id)
@@ -315,7 +316,7 @@ class ZoneMonitoringService:
 
     def _check_zone_violation(self, zone_id: int, frame_time: float, camera_idx: int, frame_id: int) -> Optional[Dict]:
         """
-        Check if zone violation and publish to Kafka (always, regardless of threshold)
+        Check if zone violation and publish to Kafka (dual mode support)
         Threshold is handled by Consumer side for filtering/alerting
 
         Args:
@@ -336,9 +337,78 @@ class ZoneMonitoringService:
                 del self.violation_tracker[zone_id]
             return None
 
-        # Zone is incomplete - violation detected
+        # Detect mode: Counting or Identity
+        required_count = zone_state.get('required_count', 0)
+        use_counting_mode = required_count > 0
+        
+        if use_counting_mode:
+            # MODE 1: People Counting
+            return self._check_counting_violation(zone_id, zone_state, frame_time, camera_idx, frame_id)
+        else:
+            # MODE 2: Identity Verification
+            return self._check_identity_violation(zone_id, zone_state, frame_time, camera_idx, frame_id)
+    
+    def _check_counting_violation(self, zone_id: int, zone_state: Dict, frame_time: float, 
+                                   camera_idx: int, frame_id: int) -> Optional[Dict]:
+        """Check violation for People Counting mode"""
+        required_count = zone_state['required_count']
+        actual_count = zone_state['actual_count']
+        missing_count = required_count - actual_count
+        
+        # Initialize violation tracker
+        if zone_id not in self.violation_tracker:
+            self.violation_tracker[zone_id] = {
+                'start_time': frame_time,
+                'required_count': required_count,
+                'actual_count': actual_count
+            }
+        
+        tracker = self.violation_tracker[zone_id]
+        violation_duration = frame_time - tracker['start_time']
+        
+        # Publish to Kafka
+        if self.kafka_producer:
+            self.kafka_producer.send_alert(
+                user_id='zone_counting',
+                user_name=f"Zone {zone_state['name']}",
+                camera_id=camera_idx,
+                zone_id=zone_id,
+                zone_name=zone_state['name'],
+                iop=self.zone_monitor.iop_threshold,
+                threshold=self.alert_threshold,
+                status='violation_insufficient_count',
+                frame_id=frame_id,
+                additional_data={
+                    'violation_duration': round(violation_duration, 2),
+                    'required_count': required_count,
+                    'actual_count': actual_count,
+                    'missing_count': missing_count,
+                    'violation_start_time': tracker['start_time']
+                }
+            )
+        
+        return {
+            'type': 'zone_insufficient_count',
+            'zone_id': zone_id,
+            'zone_name': zone_state['name'],
+            'required_count': required_count,
+            'actual_count': actual_count,
+            'missing_count': missing_count,
+            'time': frame_time,
+            'duration': violation_duration,
+            'camera_idx': camera_idx
+        }
+    
+    def _check_identity_violation(self, zone_id: int, zone_state: Dict, frame_time: float,
+                                   camera_idx: int, frame_id: int) -> Optional[Dict]:
+        """Check violation for Identity Verification mode"""
         missing_persons = zone_state['missing_persons']
 
+    def _check_identity_violation(self, zone_id: int, zone_state: Dict, frame_time: float,
+                                   camera_idx: int, frame_id: int) -> Optional[Dict]:
+        """Check violation for Identity Verification mode"""
+        missing_persons = zone_state['missing_persons']
+        
         # Initialize violation tracker for this zone
         if zone_id not in self.violation_tracker:
             self.violation_tracker[zone_id] = {
@@ -349,28 +419,19 @@ class ZoneMonitoringService:
         tracker = self.violation_tracker[zone_id]
         violation_duration = frame_time - tracker['start_time']
 
-        # Get missing person names from multiple sources
+        # Get missing person names
         missing_names = []
-
         for pid in missing_persons:
             name = None
-
-            # 1. Try to get name from person_locations first (if person was detected)
             if pid in self.zone_monitor.person_locations:
                 name = self.zone_monitor.person_locations[pid]['name']
-
-            # 2. Try to get from users_dict (database cache)
             elif pid in self.zone_monitor.users_dict:
                 name = self.zone_monitor.users_dict[pid]
-
-            # 3. Fallback to generic name
             if name is None:
                 name = f"Person {pid}"
-
             missing_names.append(name)
 
-        # ALWAYS publish to Kafka EVERY FRAME (don't wait for threshold)
-        # Consumer will handle threshold-based filtering and deduplication
+        # Publish to Kafka
         if self.kafka_producer:
             for pid, name in zip(missing_persons, missing_names):
                 self.kafka_producer.send_alert(
@@ -379,8 +440,8 @@ class ZoneMonitoringService:
                     camera_id=camera_idx,
                     zone_id=zone_id,
                     zone_name=zone_state['name'],
-                    iop=self.zone_monitor.iop_threshold,  # Zone IoP threshold (e.g., 0.6 = 60%)
-                    threshold=self.alert_threshold,  # Alert time threshold for Consumer reference
+                    iop=self.zone_monitor.iop_threshold,
+                    threshold=self.alert_threshold,
                     status='violation_incomplete',
                     frame_id=frame_id,
                     additional_data={
@@ -391,19 +452,16 @@ class ZoneMonitoringService:
                     }
                 )
 
-            # Return violation for legacy compatibility
-            return {
-                'type': 'zone_incomplete',
-                'zone_id': zone_id,
-                'zone_name': zone_state['name'],
-                'missing_persons': missing_persons,
-                'missing_names': missing_names,
-                'time': frame_time,
-                'duration': violation_duration,
-                'camera_idx': camera_idx
-            }
-
-        return None
+        return {
+            'type': 'zone_incomplete_identity',
+            'zone_id': zone_id,
+            'zone_name': zone_state['name'],
+            'missing_persons': missing_persons,
+            'missing_names': missing_names,
+            'time': frame_time,
+            'duration': violation_duration,
+            'camera_idx': camera_idx
+        }
         
     def get_metrics(self) -> Dict[str, Any]:
         """Get service metrics"""
