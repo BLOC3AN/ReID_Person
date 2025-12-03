@@ -1,4 +1,5 @@
-# Person ReID System - Register Service Requirements
+# Person ReID System - Register Service Requirements (CPU Only)
+# All inference via Triton - no local GPU needed
 
 # Computer Vision
 opencv-python>=4.5.0
@@ -7,17 +8,13 @@ scipy>=1.7.0
 scikit-image
 Pillow
 
-# Face Recognition (ArcFace)
-insightface>=0.7.3
-onnxruntime-gpu==1.15.1
-
 # Vector Database
 qdrant-client>=1.0.0
 
 # Database
 redis>=4.5.0
 
-# ByteTrack Dependencies
+# ByteTrack Dependencies (minimal)
 lap
 filterpy
 cython
@@ -29,7 +26,7 @@ pycocotools
 tabulate
 motmetrics
 
-# Triton Client
+# Triton Client (gRPC only - no GPU)
 tritonclient[grpc]>=2.40.0
 
 # Logging
@@ -43,3 +40,6 @@ python-dotenv>=0.19.0
 fastapi>=0.104.0
 uvicorn>=0.24.0
 python-multipart>=0.0.6
+
+# PostgreSQL
+psycopg2-binary>=2.9.0
