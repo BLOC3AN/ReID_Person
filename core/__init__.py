@@ -5,8 +5,13 @@ Person ReID System - Core Modules
 from .detection import TritonDetector
 from .reid import FaceRecognitionTriton, process_reid_logic
 from .database import QdrantVectorDB, RedisTrackManager
-from .pipeline import PersonReIDPipeline, register_person_mot17, register_person_from_images
+from .pipeline.registration import register_person_mot17, register_person_from_images  # Direct import
 from .preloaded_manager import preloaded_manager
+
+# Lazy import PersonReIDPipeline
+def _get_pipeline():
+    from .pipeline import PersonReIDPipeline
+    return PersonReIDPipeline
 
 # Lazy import ArcFaceExtractor (uses torch - InsightFace fallback)
 def _get_arcface():
@@ -25,6 +30,9 @@ def _get_zone_modules():
 
 # Export modules via __getattr__ for lazy loading
 def __getattr__(name):
+    if name == 'PersonReIDPipeline':
+        return _get_pipeline()
+    
     if name == 'ArcFaceExtractor':
         return _get_arcface()
     
