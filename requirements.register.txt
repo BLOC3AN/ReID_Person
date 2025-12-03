@@ -1,5 +1,8 @@
-# Person ReID System - Register Service Requirements (CPU Only)
-# All inference via Triton - no local GPU needed
+# Person ReID System - Register Service Requirements
+
+# PyTorch (needed for preloaded_manager dependencies)
+torch>=2.0.0
+torchvision>=0.15.0
 
 # Computer Vision (CPU only)
 opencv-python-headless>=4.5.0  # Headless = no GUI, smaller
