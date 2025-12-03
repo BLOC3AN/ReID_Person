@@ -58,6 +58,7 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
 COPY core/ ./core/
 COPY yolox/ ./yolox/
 COPY exps/ ./exps/
+COPY utils/ ./utils/
 COPY services/register_service.py ./services/
 COPY services/preload_models.py ./services/
 COPY services/database/ ./services/database/
