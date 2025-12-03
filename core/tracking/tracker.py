@@ -3,7 +3,6 @@ ByteTrack Tracker Wrapper
 Multi-object tracking using ByteTrack algorithm
 """
 
-import torch
 import numpy as np
 from loguru import logger
 
@@ -62,12 +61,12 @@ class ByteTrackWrapper:
         if len(detections) == 0:
             return np.empty((0, 6))
 
-        # Convert to torch tensor for ByteTracker
-        detections_tensor = torch.from_numpy(detections).float()
+        # ByteTracker accepts numpy array directly
+        detections_array = detections.astype(np.float32)
 
         # Update tracker
         online_targets = self.tracker.update(
-            detections_tensor,
+            detections_array,
             frame_shape,
             frame_shape
         )
