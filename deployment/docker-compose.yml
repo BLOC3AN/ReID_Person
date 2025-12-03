@@ -48,13 +48,6 @@ services:
       - ../logs:/app/logs
       - ../configs:/app/configs
       - ../models:/app/models
-    environment:
-      - REDIS_HOST=127.0.0.1
-      - REDIS_PORT=6379
-      - QDRANT_HOST=127.0.0.1
-      - QDRANT_PORT=6333
-      - REGISTER_API_URL=http://localhost:8002
-      - DETECTION_API_URL=http://localhost:8003
     env_file:
       - ../configs/.env
     restart: unless-stopped
@@ -80,12 +73,6 @@ services:
       - ../logs:/app/logs
       - ../configs:/app/configs
       - ../models:/app/models
-    environment:
-      - REDIS_HOST=127.0.0.1
-      - REDIS_PORT=6379
-      - QDRANT_HOST=127.0.0.1
-      - QDRANT_PORT=6333
-      - NVIDIA_VISIBLE_DEVICES=all
     env_file:
       - ../configs/.env
     restart: unless-stopped
@@ -112,14 +99,6 @@ services:
       - ../configs:/app/configs
       - ../models:/app/models
       - ../triton_model_repository:/app/triton_model_repository:ro
-    environment:
-      - REDIS_HOST=127.0.0.1
-      - REDIS_PORT=6379
-      - QDRANT_HOST=127.0.0.1
-      - QDRANT_PORT=6333
-      - NVIDIA_VISIBLE_DEVICES=all
-      - TRITON_URL=localhost:8101
-      - KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092
     env_file:
       - ../configs/.env
     restart: unless-stopped
@@ -144,8 +123,8 @@ services:
     volumes:
       - ../logs:/app/logs
       - ../configs:/app/configs
-    environment:
-      - KAFKA_BOOTSTRAP_SERVERS=127.0.0.1:9092
+    env_file:
+      - ../configs/.env
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
