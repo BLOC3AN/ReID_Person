@@ -1656,7 +1656,7 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                                     kafka_alerts_display.info(
                                                         f"📊 **Kafka Alert System Active**\n\n"
                                                         f"Total alerts sent to Kafka: **{messages_received}**\n\n"
-                                                        f"Alerts are being streamed to Kafka topic: `person_reid_alerts`\n\n"
+                                                        f"Alerts are being streamed to Kafka topic: `person_alerts`\n\n"
                                                         f"**Alert Schema:**\n"
                                                         f"- user_id, user_name, camera_id, zone_id, zone_name\n"
                                                         f"- iop (Intersection over Person), threshold, status, timestamp\n\n"

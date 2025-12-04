@@ -79,8 +79,8 @@ async def startup_event():
     # Initialize Kafka consumer
     kafka_consumer = KafkaAlertConsumer(
         bootstrap_servers='localhost:9092',
-        topic='person_reid_alerts',
-        group_id='person_reid_ui_consumers',
+        topic='person_alerts',
+        group_id='person_alert_consumers_Hai',
         enable=True
     )
     

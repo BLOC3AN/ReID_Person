@@ -115,7 +115,7 @@ output:
 kafka:
   enable: true
   bootstrap_servers: localhost:9092
-  topic: person_reid_alerts
+  topic: person_alerts
   alert_threshold: 0.0  # Seconds before alert
 ```
 

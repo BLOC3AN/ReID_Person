@@ -22,6 +22,7 @@ from core.tracking import ByteTrackWrapper
 from core.reid import ArcFaceExtractor, ReIDProcessor
 from core.database import QdrantVectorDB, RedisTrackManager
 from core.zone import ZoneMonitoringService, ZoneTask, ZoneResult
+from core.bbox_utils import bbox_to_coordinates
 from tabulate import tabulate
 
 
@@ -351,7 +352,8 @@ class ZoneMonitor:
         debug_info = []
         if track_id is not None:
             sim_str = f", sim={similarity:.4f}" if similarity is not None else ""
-            debug_info.append(f"Track {track_id} ({person_name}): bbox={person_bbox_xyxy}{sim_str}")
+            bbox_coords = bbox_to_coordinates(person_bbox_xyxy)
+            debug_info.append(f"Track {track_id} ({person_name}): bbox={bbox_coords}{sim_str}")
 
         for candidate in candidates:
             zone_id = candidate.object
@@ -1179,7 +1181,7 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
     csv_writer = csv.writer(csv_file)
     csv_writer.writerow([
         'frame_id', 'track_id', 'global_id', 'person_name', 'similarity',
-        'x', 'y', 'w', 'h', 'zone_id', 'zone_name', 'duration_in_zone', 'camera_idx'
+        'x', 'y', 'w', 'h', 'coordinates', 'zone_id', 'zone_name', 'duration_in_zone', 'camera_idx'
     ])
 
     # Processing state
@@ -1305,9 +1307,11 @@ def process_video_with_zones(video_path, zone_config_path, reid_config_path=None
                     duration = frame_time - person_loc['enter_time']
 
             # Write to CSV (ZONE-CENTRIC LOGIC)
+            bbox_xyxy = [x, y, x+w, y+h]
+            coords = bbox_to_coordinates(bbox_xyxy)
             csv_writer.writerow([
                 frame_id, track_id, info['global_id'], info['person_name'],
-                f"{info['similarity']:.4f}", x, y, w, h,
+                f"{info['similarity']:.4f}", x, y, w, h, coords,
                 zone_id if zone_id is not None else "", zone_name, f"{duration:.2f}", camera_idx
             ])
 

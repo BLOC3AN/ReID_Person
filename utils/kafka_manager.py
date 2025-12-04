@@ -23,7 +23,7 @@ class KafkaAlertProducer:
 
     def __init__(self,
                  bootstrap_servers: str = 'localhost:9092',
-                 topic: str = 'person_reid_alerts',
+                 topic: str = 'person_alerts',
                  enable: bool = True):
         """
         Initialize Kafka Producer
@@ -179,8 +179,8 @@ class KafkaAlertConsumer:
 
     def __init__(self,
                  bootstrap_servers: str = 'localhost:9092',
-                 topic: str = 'person_reid_alerts',
-                 group_id: str = 'person_reid_alert_consumers',
+                 topic: str = 'person_alerts',
+                 group_id: str = 'person_alert_consumers_Hai',
                  enable: bool = True):
         """
         Initialize Kafka Consumer
@@ -323,7 +323,7 @@ _global_consumer: Optional[KafkaAlertConsumer] = None
 
 
 def get_kafka_producer(bootstrap_servers: str = 'localhost:9092',
-                       topic: str = 'person_reid_alerts',
+                       topic: str = 'person_alerts',
                        enable: bool = True) -> KafkaAlertProducer:
     """Get or create global Kafka producer instance"""
     global _global_producer
@@ -333,8 +333,8 @@ def get_kafka_producer(bootstrap_servers: str = 'localhost:9092',
 
 
 def get_kafka_consumer(bootstrap_servers: str = 'localhost:9092',
-                       topic: str = 'person_reid_alerts',
-                       group_id: str = 'person_reid_alert_consumers',
+                       topic: str = 'person_alerts',
+                       group_id: str = 'person_alert_consumers_Hai',
                        enable: bool = True) -> KafkaAlertConsumer:
     """Get or create global Kafka consumer instance"""
     global _global_consumer

@@ -550,18 +550,30 @@ def _add_violation(job_id: str, violation: dict):
         logger.debug(f"[DEBUG] Violation type: {violation_type}, keys: {violation.keys()}")
         
         if violation_type == 'zone_insufficient_count':
-            # MODE 1: People Counting
+            # MODE 1: People Counting - VIOLATION
             logger.warning(f"🚨 [Job {job_id}] ZONE VIOLATION: Zone '{violation['zone_name']}' "
                           f"incomplete - Need {violation['required_count']} people, "
                           f"found {violation['actual_count']} (missing {violation['missing_count']}) "
                           f"at frame {violation.get('frame_id', 'N/A')}")
         
+        elif violation_type == 'zone_complete_count':
+            # MODE 1: People Counting - COMPLETE (not a violation)
+            logger.info(f"✅ [Job {job_id}] Zone '{violation['zone_name']}' complete - "
+                       f"{violation['actual_count']}/{violation['required_count']} people present")
+        
         elif violation_type in ['zone_incomplete_identity', 'zone_incomplete']:
-            # MODE 2: Identity Verification
+            # MODE 2: Identity Verification - VIOLATION
             missing_str = ", ".join([f"{name} (ID:{pid})"
                                     for pid, name in zip(violation['missing_persons'], violation['missing_names'])])
             logger.warning(f"🚨 [Job {job_id}] ZONE VIOLATION: Zone '{violation['zone_name']}' "
                           f"incomplete - Missing: {missing_str} at frame {violation.get('frame_id', 'N/A')}")
+        
+        elif violation_type == 'zone_complete_identity':
+            # MODE 2: Identity Verification - COMPLETE (not a violation)
+            present_str = ", ".join([f"{name} (ID:{pid})"
+                                    for pid, name in zip(violation['present_persons'], violation['present_names'])])
+            logger.info(f"✅ [Job {job_id}] Zone '{violation['zone_name']}' complete - "
+                       f"Present: {present_str}")
         
         else:
             # Legacy person-centric violation (backward compatibility)
@@ -585,7 +597,7 @@ async def _broadcast_violation(job_id: str, violation: dict):
         violation_type = violation.get('type')
 
         if violation_type == 'zone_insufficient_count':
-            # MODE 1: People Counting
+            # MODE 1: People Counting - VIOLATION
             log_msg = {
                 "timestamp": timestamp,
                 "level": "error",
@@ -595,14 +607,37 @@ async def _broadcast_violation(job_id: str, violation: dict):
                 "mode": "counting"
             }
         
+        elif violation_type == 'zone_complete_count':
+            # MODE 1: People Counting - COMPLETE
+            log_msg = {
+                "timestamp": timestamp,
+                "level": "info",
+                "zone": violation['zone_name'],
+                "message": f"Zone complete: {violation['actual_count']}/{violation['required_count']} people present",
+                "frame": violation.get('frame_id', 0),
+                "mode": "counting"
+            }
+        
         elif violation_type in ['zone_incomplete_identity', 'zone_incomplete']:
-            # MODE 2: Identity Verification
+            # MODE 2: Identity Verification - VIOLATION
             missing_str = ", ".join(violation['missing_names'])
             log_msg = {
                 "timestamp": timestamp,
                 "level": "error",
                 "zone": violation['zone_name'],
                 "message": f"Zone incomplete: Missing {missing_str}",
+                "frame": violation.get('frame_id', 0),
+                "mode": "identity"
+            }
+        
+        elif violation_type == 'zone_complete_identity':
+            # MODE 2: Identity Verification - COMPLETE
+            present_str = ", ".join(violation['present_names'])
+            log_msg = {
+                "timestamp": timestamp,
+                "level": "info",
+                "zone": violation['zone_name'],
+                "message": f"Zone complete: Present {present_str}",
                 "frame": violation.get('frame_id', 0),
                 "mode": "identity"
             }

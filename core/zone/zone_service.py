@@ -118,7 +118,7 @@ class ZoneMonitoringService:
             try:
                 self.kafka_producer = KafkaAlertProducer(
                     bootstrap_servers=kafka_config.get('bootstrap_servers', 'localhost:9092'),
-                    topic=kafka_config.get('topic', 'person_reid_alerts'),
+                    topic=kafka_config.get('topic', 'person_alerts'),
                     enable=True
                 )
                 logger.info(f"✅ Kafka Producer enabled for zone alerts (threshold: {alert_threshold}s)")
@@ -316,8 +316,20 @@ class ZoneMonitoringService:
 
     def _check_zone_violation(self, zone_id: int, frame_time: float, camera_idx: int, frame_id: int) -> Optional[Dict]:
         """
-        Check if zone violation and publish to Kafka (dual mode support)
-        Threshold is handled by Consumer side for filtering/alerting
+        Check zone status and publish to Kafka (both violation and complete status)
+        
+        IMPLEMENTATION: Option 1 - Send every frame with full status
+        
+        FUTURE OPTIMIZATION (Option 3 - Hybrid approach):
+        - Track last_sent_status per zone to detect state changes
+        - Send immediately on state change (complete <-> violation)
+        - Send heartbeat every N seconds (e.g., 5s) to confirm current status
+        - Benefits: Reduces Kafka traffic while maintaining real-time updates
+        - Implementation hints:
+          * Add self.zone_last_status = {} to track previous status
+          * Add self.zone_last_heartbeat = {} to track last heartbeat time
+          * Check if (status_changed OR time_since_heartbeat > interval)
+          * Only send Kafka message if condition is True
 
         Args:
             zone_id: Zone ID to check
@@ -326,27 +338,64 @@ class ZoneMonitoringService:
             frame_id: Frame ID
 
         Returns:
-            Violation dict if violation detected, None otherwise
+            Status dict (violation or complete)
         """
         zone_state = self.zone_monitor.zone_status[zone_id]
         zone_data = self.zone_monitor.zones[zone_id]
-
-        # If zone is complete, clear violation tracker
-        if zone_state['is_complete']:
-            if zone_id in self.violation_tracker:
-                del self.violation_tracker[zone_id]
-            return None
 
         # Detect mode: Counting or Identity
         required_count = zone_state.get('required_count', 0)
         use_counting_mode = required_count > 0
         
-        if use_counting_mode:
-            # MODE 1: People Counting
-            return self._check_counting_violation(zone_id, zone_state, frame_time, camera_idx, frame_id)
+        if zone_state['is_complete']:
+            # Zone is complete - send complete status
+            if zone_id in self.violation_tracker:
+                del self.violation_tracker[zone_id]
+            
+            if use_counting_mode:
+                return self._send_counting_complete(zone_id, zone_state, frame_time, camera_idx, frame_id)
+            else:
+                return self._send_identity_complete(zone_id, zone_state, frame_time, camera_idx, frame_id)
         else:
-            # MODE 2: Identity Verification
-            return self._check_identity_violation(zone_id, zone_state, frame_time, camera_idx, frame_id)
+            # Zone has violation - send violation status
+            if use_counting_mode:
+                return self._check_counting_violation(zone_id, zone_state, frame_time, camera_idx, frame_id)
+            else:
+                return self._check_identity_violation(zone_id, zone_state, frame_time, camera_idx, frame_id)
+    
+    def _send_counting_complete(self, zone_id: int, zone_state: Dict, frame_time: float,
+                                camera_idx: int, frame_id: int) -> Dict:
+        """Send complete status for People Counting mode"""
+        required_count = zone_state['required_count']
+        actual_count = zone_state['actual_count']
+        
+        # Publish to Kafka
+        if self.kafka_producer:
+            self.kafka_producer.send_alert(
+                user_id='zone_counting',
+                user_name=f"Zone {zone_state['name']}",
+                camera_id=camera_idx,
+                zone_id=zone_id,
+                zone_name=zone_state['name'],
+                iop=self.zone_monitor.iop_threshold,
+                threshold=self.alert_threshold,
+                status='complete',
+                frame_id=frame_id,
+                additional_data={
+                    'required_count': required_count,
+                    'actual_count': actual_count
+                }
+            )
+        
+        return {
+            'type': 'zone_complete_count',
+            'zone_id': zone_id,
+            'zone_name': zone_state['name'],
+            'required_count': required_count,
+            'actual_count': actual_count,
+            'time': frame_time,
+            'camera_idx': camera_idx
+        }
     
     def _check_counting_violation(self, zone_id: int, zone_state: Dict, frame_time: float, 
                                    camera_idx: int, frame_id: int) -> Optional[Dict]:
@@ -376,7 +425,7 @@ class ZoneMonitoringService:
                 zone_name=zone_state['name'],
                 iop=self.zone_monitor.iop_threshold,
                 threshold=self.alert_threshold,
-                status='violation_insufficient_count',
+                status='violation',
                 frame_id=frame_id,
                 additional_data={
                     'violation_duration': round(violation_duration, 2),
@@ -399,14 +448,66 @@ class ZoneMonitoringService:
             'camera_idx': camera_idx
         }
     
+    def _send_identity_complete(self, zone_id: int, zone_state: Dict, frame_time: float,
+                                camera_idx: int, frame_id: int) -> Dict:
+        """Send complete status for Identity Verification mode"""
+        present_persons = zone_state['present_persons']
+        required_persons = zone_state['required_persons']
+        
+        # Get present person names
+        present_names = []
+        present_ids = []
+        for pid, pdata in present_persons.items():
+            present_ids.append(pid)
+            present_names.append(pdata['name'])
+        
+        # Publish to Kafka
+        if self.kafka_producer:
+            for pid, name in zip(present_ids, present_names):
+                self.kafka_producer.send_alert(
+                    user_id=str(pid),
+                    user_name=name,
+                    camera_id=camera_idx,
+                    zone_id=zone_id,
+                    zone_name=zone_state['name'],
+                    iop=self.zone_monitor.iop_threshold,
+                    threshold=self.alert_threshold,
+                    status='complete',
+                    frame_id=frame_id,
+                    additional_data={
+                        'required_count': len(required_persons),
+                        'present_count': len(present_persons)
+                    }
+                )
+        
+        return {
+            'type': 'zone_complete_identity',
+            'zone_id': zone_id,
+            'zone_name': zone_state['name'],
+            'present_persons': present_ids,
+            'present_names': present_names,
+            'time': frame_time,
+            'camera_idx': camera_idx
+        }
+    
     def _check_identity_violation(self, zone_id: int, zone_state: Dict, frame_time: float,
                                    camera_idx: int, frame_id: int) -> Optional[Dict]:
         """Check violation for Identity Verification mode"""
+        # Safety check: ensure missing_persons exists
+        if 'missing_persons' not in zone_state:
+            logger.warning(f"Zone {zone_id} missing 'missing_persons' key - skipping identity check")
+            return None
+            
         missing_persons = zone_state['missing_persons']
 
     def _check_identity_violation(self, zone_id: int, zone_state: Dict, frame_time: float,
                                    camera_idx: int, frame_id: int) -> Optional[Dict]:
         """Check violation for Identity Verification mode"""
+        # Safety check: ensure missing_persons exists
+        if 'missing_persons' not in zone_state:
+            logger.warning(f"Zone {zone_id} missing 'missing_persons' key - skipping identity check")
+            return None
+            
         missing_persons = zone_state['missing_persons']
         
         # Initialize violation tracker for this zone
@@ -442,7 +543,7 @@ class ZoneMonitoringService:
                     zone_name=zone_state['name'],
                     iop=self.zone_monitor.iop_threshold,
                     threshold=self.alert_threshold,
-                    status='violation_incomplete',
+                    status='violation',
                     frame_id=frame_id,
                     additional_data={
                         'violation_duration': round(violation_duration, 2),
