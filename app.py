@@ -576,6 +576,7 @@ elif page == "Detect & Track":
                                         for z in db_zones:
                                             if z.zone_id == zone_id:
                                                 # Auto-fill from database
+                                                zone['db_zone_id'] = zone_id  # Store DB zone_id
                                                 zone['name'] = z.zone_name
                                                 zone['polygon'] = [
                                                     [int(z.x1), int(z.y1)],
@@ -624,6 +625,7 @@ elif page == "Detect & Track":
                                     if selected_db_zone:
                                         # Ensure zone data is populated (in case rerun didn't happen)
                                         if not zone.get('polygon') or zone['polygon'] == [[100, 100], [200, 100], [200, 200], [100, 200]]:
+                                            zone['db_zone_id'] = zone_id  # Store DB zone_id
                                             zone['name'] = selected_db_zone.zone_name
                                             zone['polygon'] = [
                                                 [int(selected_db_zone.x1), int(selected_db_zone.y1)],
@@ -844,6 +846,7 @@ elif page == "Detect & Track":
                                         for z in db_zones:
                                             if z.zone_id == zone_id:
                                                 # Auto-fill from database
+                                                zone['db_zone_id'] = zone_id  # Store DB zone_id
                                                 zone['name'] = z.zone_name
                                                 zone['polygon'] = [
                                                     [int(z.x1), int(z.y1)],
@@ -892,6 +895,7 @@ elif page == "Detect & Track":
                                     if selected_db_zone:
                                         # Ensure zone data is populated (in case rerun didn't happen)
                                         if not zone.get('polygon') or zone['polygon'] == [[100, 100], [200, 100], [200, 200], [100, 200]]:
+                                            zone['db_zone_id'] = zone_id  # Store DB zone_id
                                             zone['name'] = selected_db_zone.zone_name
                                             zone['polygon'] = [
                                                 [int(selected_db_zone.x1), int(selected_db_zone.y1)],
@@ -1052,7 +1056,8 @@ elif page == "Detect & Track":
                 """Convert list of zones to dict format for YAML."""
                 zones_dict = {}
                 for idx, zone in enumerate(zones_list):
-                    zone_id = f"zone{idx+1}"
+                    # Use DB zone_id if available, otherwise generate zone{idx+1}
+                    zone_id = zone.get('db_zone_id', f"zone{idx+1}")
                     zone_config = {
                         'name': zone['name'],
                         'polygon': zone['polygon'],

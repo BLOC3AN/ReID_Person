@@ -92,6 +92,7 @@ class PostgresManager:
                 rows = cursor.fetchall()
                 return [User(**dict(row)) for row in rows]
         except Exception as e:
+            self.connection.rollback()
             logger.error(f"Error fetching users: {e}")
             return []
     
@@ -112,6 +113,7 @@ class PostgresManager:
                 row = cursor.fetchone()
                 return User(**dict(row)) if row else None
         except Exception as e:
+            self.connection.rollback()
             logger.error(f"Error fetching user {user_id}: {e}")
             return None
     
@@ -132,6 +134,7 @@ class PostgresManager:
                 row = cursor.fetchone()
                 return User(**dict(row)) if row else None
         except Exception as e:
+            self.connection.rollback()
             logger.error(f"Error fetching user with global_id {global_id}: {e}")
             return None
 
@@ -246,25 +249,15 @@ class PostgresManager:
     def get_users_by_zone(self, zone_id: str) -> List[User]:
         """
         Get all users in a specific zone (1:N relationship)
+        DISABLED: Not using user table anymore, authorized users from .env
 
         Args:
             zone_id: Zone ID to filter users
 
         Returns:
-            List of User objects in the zone
+            Empty list (disabled)
         """
-        self._ensure_connection()
-        try:
-            with self.connection.cursor() as cursor:
-                cursor.execute(
-                    f'SELECT * FROM "{self.table_name}" WHERE zone_id = %s ORDER BY global_id',
-                    (zone_id,)
-                )
-                rows = cursor.fetchall()
-                return [User(**dict(row)) for row in rows]
-        except Exception as e:
-            logger.error(f"Error fetching users for zone {zone_id}: {e}")
-            return []
+        return []
 
     # ============================================================================
     # WORKING ZONE CRUD OPERATIONS
@@ -284,6 +277,7 @@ class PostgresManager:
                 rows = cursor.fetchall()
                 return [WorkingZone(**dict(row)) for row in rows]
         except Exception as e:
+            self.connection.rollback()
             logger.error(f"Error fetching working zones: {e}")
             return []
 
@@ -304,37 +298,26 @@ class PostgresManager:
                 row = cursor.fetchone()
                 return WorkingZone(**dict(row)) if row else None
         except Exception as e:
+            self.connection.rollback()
             logger.error(f"Error fetching zone {zone_id}: {e}")
             return None
 
     def get_zone_with_users(self, zone_id: str) -> Optional[WorkingZoneWithUsers]:
         """
-        Get working zone with list of users (1:N relationship)
+        Get working zone (users disabled, only zone info)
 
         Args:
             zone_id: Zone ID (primary key)
 
         Returns:
-            WorkingZoneWithUsers object with users list or None
+            WorkingZoneWithUsers object with empty users list or None
         """
-        self._ensure_connection()
-        try:
-            # Get zone
-            zone = self.get_zone_by_id(zone_id)
-            if not zone:
-                return None
-
-            # Get users in this zone
-            users = self.get_users_by_zone(zone_id)
-
-            # Create WorkingZoneWithUsers object
-            zone_dict = zone.dict()
-            zone_dict['users'] = [user.dict() for user in users]
-
-            return WorkingZoneWithUsers(**zone_dict)
-        except Exception as e:
-            logger.error(f"Error fetching zone with users {zone_id}: {e}")
+        zone = self.get_zone_by_id(zone_id)
+        if not zone:
             return None
+        zone_dict = zone.dict()
+        zone_dict['users'] = []
+        return WorkingZoneWithUsers(**zone_dict)
 
     def create_zone(self, zone_data: WorkingZoneCreate) -> Optional[WorkingZone]:
         """

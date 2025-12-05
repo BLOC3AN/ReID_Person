@@ -563,8 +563,10 @@ def _add_violation(job_id: str, violation: dict):
         
         elif violation_type in ['zone_incomplete_identity', 'zone_incomplete']:
             # MODE 2: Identity Verification - VIOLATION
+            missing_persons = violation.get('missing_persons', [])
+            missing_names = violation.get('missing_names', [])
             missing_str = ", ".join([f"{name} (ID:{pid})"
-                                    for pid, name in zip(violation['missing_persons'], violation['missing_names'])])
+                                    for pid, name in zip(missing_persons, missing_names)])
             logger.warning(f"🚨 [Job {job_id}] ZONE VIOLATION: Zone '{violation['zone_name']}' "
                           f"incomplete - Missing: {missing_str} at frame {violation.get('frame_id', 'N/A')}")
         
