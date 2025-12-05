@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-Kafka Manager - Producer and Consumer for Alert System
-Handles realtime alert messages with schema:
-- user_id, user_name, camera_id, zone_id, zone_name, IOP, threshold, status, timestamp
+Kafka Manager - Producer and Consumer for Alert and Tracking System
+
+Handles two types of messages:
+1. Alert messages (person_alerts topic):
+   - user_id, user_name, camera_id, zone_id, zone_name, IOP, threshold, status, timestamp
+2. Tracking messages (person_tracking topic):
+   - camera_id, frame_id, track_id, user_name, timestamp, bbox_coordinate [[x1,y1], [x2,y1], [x2,y2], [x1,y2]]
 """
 
 import json
@@ -17,24 +21,31 @@ import os
 
 class KafkaAlertProducer:
     """
-    Kafka Producer for sending alert messages
+    Kafka Producer for sending alert and tracking messages
     Thread-safe and non-blocking
+    
+    Supports two topics:
+    - alert_topic: Zone alerts and violations
+    - tracking_topic: Real-time tracking data
     """
 
     def __init__(self,
                  bootstrap_servers: str = 'localhost:9092',
                  topic: str = 'person_alerts',
+                 tracking_topic: str = 'person_tracking',
                  enable: bool = True):
         """
         Initialize Kafka Producer
 
         Args:
             bootstrap_servers: Kafka broker address
-            topic: Topic name for alerts
+            topic: Topic name for zone alerts (alert_topic)
+            tracking_topic: Topic name for tracking data (tracking_topic)
             enable: Enable/disable Kafka (for testing without Kafka)
         """
         self.bootstrap_servers = os.getenv('KAFKA_BOOTSTRAP_SERVERS', bootstrap_servers)
         self.topic = topic
+        self.tracking_topic = tracking_topic
         self.enable = enable
         self.producer = None
         self.message_count = 0
@@ -56,7 +67,7 @@ class KafkaAlertProducer:
             }
 
             self.producer = Producer(conf)
-            logger.info(f"✅ Kafka Producer initialized: {self.bootstrap_servers} -> topic '{self.topic}'")
+            logger.info(f"✅ Kafka Producer initialized: {self.bootstrap_servers} -> alerts='{self.topic}', tracking='{self.tracking_topic}'")
 
         except Exception as e:
             logger.error(f"❌ Failed to initialize Kafka Producer: {e}")
@@ -139,6 +150,54 @@ class KafkaAlertProducer:
 
         except Exception as e:
             logger.error(f"❌ Failed to send Kafka alert: {e}")
+            self.error_count += 1
+            return False
+
+    def send_tracking(self,
+                      camera_id: int,
+                      frame_id: int,
+                      track_id: int,
+                      user_name: str,
+                      bbox_coordinate: list) -> bool:
+        """
+        Send tracking message to Kafka
+
+        Args:
+            camera_id: Camera index
+            frame_id: Frame ID
+            track_id: Track ID from ByteTrack
+            user_name: User name (or "Unknown")
+            bbox_coordinate: Bounding box as list of 4 corners [[x1,y1], [x2,y1], [x2,y2], [x1,y2]]
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        if not self.enable or self.producer is None:
+            return False
+
+        try:
+            message = {
+                'camera_id': camera_id,
+                'frame_id': frame_id,
+                'track_id': track_id,
+                'user_name': user_name if user_name else "Unknown",
+                'timestamp': datetime.now().isoformat(),
+                'bbox_coordinate': bbox_coordinate,
+            }
+
+            message_json = json.dumps(message)
+
+            self.producer.produce(
+                topic=self.tracking_topic,
+                value=message_json.encode('utf-8'),
+                callback=self._delivery_callback
+            )
+
+            self.producer.poll(0)
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to send Kafka tracking: {e}")
             self.error_count += 1
             return False
 
@@ -324,11 +383,12 @@ _global_consumer: Optional[KafkaAlertConsumer] = None
 
 def get_kafka_producer(bootstrap_servers: str = 'localhost:9092',
                        topic: str = 'person_alerts',
+                       tracking_topic: str = 'person_tracking',
                        enable: bool = True) -> KafkaAlertProducer:
     """Get or create global Kafka producer instance"""
     global _global_producer
     if _global_producer is None:
-        _global_producer = KafkaAlertProducer(bootstrap_servers, topic, enable)
+        _global_producer = KafkaAlertProducer(bootstrap_servers, topic, tracking_topic, enable)
     return _global_producer
 
 

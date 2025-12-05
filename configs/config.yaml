@@ -103,5 +103,6 @@ kafka:
   # Kafka configuration for realtime alerts
   enable: true  # Enable/disable Kafka alerts
   bootstrap_servers: localhost:9092  # Kafka broker address
-  topic: person_alerts  # Topic name for alerts
+  alert_topic: person_alerts  # Topic name for zone alerts
+  tracking_topic: person_tracking  # Topic name for tracking data
   alert_threshold: 0.0  # Time threshold (seconds) before triggering alert (0 = immediate)

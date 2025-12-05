@@ -116,12 +116,16 @@ class ZoneMonitoringService:
 
         if KAFKA_AVAILABLE and kafka_config and kafka_config.get('enable', False):
             try:
+                alert_topic = kafka_config.get('alert_topic', 'person_alerts')
+                tracking_topic = kafka_config.get('tracking_topic', 'person_tracking')
+                
                 self.kafka_producer = KafkaAlertProducer(
                     bootstrap_servers=kafka_config.get('bootstrap_servers', 'localhost:9092'),
-                    topic=kafka_config.get('topic', 'person_alerts'),
+                    topic=alert_topic,
+                    tracking_topic=tracking_topic,
                     enable=True
                 )
-                logger.info(f"✅ Kafka Producer enabled for zone alerts (threshold: {alert_threshold}s)")
+                logger.info(f"✅ Kafka Producer enabled: alerts={alert_topic}, tracking={tracking_topic} (threshold: {alert_threshold}s)")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Kafka Producer: {e}")
                 self.kafka_producer = None
@@ -261,10 +265,23 @@ class ZoneMonitoringService:
 
         # Update presence for each track
         for track in task.tracks:
-            _, _, _, _, track_id, _ = track  # Unpack but only use track_id
+            x1, y1, x2, y2, track_id, _ = track
             track_id = int(track_id)
 
             reid_info = task.reid_results.get(track_id)
+            user_name = reid_info['person_name'] if reid_info and reid_info['global_id'] > 0 else "Unknown"
+            
+            # Send tracking to Kafka
+            if self.kafka_producer:
+                bbox_coords = [[int(x1), int(y1)], [int(x2), int(y1)], [int(x2), int(y2)], [int(x1), int(y2)]]
+                self.kafka_producer.send_tracking(
+                    camera_id=task.camera_idx,
+                    frame_id=task.frame_id,
+                    track_id=track_id,
+                    user_name=user_name,
+                    bbox_coordinate=bbox_coords
+                )
+            
             if not reid_info or reid_info['global_id'] <= 0:
                 continue
 
