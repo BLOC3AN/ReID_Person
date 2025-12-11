@@ -263,25 +263,31 @@ class ZoneMonitoringService:
         """
         zone_results = {}
 
+        # Collect all tracks for batch sending
+        batch_tracks = []
+
         # Update presence for each track
         for track in task.tracks:
             x1, y1, x2, y2, track_id, _ = track
             track_id = int(track_id)
 
             reid_info = task.reid_results.get(track_id)
-            user_name = reid_info['person_name'] if reid_info and reid_info['global_id'] > 0 else "Unknown"
-            
-            # Send tracking to Kafka
-            if self.kafka_producer:
-                bbox_coords = [[int(x1), int(y1)], [int(x2), int(y1)], [int(x2), int(y2)], [int(x1), int(y2)]]
-                self.kafka_producer.send_tracking(
-                    camera_id=task.camera_idx,
-                    frame_id=task.frame_id,
-                    track_id=track_id,
-                    user_name=user_name,
-                    bbox_coordinate=bbox_coords
-                )
-            
+            user_id = None
+            user_name = "Unknown"
+
+            if reid_info and reid_info['global_id'] > 0:
+                user_id = str(reid_info['global_id'])
+                user_name = reid_info['person_name']
+
+            # Collect track for batch sending
+            bbox_coords = [[int(x1), int(y1)], [int(x2), int(y1)], [int(x2), int(y2)], [int(x1), int(y2)]]
+            batch_tracks.append({
+                'track_id': track_id,
+                'user_id': user_id,
+                'user_name': user_name,
+                'bbox_coordinate': bbox_coords
+            })
+
             if not reid_info or reid_info['global_id'] <= 0:
                 continue
 
@@ -300,6 +306,14 @@ class ZoneMonitoringService:
                 'zone_id': zone_id,
                 'zone_name': self.zone_monitor.zones[zone_id]['name'] if zone_id else None
             }
+
+        # Send all tracks in one batch message (1 frame = 1 message)
+        if self.kafka_producer and batch_tracks:
+            self.kafka_producer.send_tracking_batch(
+                camera_id=task.camera_idx,
+                frame_id=task.frame_id,
+                tracks=batch_tracks
+            )
 
         # Update all zones and check for violations
         # Pass zone_ids for counting mode (includes Unknown tracks)

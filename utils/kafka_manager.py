@@ -5,8 +5,9 @@ Kafka Manager - Producer and Consumer for Alert and Tracking System
 Handles two types of messages:
 1. Alert messages (person_alerts topic):
    - user_id, user_name, camera_id, zone_id, zone_name, IOP, threshold, status, timestamp
-2. Tracking messages (person_tracking topic):
-   - camera_id, frame_id, track_id, user_name, timestamp, bbox_coordinate [[x1,y1], [x2,y1], [x2,y2], [x1,y2]]
+2. Tracking messages (person_tracking topic) - Batch format (1 frame = 1 message):
+   - camera_id, frame_id, timestamp, total_tracks
+   - tracks: [{track_id, user_id, user_name, bbox_coordinate}, ...]
 """
 
 import json
@@ -153,24 +154,40 @@ class KafkaAlertProducer:
             self.error_count += 1
             return False
 
-    def send_tracking(self,
-                      camera_id: int,
-                      frame_id: int,
-                      track_id: int,
-                      user_name: str,
-                      bbox_coordinate: list) -> bool:
+    def send_tracking_batch(self,
+                            camera_id: int,
+                            frame_id: int,
+                            tracks: list) -> bool:
         """
-        Send tracking message to Kafka
+        Send batch tracking message to Kafka (all tracks in one frame)
 
         Args:
             camera_id: Camera index
             frame_id: Frame ID
-            track_id: Track ID from ByteTrack
-            user_name: User name (or "Unknown")
-            bbox_coordinate: Bounding box as list of 4 corners [[x1,y1], [x2,y1], [x2,y2], [x1,y2]]
+            tracks: List of track dicts, each containing:
+                - track_id: Track ID from ByteTrack
+                - user_id: User global ID (None for Unknown)
+                - user_name: User name (or "Unknown")
+                - bbox_coordinate: Bounding box [[x1,y1], [x2,y1], [x2,y2], [x1,y2]]
 
         Returns:
             True if sent successfully, False otherwise
+        
+        Example tracks:
+            [
+                {
+                    "track_id": 101,
+                    "user_id": "usr_12345",
+                    "user_name": "Nguyen Van A",
+                    "bbox_coordinate": [[200,300],[350,300],[350,600],[200,600]]
+                },
+                {
+                    "track_id": 102,
+                    "user_id": null,
+                    "user_name": "Unknown",
+                    "bbox_coordinate": [[800,400],[950,400],[950,700],[800,700]]
+                }
+            ]
         """
         if not self.enable or self.producer is None:
             return False
@@ -179,10 +196,9 @@ class KafkaAlertProducer:
             message = {
                 'camera_id': camera_id,
                 'frame_id': frame_id,
-                'track_id': track_id,
-                'user_name': user_name if user_name else "Unknown",
                 'timestamp': datetime.now().isoformat(),
-                'bbox_coordinate': bbox_coordinate,
+                'total_tracks': len(tracks),
+                'tracks': tracks,
             }
 
             message_json = json.dumps(message)
@@ -197,7 +213,7 @@ class KafkaAlertProducer:
             return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to send Kafka tracking: {e}")
+            logger.error(f"❌ Failed to send Kafka tracking batch: {e}")
             self.error_count += 1
             return False
 
