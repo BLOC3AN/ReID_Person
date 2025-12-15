@@ -33,7 +33,6 @@ class MetricsCollector:
         self.baseline_ram_mb = None
         self.baseline_gpu_percent = None
         self.baseline_vram_mb = None
-        self.baseline_fps = None
 
     def collect_sample(self, detection_stream) -> MetricSample:
         """Collect a single metric sample from system and stream.
@@ -56,8 +55,8 @@ class MetricsCollector:
             # Collect GPU metrics
             current_gpu_percent, current_vram_mb = self._get_gpu_metrics()
 
-            # Extract FPS and latency from detection stream
-            current_fps, latency_ms = self._extract_stream_metrics(detection_stream)
+            # Extract FPS and latency from detection stream (absolute values, not delta)
+            fps, latency_ms = self._extract_stream_metrics(detection_stream)
 
             # Capture baseline on first collection
             if self.baseline_cpu_percent is None:
@@ -65,15 +64,14 @@ class MetricsCollector:
                 self.baseline_ram_mb = current_ram_mb
                 self.baseline_gpu_percent = current_gpu_percent
                 self.baseline_vram_mb = current_vram_mb
-                self.baseline_fps = current_fps
-                logger.info(f"📊 Baseline captured - CPU: {self.baseline_cpu_percent:.1f}%, RAM: {self.baseline_ram_mb:.0f}MB, GPU: {self.baseline_gpu_percent:.1f}%, VRAM: {self.baseline_vram_mb:.0f}MB, FPS: {self.baseline_fps:.1f}")
+                logger.info(f"📊 Baseline captured - CPU: {self.baseline_cpu_percent:.1f}%, RAM: {self.baseline_ram_mb:.0f}MB, GPU: {self.baseline_gpu_percent:.1f}%, VRAM: {self.baseline_vram_mb:.0f}MB")
 
-            # Calculate delta from baseline
+            # Calculate delta from baseline (resource consumption)
             cpu_percent = max(0, current_cpu_percent - self.baseline_cpu_percent)
             ram_mb = max(0, current_ram_mb - self.baseline_ram_mb)
             gpu_percent = max(0, current_gpu_percent - self.baseline_gpu_percent)
             vram_mb = max(0, current_vram_mb - self.baseline_vram_mb)
-            fps = max(0, current_fps - self.baseline_fps)
+            # FPS and Latency are absolute values (AI performance metrics, not resource consumption)
 
             sample = MetricSample(
                 timestamp=datetime.utcnow(),
