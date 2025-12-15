@@ -28,3 +28,6 @@ python-dotenv>=0.19.0
 # WebSocket Client
 websockets>=11.0
 
+# Benchmark Resource Monitoring
+psutil>=5.9.0  # System resource monitoring
+pynvml 

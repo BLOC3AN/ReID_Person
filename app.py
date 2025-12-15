@@ -18,6 +18,21 @@ import json
 import threading
 from queue import Queue
 
+# Import benchmark module
+try:
+    from core.benchmark import BenchmarkSession
+    from core.benchmark.ui import (
+        render_benchmark_metrics_display,
+        render_benchmark_summary,
+        render_benchmark_export,
+        initialize_benchmark_session,
+    )
+    BENCHMARK_AVAILABLE = True
+except ImportError:
+    BENCHMARK_AVAILABLE = False
+    logger_temp = logging.getLogger(__name__)
+    logger_temp.warning("Benchmark module not available")
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -1191,6 +1206,25 @@ elif page == "Detect & Track":
             st.info("📡 Live preview will be available at: **https://3900--main--coral-bass-22--ailab3.coder.tuilakhanh.id.vn/** during processing. The stream shows real-time AI detection with bounding boxes and tracking.")
             st.caption("💡 You can adjust buffer settings (segment duration, playlist size) in the livestream dashboard.")
 
+        # Benchmark settings
+        st.markdown("### 📊 Resource Benchmark")
+        benchmark_enabled = st.checkbox(
+            "Enable Benchmark",
+            value=False,
+            help="Monitor system resource usage (CPU, GPU, RAM, VRAM) during detection",
+        )
+
+        benchmark_duration = None
+        if benchmark_enabled:
+            benchmark_duration = st.slider(
+                "Benchmark Duration (seconds)",
+                min_value=10,
+                max_value=300,
+                value=60,
+                step=10,
+                help="How long to collect resource metrics",
+            )
+
     # Advanced Parameters
     with st.expander("⚙️ Advanced Parameters", expanded=False):
         st.markdown("### Detection & Tracking Parameters")
@@ -1398,6 +1432,26 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                         # Store job_id in session state for display after rerun
                         st.session_state['detect_current_job_id'] = job_id
 
+                        # Initialize benchmark session if enabled
+                        benchmark_session = None
+                        if BENCHMARK_AVAILABLE and benchmark_enabled:
+                            try:
+                                # Create a mock detection stream object for benchmark
+                                class MockDetectionStream:
+                                    def __init__(self):
+                                        self.is_running = True
+                                        self.fps = 25.0  # Typical detection FPS
+                                        self.latency_ms = 40.0  # Typical latency in ms
+
+                                mock_stream = MockDetectionStream()
+                                benchmark_session = initialize_benchmark_session(mock_stream)
+                                if benchmark_session:
+                                    benchmark_session.enable()
+                                    logger.info(f"✅ [Benchmark] Monitoring started for job {job_id}")
+                                    st.session_state['benchmark_session'] = benchmark_session
+                            except Exception as e:
+                                logger.error(f"❌ [Benchmark] Failed to initialize: {e}")
+
                         st.info(f"Job ID: {job_id}")
 
                         # Show livestream player if enabled
@@ -1535,6 +1589,15 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                 ws_logs_display.markdown(logs_text)
                             elif st.session_state.ws_connected:
                                 ws_logs_display.info("⏳ Waiting for zone violations...")
+
+                            # Display benchmark metrics if enabled
+                            if BENCHMARK_AVAILABLE and 'benchmark_session' in st.session_state:
+                                benchmark_session = st.session_state.get('benchmark_session')
+                                if benchmark_session and benchmark_session.is_running():
+                                    try:
+                                        render_benchmark_metrics_display(benchmark_session)
+                                    except Exception as e:
+                                        logger.debug(f"Error displaying benchmark metrics: {e}")
 
                             # Show stop button while processing
                             if stop_button_container.button("🛑 Stop Processing", type="secondary", key=f"stop_{job_id}_{poll_count}"):
@@ -1692,6 +1755,18 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                     st.success("✅ Detection complete!")
                                     # Clear stop button
                                     stop_button_container.empty()
+
+                                    # Display benchmark results if enabled
+                                    if BENCHMARK_AVAILABLE and 'benchmark_session' in st.session_state:
+                                        benchmark_session = st.session_state.get('benchmark_session')
+                                        if benchmark_session:
+                                            try:
+                                                benchmark_session.disable()
+                                                logger.info(f"✅ [Benchmark] Monitoring stopped for job {job_id}")
+                                                render_benchmark_summary(benchmark_session)
+                                                render_benchmark_export(benchmark_session)
+                                            except Exception as e:
+                                                logger.error(f"Error displaying benchmark results: {e}")
 
                                     # Always fetch ZIP file (works for both single-stream and multi-stream)
                                     logger.info(f"📦 [Detect & Track] Fetching ZIP file for job: {job_id}")
