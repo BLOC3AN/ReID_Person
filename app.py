@@ -1382,7 +1382,7 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                         "iou_threshold": str(iou_threshold),
                         "zone_opacity": str(zone_opacity),
                         "alert_threshold": str(alert_threshold),
-                        "enable_livestream": str(enable_livestream).lower()  # Convert bool to "true"/"false"
+                        "enable_livestream": "true" if enable_livestream else "false"
                     }
 
                     # Add rerank parameters
