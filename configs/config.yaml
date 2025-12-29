@@ -4,7 +4,7 @@ detection:
 
   # Triton Inference Server settings
   triton:
-    url: localhost:8101  # Triton gRPC endpoint
+    url: triton_inference_server:8101  # Triton gRPC endpoint
     model_name: bytetrack_tensorrt  # Model name in Triton repository
     model_version: ''  # Empty string = latest version
     timeout: 20.0  # Request timeout in seconds
@@ -53,7 +53,7 @@ reid:
 
   # Triton settings (used when backend=triton_pipeline)
   triton:
-    url: localhost:8101  # Triton gRPC endpoint (same as detection)
+    url: triton_inference_server:8101  # Triton gRPC endpoint (same as detection)
 
     # ArcFace model
     arcface_model: arcface_onnx  # Model name in Triton repository (switched from TensorRT to ONNX due to TensorRT bug)

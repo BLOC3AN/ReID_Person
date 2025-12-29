@@ -5,7 +5,13 @@ services:
     image: nvcr.io/nvidia/tritonserver:24.01-py3
     container_name: triton_inference_server
     runtime: nvidia
-    network_mode: "host"
+    networks:
+      - kafka_default
+      - redis_default
+    ports:
+      - "8100:8100"
+      - "8101:8101"
+      - "8102:8102"
     volumes:
       - ../triton_model_repository:/models:ro
       - ../logs/triton:/logs
@@ -41,7 +47,11 @@ services:
       context: ..
       dockerfile: deployment/Dockerfile.ui
     container_name: person_reid_ui
-    network_mode: "host"
+    networks:
+      - kafka_default
+      - redis_default
+    ports:
+      - "8501:8501"
     volumes:
       - ../outputs:/app/outputs
       - ../data:/app/data
@@ -66,7 +76,11 @@ services:
       dockerfile: deployment/Dockerfile.register
     container_name: person_reid_register
     runtime: nvidia
-    network_mode: "host"
+    networks:
+      - kafka_default
+      - redis_default
+    ports:
+      - "8002:8002"
     volumes:
       - ../outputs:/app/outputs
       - ../data:/app/data
@@ -91,7 +105,12 @@ services:
       dockerfile: deployment/Dockerfile.detection
     container_name: person_reid_detection
     runtime: nvidia
-    network_mode: "host"
+    networks:
+      - kafka_default
+      - redis_default
+    ports:
+      - "8003:8003"
+      - "1900-1920:1900-1920/udp"
     volumes:
       - ../outputs:/app/outputs
       - ../data:/app/data
@@ -119,7 +138,11 @@ services:
       context: ..
       dockerfile: deployment/Dockerfile.kafka_consumer
     container_name: person_reid_kafka_consumer
-    network_mode: "host"
+    networks:
+      - kafka_default
+      - redis_default
+    ports:
+      - "8004:8004"
     volumes:
       - ../logs:/app/logs
       - ../configs:/app/configs
@@ -139,7 +162,11 @@ services:
       context: ..
       dockerfile: deployment/Dockerfile.livestream
     container_name: person_reid_livestream
-    network_mode: "host"
+    networks:
+      - kafka_default
+      - redis_default
+    ports:
+      - "3900:3900"
     volumes:
       - ../outputs:/app/outputs
       - ../services:/app/services
@@ -156,7 +183,9 @@ volumes:
   redis_data:
     driver: local
 
-# Network not needed when using host mode
-# networks:
-#   person_reid_network:
-#     external: true
+# External networks for Kafka and Redis
+networks:
+  kafka_default:
+    external: true
+  redis_default:
+    external: true

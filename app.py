@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 # API endpoints from environment variables
 REGISTER_API_URL = os.getenv("REGISTER_API_URL", "http://localhost:8002")
 DETECTION_API_URL = os.getenv("DETECTION_API_URL", "http://localhost:8003")
+KAFKA_CONSUMER_URL = os.getenv("KAFKA_CONSUMER_URL", "http://localhost:8004")
 
 logger.info(f"🚀 Starting Person ReID UI - Register: {REGISTER_API_URL}, Detection: {DETECTION_API_URL}")
 
@@ -1538,7 +1539,8 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                         user_cancelled = False
                         kafka_alert_lines = []  # Store Kafka alert lines for display
                         last_kafka_check = time.time()
-                        kafka_consumer_url = "http://localhost:8004"
+                        last_kafka_check = time.time()
+                        kafka_consumer_url = KAFKA_CONSUMER_URL
 
                         # Start WebSocket client thread (only once per job)
                         if not st.session_state.ws_connected and not hasattr(st.session_state, f'ws_thread_{job_id}'):
@@ -1737,7 +1739,7 @@ Zone Border Thickness: {int(zone_opacity*10)}px
                                             else:
                                                 kafka_status.error("❌ Kafka Consumer Service not available")
                                         except requests.exceptions.RequestException:
-                                            kafka_status.warning("⚠️ Kafka Consumer Service not reachable (http://localhost:8004)")
+                                            kafka_status.warning(f"⚠️ Kafka Consumer Service not reachable ({kafka_consumer_url})")
                                         except Exception as e:
                                             logger.debug(f"Kafka check error: {e}")
                             except Exception as e:
