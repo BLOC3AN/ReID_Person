@@ -110,7 +110,7 @@ services:
       - redis_default
     ports:
       - "8003:8003"
-      - "1900-1920:1900-1920/udp"
+      - "1903-1920:1903-1920/udp"
     volumes:
       - ../outputs:/app/outputs
       - ../data:/app/data
